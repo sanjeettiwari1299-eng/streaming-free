@@ -1,0 +1,844 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>StreamVoid</title>
+<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap" rel="stylesheet"/>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0f0f0f;
+  --bg2:#181818;
+  --bg3:#212121;
+  --bg4:#272727;
+  --border:#3f3f3f;
+  --red:#ff0000;
+  --red2:#cc0000;
+  --t1:#f1f1f1;
+  --t2:#aaa;
+  --t3:#717171;
+  --chip-bg:#272727;
+  --chip-active:#f1f1f1;
+  --sw:240px;
+}
+html{scroll-behavior:smooth}
+body{background:var(--bg);color:var(--t1);font-family:'Roboto',sans-serif;font-size:14px;line-height:1.5;overflow-x:hidden}
+::-webkit-scrollbar{width:8px;height:8px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:#3f3f3f;border-radius:4px}
+::-webkit-scrollbar-thumb:hover{background:#555}
+a{color:inherit;text-decoration:none}
+button{font-family:'Roboto',sans-serif;cursor:pointer;border:none;background:none;color:inherit}
+input,select{font-family:'Roboto',sans-serif}
+img{max-width:100%;display:block}
+
+/* ── LAYOUT ── */
+.layout{display:flex;min-height:100vh}
+.sidebar{position:fixed;left:0;top:56px;bottom:0;width:var(--sw);background:var(--bg);display:flex;flex-direction:column;z-index:100;overflow-y:auto;overflow-x:hidden;padding:12px 0;transition:transform .2s ease}
+.sidebar.mini{width:72px}
+.sidebar.closed{transform:translateX(-100%)}
+.main{flex:1;margin-left:var(--sw);min-width:0;display:flex;flex-direction:column;transition:margin .2s ease}
+.main.mini-margin{margin-left:72px}
+.main.no-margin{margin-left:0}
+
+/* ── TOPBAR ── */
+.topbar{position:fixed;top:0;left:0;right:0;height:56px;background:var(--bg);z-index:200;display:flex;align-items:center;padding:0 16px;gap:8px;border-bottom:1px solid transparent}
+.tb-left{display:flex;align-items:center;gap:4px;flex-shrink:0}
+.tb-menu-btn{width:40px;height:40px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:20px;color:var(--t1);transition:background .1s}
+.tb-menu-btn:hover{background:var(--bg3)}
+.tb-logo{display:flex;align-items:center;gap:4px;padding:0 14px}
+.tb-logo-icon{background:var(--red);color:#fff;font-weight:900;font-size:18px;padding:2px 6px;border-radius:4px;letter-spacing:-1px}
+.tb-logo-name{font-size:14px;font-weight:700;letter-spacing:-.5px;color:var(--t1)}
+.tb-logo-in{font-size:9px;color:var(--t2);font-weight:400;align-self:flex-end;margin-bottom:1px}
+.tb-search-wrap{flex:1;max-width:600px;margin:0 auto;display:flex;gap:8px}
+.tb-search{flex:1;display:flex;align-items:center;background:var(--bg);border:1px solid var(--border);border-radius:40px 0 0 40px;padding:0 4px 0 16px;height:40px;transition:border-color .15s}
+.tb-search:focus-within{border-color:#1c62b9}
+.tb-search input{flex:1;background:none;border:none;outline:none;color:var(--t1);font-size:16px;min-width:0}
+.tb-search input::placeholder{color:var(--t3)}
+.tb-clr-btn{padding:4px 8px;color:var(--t2);font-size:18px;transition:color .1s}
+.tb-clr-btn:hover{color:var(--t1)}
+.tb-go{height:40px;width:64px;background:var(--bg3);border:1px solid var(--border);border-left:none;border-radius:0 40px 40px 0;display:flex;align-items:center;justify-content:center;font-size:20px;color:var(--t2);transition:background .1s}
+.tb-go:hover{background:var(--bg4);color:var(--t1)}
+.tb-right{margin-left:auto;flex-shrink:0;display:flex;align-items:center;gap:8px}
+.tb-icon-btn{width:40px;height:40px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:20px;color:var(--t1);transition:background .1s}
+.tb-icon-btn:hover{background:var(--bg3)}
+.main-wrap{margin-top:56px}
+
+/* ── SIDEBAR ITEMS ── */
+.s-group{margin-bottom:10px}
+.s-divider{height:1px;background:var(--border);margin:8px 16px}
+.s-label{font-size:11px;font-weight:500;color:var(--t3);padding:8px 24px 4px;text-transform:uppercase;letter-spacing:.5px;white-space:nowrap;overflow:hidden}
+.sidebar.mini .s-label{display:none}
+.s-item{display:flex;align-items:center;gap:24px;padding:0 24px;height:40px;border-radius:10px;margin:0 12px;color:var(--t2);font-size:13.5px;font-weight:400;transition:background .1s;white-space:nowrap;overflow:hidden}
+.sidebar.mini .s-item{gap:0;padding:0;justify-content:center;margin:0 4px;border-radius:10px}
+.s-item:hover{background:var(--bg3);color:var(--t1)}
+.s-item.act{background:var(--bg3);color:var(--t1);font-weight:500}
+.s-ico{font-size:20px;flex-shrink:0;width:24px;text-align:center}
+.s-lbl{overflow:hidden;text-overflow:ellipsis}
+.sidebar.mini .s-lbl{display:none}
+.s-cnt{margin-left:auto;font-size:11px;background:var(--bg4);padding:1px 6px;border-radius:10px;color:var(--t3)}
+.sidebar.mini .s-cnt{display:none}
+
+/* ── CHIPS (suggestion style) ── */
+.chips-bar{display:flex;gap:8px;overflow-x:auto;padding:12px 24px;scrollbar-width:none;position:sticky;top:56px;z-index:90;background:var(--bg)}
+.chips-bar::-webkit-scrollbar{display:none}
+.chip{padding:0 12px;height:32px;border-radius:8px;font-size:14px;font-weight:500;background:var(--chip-bg);color:var(--t1);white-space:nowrap;flex-shrink:0;transition:background .1s}
+.chip:hover{background:#3f3f3f}
+.chip.act{background:var(--chip-active);color:#0f0f0f}
+
+/* ── VIDEO GRID ── */
+.vgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px 8px;padding:8px 24px 40px}
+.vlist{display:flex;flex-direction:column;gap:0;padding:8px 24px 40px}
+
+/* ── VIDEO CARD ── */
+.vc{cursor:pointer;border-radius:12px;animation:fadeIn .3s ease both}
+@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+.vc:hover .vc-thumb-img{border-radius:0}
+.vc-thumb{position:relative;aspect-ratio:16/9;border-radius:12px;overflow:hidden;background:var(--bg3)}
+.vc-thumb-img{width:100%;height:100%;object-fit:cover;transition:border-radius .2s,transform .3s}
+.vc:hover .vc-thumb-img{transform:scale(1.02)}
+.vc-dur{position:absolute;bottom:4px;right:4px;background:rgba(0,0,0,.8);color:#fff;font-size:12px;font-weight:500;padding:2px 4px;border-radius:4px}
+.vc-body{display:flex;gap:12px;padding:12px 8px 8px}
+.vc-av{width:36px;height:36px;border-radius:50%;background:var(--bg3);flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;color:var(--t1)}
+.vc-av img{width:100%;height:100%;border-radius:50%;object-fit:cover}
+.vc-meta{flex:1;min-width:0}
+.vc-title{font-size:14px;font-weight:500;line-height:1.4;color:var(--t1);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin-bottom:4px}
+.vc-channel{font-size:13px;color:var(--t2);margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.vc-info{font-size:13px;color:var(--t2);display:flex;align-items:center;gap:4px}
+.vc-dot{margin:0 2px}
+.vc-more-btn{opacity:0;width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;color:var(--t1);font-size:18px;flex-shrink:0;transition:all .1s;align-self:flex-start;margin-top:8px}
+.vc:hover .vc-more-btn{opacity:1}
+.vc-more-btn:hover{background:var(--bg3)}
+.vc-menu{position:absolute;top:44px;right:8px;background:var(--bg3);border-radius:12px;padding:8px 0;z-index:50;min-width:200px;box-shadow:0 4px 24px rgba(0,0,0,.5)}
+.vc-mi{display:flex;align-items:center;gap:16px;padding:8px 16px;font-size:14px;color:var(--t1);transition:background .1s;width:100%}
+.vc-mi:hover{background:var(--bg4)}
+.vc-mi-ico{font-size:20px;width:24px;text-align:center}
+
+/* LIST ROW */
+.vc-row{display:flex;gap:8px;padding:8px;border-radius:12px;transition:background .1s;position:relative}
+.vc-row:hover{background:var(--bg3)}
+.vc-row .vc-thumb{width:168px;flex-shrink:0;border-radius:8px;aspect-ratio:16/9}
+.vc-row .vc-body{flex:1;padding:0;flex-direction:column}
+.vc-row .vc-av{display:none}
+.vc-row .vc-meta{flex:1}
+
+/* ── SKEL ── */
+.skel{background:linear-gradient(90deg,var(--bg3) 25%,var(--bg4) 50%,var(--bg3) 75%);background-size:400px 100%;animation:shim 1.5s infinite;border-radius:4px}
+@keyframes shim{0%{background-position:-400px 0}100%{background-position:400px 0}}
+.skel-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px 8px;padding:8px 24px}
+
+/* ── WATCH PAGE ── */
+.watch{display:flex;gap:24px;padding:24px;max-width:1600px;margin:0 auto}
+.watch-main{flex:1;min-width:0}
+.watch-player{width:100%;aspect-ratio:16/9;border-radius:12px;overflow:hidden;background:#000}
+.watch-player iframe{width:100%;height:100%;border:none;display:block}
+.watch-title{font-size:20px;font-weight:600;line-height:1.4;margin:12px 0 8px}
+.watch-row{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;padding-bottom:12px;border-bottom:1px solid var(--border);margin-bottom:12px}
+.watch-info-left{font-size:14px;color:var(--t2)}
+.watch-btns{display:flex;gap:8px;flex-wrap:wrap}
+.w-btn{display:flex;align-items:center;gap:6px;padding:0 16px;height:36px;border-radius:18px;font-size:14px;font-weight:500;background:var(--bg3);color:var(--t1);transition:background .1s}
+.w-btn:hover{background:var(--bg4)}
+.w-btn.on{background:var(--t1);color:var(--bg)}
+.watch-ch-row{display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid var(--border);margin-bottom:12px}
+.watch-ch-av{width:40px;height:40px;border-radius:50%;background:var(--red);display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:700;color:#fff;flex-shrink:0}
+.watch-ch-name{font-size:15px;font-weight:500}
+.watch-ch-sub{font-size:13px;color:var(--t2)}
+.watch-desc-box{background:var(--bg3);border-radius:12px;padding:12px;margin-bottom:12px;cursor:pointer}
+.watch-desc-box:hover{background:var(--bg4)}
+.watch-desc-short{font-size:14px;color:var(--t1);line-height:1.5}
+.watch-desc-full{font-size:14px;color:var(--t1);line-height:1.6;white-space:pre-wrap;margin-top:8px}
+.watch-desc-tog{font-size:13px;font-weight:500;margin-top:8px}
+.watch-tags{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.watch-tag{color:#3ea6ff;font-size:14px}
+.watch-side{flex:0 0 402px;min-width:0}
+.watch-side-title{font-size:16px;font-weight:500;margin-bottom:12px}
+.watch-side-list{display:flex;flex-direction:column;gap:2px}
+
+/* ── LIBRARY ── */
+.lib-pg{padding:24px;max-width:1200px}
+.lib-hd{display:flex;align-items:center;gap:12px;margin-bottom:24px;flex-wrap:wrap}
+.lib-title{font-size:20px;font-weight:400;flex:1}
+.lib-cnt{font-size:13px;color:var(--t2);background:var(--bg3);padding:2px 10px;border-radius:10px}
+.lib-btn{display:flex;align-items:center;gap:6px;padding:0 16px;height:36px;border-radius:18px;font-size:14px;background:var(--bg3);color:var(--t1);transition:background .1s}
+.lib-btn:hover{background:var(--bg4)}
+.lib-btn.danger:hover{background:#3d1f1f;color:#f28b82}
+.lib-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:100px 24px;text-align:center}
+.lib-empty-ico{font-size:64px;opacity:.2}
+.lib-empty-title{font-size:18px;font-weight:400;color:var(--t2)}
+.lib-empty-sub{font-size:14px;color:var(--t3);max-width:280px}
+.lib-row{position:relative;display:flex;align-items:flex-start}
+.lib-row>*:first-child{flex:1;min-width:0}
+.lib-rm{margin:14px 0 0 4px;color:var(--t3);width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0;transition:all .1s}
+.lib-rm:hover{background:var(--bg3);color:var(--t1)}
+.pl-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:16px}
+.pl-card{background:var(--bg2);border-radius:12px;overflow:hidden;cursor:pointer;animation:fadeIn .3s ease both;transition:background .1s;position:relative}
+.pl-card:hover{background:var(--bg3)}
+.pl-thumb{aspect-ratio:16/9;background:var(--bg3);display:flex;align-items:center;justify-content:center;font-size:36px;position:relative;overflow:hidden}
+.pl-thumb img{width:100%;height:100%;object-fit:cover;opacity:.8}
+.pl-cnt{position:absolute;bottom:4px;right:6px;font-size:12px;font-weight:500;color:#fff;background:rgba(0,0,0,.8);padding:2px 4px;border-radius:4px}
+.pl-info{padding:12px}
+.pl-name{font-size:14px;font-weight:500;margin-bottom:2px}
+.pl-sub{font-size:13px;color:var(--t2)}
+.pl-rm{position:absolute;top:6px;right:6px;background:rgba(0,0,0,.7);width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:16px;color:var(--t2);transition:all .1s;opacity:0}
+.pl-card:hover .pl-rm{opacity:1}
+.pl-rm:hover{color:#f28b82}
+.pl-back{display:flex;align-items:center;gap:4px;font-size:14px;color:var(--t2);padding:0 12px;height:36px;border-radius:18px;transition:background .1s;margin-right:8px}
+.pl-back:hover{background:var(--bg3);color:var(--t1)}
+.new-pl{display:flex;gap:8px;align-items:center;margin-bottom:20px;flex-wrap:wrap}
+.new-pl input{background:transparent;border:1px solid var(--border);border-radius:4px;padding:8px 12px;color:var(--t1);font-size:14px;outline:none;width:280px;transition:border-color .15s}
+.new-pl input:focus{border-color:#3ea6ff}
+.new-pl input::placeholder{color:var(--t3)}
+
+/* ── SETTINGS ── */
+.set-pg{padding:24px;max-width:720px}
+.set-title{font-size:20px;font-weight:400;margin-bottom:24px}
+.set-blk{background:var(--bg2);border-radius:12px;padding:20px;margin-bottom:16px}
+.set-blk-title{font-size:16px;font-weight:500;margin-bottom:4px;display:flex;align-items:center;gap:8px}
+.set-blk-desc{font-size:13px;color:var(--t2);margin-bottom:16px;line-height:1.6}
+.set-api-row{display:flex;gap:8px;margin-bottom:12px}
+.set-api-row input{flex:1;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:10px 12px;color:var(--t1);font-size:14px;outline:none;transition:border-color .15s;font-family:monospace}
+.set-api-row input:focus{border-color:#3ea6ff}
+.set-api-row input::placeholder{color:var(--t3);font-family:'Roboto',sans-serif}
+.set-api-btn{padding:0 20px;height:40px;background:#3ea6ff;color:#0f0f0f;border-radius:4px;font-size:14px;font-weight:500;transition:background .1s;white-space:nowrap}
+.set-api-btn:hover{background:#65beff}
+.set-hint{font-size:13px;color:var(--t3);line-height:1.8}
+.set-hint a{color:#3ea6ff}
+.tog-row{display:flex;align-items:center;justify-content:space-between;padding:10px 0}
+.tog-lbl{font-size:14px;font-weight:500}
+.tog-sub{font-size:12px;color:var(--t2);margin-top:1px}
+.toggle{width:44px;height:24px;background:var(--bg4);border-radius:12px;position:relative;transition:background .2s;cursor:pointer;flex-shrink:0}
+.toggle.on{background:#3ea6ff}
+.tok{position:absolute;top:2px;left:2px;width:20px;height:20px;background:#fff;border-radius:50%;transition:left .2s;box-shadow:0 1px 3px rgba(0,0,0,.4)}
+.toggle.on .tok{left:22px}
+.priv-item{display:flex;gap:12px;padding:10px 0;border-bottom:1px solid var(--border)}
+.priv-item:last-child{border-bottom:none}
+.priv-ico{color:#4caf50;font-size:18px;margin-top:2px;flex-shrink:0}
+.priv-name{font-size:14px;font-weight:500;margin-bottom:2px}
+.priv-sub{font-size:13px;color:var(--t2);line-height:1.5}
+.danger-btn{display:flex;align-items:center;gap:8px;padding:0 16px;height:36px;border-radius:18px;font-size:14px;background:transparent;border:1px solid var(--border);color:#f28b82;transition:all .1s;margin-top:12px}
+.danger-btn:hover{background:#3d1f1f;border-color:#f28b82}
+.saved-toast{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:#4caf50;padding:4px 12px;background:rgba(76,175,80,.1);border-radius:10px;margin-left:12px}
+
+/* ── API BANNER ── */
+.api-banner{margin:0 24px 0;padding:12px 16px;background:rgba(62,166,255,.08);border:1px solid rgba(62,166,255,.2);border-radius:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.api-banner.ok{background:rgba(76,175,80,.08);border-color:rgba(76,175,80,.2)}
+.api-b-title{font-size:14px;font-weight:500;color:#3ea6ff;margin-bottom:2px}
+.api-b-title.ok{color:#4caf50}
+.api-b-sub{font-size:12px;color:var(--t2)}
+.api-b-inp{flex:2;min-width:200px;display:flex;gap:8px}
+.api-b-inp input{flex:1;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:8px 12px;color:var(--t1);font-size:13px;outline:none;transition:border-color .15s}
+.api-b-inp input:focus{border-color:#3ea6ff}
+.api-b-inp input::placeholder{color:var(--t3)}
+.api-b-btn{padding:0 14px;height:36px;background:#3ea6ff;color:#0f0f0f;border-radius:4px;font-size:13px;font-weight:500;white-space:nowrap;transition:background .1s}
+.api-b-btn:hover{background:#65beff}
+
+/* ── STATES ── */
+.err-box{display:flex;flex-direction:column;align-items:center;gap:16px;padding:80px 24px;text-align:center}
+.err-ico{font-size:48px;opacity:.4}
+.err-msg{font-size:14px;color:var(--t2);max-width:360px;line-height:1.6}
+.err-btn{padding:0 20px;height:36px;background:var(--bg3);border-radius:18px;font-size:14px;color:var(--t1);transition:background .1s}
+.err-btn:hover{background:var(--bg4)}
+.load-more{display:flex;justify-content:center;padding:24px 0}
+.load-more button{padding:0 24px;height:36px;background:var(--bg3);border-radius:18px;font-size:14px;font-weight:500;color:var(--t1);transition:background .1s}
+.load-more button:hover{background:var(--bg4)}
+
+/* ── SEARCH INPUT BAR ── */
+.search-hero{display:flex;align-items:center;gap:8px;padding:12px 24px 0;font-size:14px;color:var(--t2);border-bottom:1px solid var(--border);margin-bottom:0;padding-bottom:0}
+.search-hero strong{color:var(--t1)}
+.search-sort{margin-left:auto;display:flex;gap:6px;align-items:center}
+.sort-btn{height:32px;padding:0 12px;border-radius:8px;font-size:13px;background:var(--bg3);color:var(--t2);transition:all .1s}
+.sort-btn:hover{background:var(--bg4);color:var(--t1)}
+.sort-btn.act{background:var(--t1);color:var(--bg);font-weight:500}
+
+@media(max-width:1200px){.watch{flex-direction:column}.watch-side{flex:none;width:100%}}
+@media(max-width:900px){
+  .sidebar{width:72px}.sidebar .s-lbl,.sidebar .s-label,.sidebar .s-cnt{display:none}
+  .sidebar .s-item{gap:0;padding:0;justify-content:center;margin:0 4px}
+  .main{margin-left:72px}
+}
+@media(max-width:600px){
+  :root{--sw:0px}
+  .sidebar{transform:translateX(-100%);width:240px}
+  .sidebar.open{transform:translateX(0)}
+  .sidebar .s-lbl,.sidebar .s-label,.sidebar .s-cnt{display:block}
+  .sidebar .s-item{gap:24px;padding:0 24px;justify-content:flex-start;margin:0 12px}
+  .main{margin-left:0}
+  .vgrid{padding:4px 12px;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px 4px}
+  .vgrid .vc-body{padding:8px 4px 4px}
+  .vgrid .vc-av{display:none}
+  .watch{padding:0}.watch-main{border-radius:0}
+  .watch-player{border-radius:0}
+  .chips-bar{padding:8px 12px}
+  .lib-pg,.set-pg{padding:12px}
+  .skel-grid{padding:4px 12px}
+}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef, useCallback, useMemo } = React;
+
+// ── CURATED VIDEOS ────────────────────────────────────────────────────────────
+const CURATED_HOME = [
+  {videoId:"dQw4w9WgXcQ",title:"Rick Astley - Never Gonna Give You Up (Official Music Video)",author:"Rick Astley",viewCount:1400000000,lengthSeconds:212,published:1217952000},
+  {videoId:"JGwWNGJdvx8",title:"Ed Sheeran - Shape of You (Official Music Video)",author:"Ed Sheeran",viewCount:5900000000,lengthSeconds:234,published:1484611200},
+  {videoId:"kJQP7kiw5Fk",title:"Luis Fonsi - Despacito ft. Daddy Yankee",author:"Luis Fonsi",viewCount:8200000000,lengthSeconds:282,published:1484784000},
+  {videoId:"9bZkp7q19f0",title:"PSY - GANGNAM STYLE(강남스타일) M/V",author:"officialpsy",viewCount:4900000000,lengthSeconds:252,published:1342483200},
+  {videoId:"OPf0YbXqDm0",title:"Mark Ronson - Uptown Funk (Official Video) ft. Bruno Mars",author:"Mark Ronson",viewCount:4900000000,lengthSeconds:270,published:1417651200},
+  {videoId:"RgKAFK5djSk",title:"Wiz Khalifa - See You Again ft. Charlie Puth [Official Video]",author:"Wiz Khalifa",viewCount:5700000000,lengthSeconds:237,published:1427760000},
+  {videoId:"hT_nvWreIhg",title:"OneRepublic - Counting Stars (Official Music Video)",author:"OneRepublic",viewCount:3300000000,lengthSeconds:257,published:1374019200},
+  {videoId:"nfWlot6h_JM",title:"Taylor Swift - Shake It Off",author:"Taylor Swift",viewCount:3500000000,lengthSeconds:219,published:1409270400},
+  {videoId:"09R8_2nJtjg",title:"Maroon 5 - Sugar (Official Music Video)",author:"Maroon 5",viewCount:3900000000,lengthSeconds:235,published:1415750400},
+  {videoId:"SlPhMPnQ58k",title:"Sia - Cheap Thrills (Official Video) ft. Sean Paul",author:"Sia",viewCount:4500000000,lengthSeconds:211,published:1463529600},
+  {videoId:"CevxZvSJLk8",title:"Katy Perry - Roar (Official Music Video)",author:"Katy Perry",viewCount:3600000000,lengthSeconds:224,published:1376265600},
+  {videoId:"JRfuAukYTKg",title:"Billie Eilish - bad guy (Official Music Video)",author:"Billie Eilish",viewCount:3200000000,lengthSeconds:194,published:1555977600},
+  {videoId:"H5v3kku4y6Q",title:"Ariana Grande - 7 rings (Official Video)",author:"Ariana Grande",viewCount:2700000000,lengthSeconds:178,published:1548288000},
+  {videoId:"it1bMiozFwQ",title:"Dua Lipa - Levitating (Official Video)",author:"Dua Lipa",viewCount:1900000000,lengthSeconds:203,published:1600128000},
+  {videoId:"P8PIjg9WCKA",title:"Harry Styles - As It Was (Official Video)",author:"Harry Styles",viewCount:1100000000,lengthSeconds:167,published:1649289600},
+  {videoId:"ru0K8uYEZWw",title:"Coldplay - A Sky Full of Stars (Official Video)",author:"Coldplay",viewCount:2100000000,lengthSeconds:268,published:1402099200},
+  {videoId:"IFKnq9QM6_A",title:"How did the Universe Begin? - Kurzgesagt",author:"Kurzgesagt – In a Nutshell",viewCount:19000000,lengthSeconds:678,published:1458604800},
+  {videoId:"pVbLlnmxIbY",title:"The Fermi Paradox — Where Are All The Aliens?",author:"Kurzgesagt – In a Nutshell",viewCount:28000000,lengthSeconds:659,published:1429660800},
+  {videoId:"sUp9LMnXj-I",title:"Grand Theft Auto V Official Trailer",author:"Rockstar Games",viewCount:62000000,lengthSeconds:162,published:1354579200},
+  {videoId:"TnGl01FkMMo",title:"Minecraft Official Trailer",author:"Minecraft",viewCount:72000000,lengthSeconds:112,published:1346284800},
+  {videoId:"FkklG9MA0vM",title:"The Last of Us: Official Trailer",author:"PlayStation",viewCount:28000000,lengthSeconds:140,published:1353369600},
+  {videoId:"egmIfgx3yds",title:"Cyberpunk 2077 — Official E3 2019 Gameplay Trailer",author:"CD PROJEKT RED",viewCount:19000000,lengthSeconds:427,published:1566777600},
+  {videoId:"YqeW9_5kURI",title:"Justin Bieber - Baby ft. Ludacris (Official Music Video)",author:"Justin Bieber",viewCount:2900000000,lengthSeconds:214,published:1265932800},
+  {videoId:"y3-BX-jN_Ac",title:"Time: The History & Future of Everything – Remastered",author:"Kurzgesagt – In a Nutshell",viewCount:12000000,lengthSeconds:480,published:1511222400},
+];
+
+// Suggestion chips — just filter curated pool, no API needed
+const SUGGESTION_CHIPS = ["All","Music","Gaming","Science","Movies","Trending","India","Live","Podcasts","News","Sports","Comedy"];
+
+const fv=n=>!n?"0":n>=1e9?(n/1e9).toFixed(1)+"B":n>=1e6?(n/1e6).toFixed(1)+"M":n>=1e3?(n/1e3).toFixed(1)+"K":String(n);
+const fd=s=>{if(!s)return"";const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sc=s%60;return h?`${h}:${String(m).padStart(2,"0")}:${String(sc).padStart(2,"0")}`:`${m}:${String(sc).padStart(2,"0")}`;};
+const ago=ts=>{if(!ts)return"";const d=Date.now()/1000-ts;if(d<3600)return Math.floor(d/60)+" minutes ago";if(d<86400)return Math.floor(d/3600)+" hours ago";if(d<2592000)return Math.floor(d/86400)+" days ago";if(d<31536000)return Math.floor(d/2592000)+" months ago";return Math.floor(d/31536000)+" years ago";};
+const ls=(k,d)=>{try{const v=localStorage.getItem(k);return v?JSON.parse(v):d;}catch{return d;}};
+const ss=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v));}catch{}};
+const YTE=id=>`https://www.youtube.com/embed/${id}?autoplay=1&rel=0&modestbranding=1`;
+const YTW=id=>`https://www.youtube.com/watch?v=${id}`;
+const YTT=id=>`https://i.ytimg.com/vi/${id}/mqdefault.jpg`;
+
+// YouTube Data API
+const ytSearch=async(q,key,token="")=>{
+  const r=await fetch(`https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(q)}&maxResults=24&type=video&regionCode=IN&key=${key}${token?`&pageToken=${token}`:""}`);
+  if(!r.ok){const e=await r.json();throw new Error(e.error?.message||"API Error");}
+  const d=await r.json();
+  return{videos:d.items.map(i=>({videoId:i.id.videoId,title:i.snippet.title,author:i.snippet.channelTitle,published:new Date(i.snippet.publishedAt).getTime()/1000,viewCount:0,lengthSeconds:0,videoThumbnails:[{url:i.snippet.thumbnails?.medium?.url,quality:"medium"}]})),next:d.nextPageToken||null};
+};
+const ytTrend=async(key)=>{
+  const r=await fetch(`https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics&chart=mostPopular&regionCode=IN&maxResults=24&key=${key}`);
+  if(!r.ok){const e=await r.json();throw new Error(e.error?.message||"API Error");}
+  const d=await r.json();
+  return d.items.map(i=>({videoId:i.id,title:i.snippet.title,author:i.snippet.channelTitle,published:new Date(i.snippet.publishedAt).getTime()/1000,viewCount:parseInt(i.statistics?.viewCount||0),lengthSeconds:0,videoThumbnails:[{url:i.snippet.thumbnails?.medium?.url,quality:"medium"}]}));
+};
+
+// ── STORE ─────────────────────────────────────────────────────────────────────
+function useStore(){
+  const [hist,setHist]=useState(()=>ls("ytc_h",[]));
+  const [favs,setFavs]=useState(()=>ls("ytc_f",[]));
+  const [wl,setWl]=useState(()=>ls("ytc_w",[]));
+  const [pls,setPls]=useState(()=>ls("ytc_p",[]));
+  const [cfg,setCfg]=useState(()=>ls("ytc_c",{apiKey:"",autoplay:true,showRelated:true}));
+  const addHist=v=>{const h=[v,...hist.filter(x=>x.videoId!==v.videoId)].slice(0,300);setHist(h);ss("ytc_h",h);};
+  const clrHist=()=>{setHist([]);ss("ytc_h",[]);};
+  const rmHist=id=>{const h=hist.filter(v=>v.videoId!==id);setHist(h);ss("ytc_h",h);};
+  const togFav=v=>{const f=favs.find(x=>x.videoId===v.videoId)?favs.filter(x=>x.videoId!==v.videoId):[v,...favs];setFavs(f);ss("ytc_f",f);};
+  const isFav=id=>favs.some(v=>v.videoId===id);
+  const togWL=v=>{const w=wl.find(x=>x.videoId===v.videoId)?wl.filter(x=>x.videoId!==v.videoId):[v,...wl];setWl(w);ss("ytc_w",w);};
+  const isWL=id=>wl.some(v=>v.videoId===id);
+  const mkPL=nm=>{const p=[...pls,{id:Date.now().toString(),name:nm,videos:[]}];setPls(p);ss("ytc_p",p);};
+  const rmPL=id=>{const p=pls.filter(x=>x.id!==id);setPls(p);ss("ytc_p",p);};
+  const updCfg=patch=>{const c={...cfg,...patch};setCfg(c);ss("ytc_c",c);};
+  return{hist,addHist,clrHist,rmHist,favs,togFav,isFav,wl,togWL,isWL,pls,mkPL,rmPL,cfg,updCfg};
+}
+
+// ── AVATAR COLOR ──────────────────────────────────────────────────────────────
+const AV_COLORS=["#ff4e45","#ff8c00","#ffd600","#4caf50","#2196f3","#9c27b0","#e91e63","#00bcd4"];
+const avColor=name=>AV_COLORS[(name||"A").charCodeAt(0)%AV_COLORS.length];
+
+// ── VIDEO CARD ─────────────────────────────────────────────────────────────────
+function VCard({v,onPlay,layout="grid",st}){
+  const [menu,setMenu]=useState(false);
+  const menuRef=useRef();
+  if(!v?.videoId)return null;
+  const thumb=v.videoThumbnails?.find(t=>t.quality==="medium")?.url||YTT(v.videoId);
+  const fav=st.isFav(v.videoId),wl=st.isWL(v.videoId);
+
+  useEffect(()=>{
+    if(!menu)return;
+    const handler=e=>{if(menuRef.current&&!menuRef.current.contains(e.target))setMenu(false);};
+    document.addEventListener("mousedown",handler);
+    return()=>document.removeEventListener("mousedown",handler);
+  },[menu]);
+
+  const act=(e,a)=>{e.stopPropagation();a==="fav"?st.togFav(v):st.togWL(v);setMenu(false);};
+  const isRow=layout==="list";
+
+  return(
+    <div className={`vc${isRow?" vc-row":""}`} style={{position:"relative"}} onClick={()=>onPlay(v)}>
+      <div className="vc-thumb">
+        <img className="vc-thumb-img" src={thumb} alt={v.title} loading="lazy" onError={e=>e.target.src=YTT(v.videoId)}/>
+        {v.lengthSeconds>0&&<span className="vc-dur">{fd(v.lengthSeconds)}</span>}
+      </div>
+      <div className="vc-body">
+        {!isRow&&<div className="vc-av" style={{background:avColor(v.author)}}>{(v.author||"?")[0].toUpperCase()}</div>}
+        <div className="vc-meta">
+          <div className="vc-title">{v.title}</div>
+          <div className="vc-channel">{v.author}</div>
+          <div className="vc-info">
+            {v.viewCount>0&&<span>{fv(v.viewCount)} views</span>}
+            {v.viewCount>0&&v.published>0&&<span className="vc-dot">·</span>}
+            {v.published>0&&<span>{ago(v.published)}</span>}
+          </div>
+        </div>
+        <button className="vc-more-btn" onClick={e=>{e.stopPropagation();setMenu(!menu)}}>⋮</button>
+      </div>
+      {menu&&(
+        <div className="vc-menu" ref={menuRef} onClick={e=>e.stopPropagation()}>
+          <button className="vc-mi" onClick={e=>act(e,"wl")}>
+            <span className="vc-mi-ico">{wl?"🕐":"🕐"}</span>{wl?"Remove from Watch Later":"Save to Watch Later"}
+          </button>
+          <button className="vc-mi" onClick={e=>act(e,"fav")}>
+            <span className="vc-mi-ico">♥</span>{fav?"Remove from Favorites":"Add to Favorites"}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── SKELETON ──────────────────────────────────────────────────────────────────
+function Skels({n=12}){
+  return<div className="skel-grid">{Array(n).fill(0).map((_,i)=>(
+    <div key={i}>
+      <div className="skel" style={{width:"100%",aspectRatio:"16/9",borderRadius:12}}/>
+      <div style={{display:"flex",gap:12,padding:"12px 8px"}}>
+        <div className="skel" style={{width:36,height:36,borderRadius:"50%",flexShrink:0}}/>
+        <div style={{flex:1}}>
+          <div className="skel" style={{height:14,marginBottom:8,borderRadius:4}}/>
+          <div className="skel" style={{height:13,width:"70%",marginBottom:6,borderRadius:4}}/>
+          <div className="skel" style={{height:13,width:"50%",borderRadius:4}}/>
+        </div>
+      </div>
+    </div>
+  ))}</div>;
+}
+
+// ── API BANNER ────────────────────────────────────────────────────────────────
+function ApiBanner({cfg,onSave}){
+  const [val,setVal]=useState("");
+  if(cfg.apiKey)return(
+    <div className="api-banner ok" style={{margin:"0 0 0"}}>
+      <span style={{fontSize:18}}>✅</span>
+      <div><div className="api-b-title ok">YouTube API Connected</div><div className="api-b-sub">Full search & live trending from India enabled</div></div>
+    </div>
+  );
+  return(
+    <div className="api-banner" style={{margin:"0 0 0"}}>
+      <span style={{fontSize:18}}>🔑</span>
+      <div style={{flex:"0 0 auto"}}><div className="api-b-title">Optional: Add API Key for Full Search</div><div className="api-b-sub">Works without it — curated videos play fine</div></div>
+      <div className="api-b-inp">
+        <input placeholder="YouTube Data API v3 key..." value={val} onChange={e=>setVal(e.target.value)} onKeyDown={e=>e.key==="Enter"&&val.trim()&&onSave(val.trim())}/>
+        <button className="api-b-btn" onClick={()=>val.trim()&&onSave(val.trim())}>Activate</button>
+      </div>
+    </div>
+  );
+}
+
+// ── HOME PAGE ─────────────────────────────────────────────────────────────────
+function HomePage({onPlay,st,initChip}){
+  const [videos,setVideos]=useState([]);
+  const [loading,setLoading]=useState(true);
+  const [error,setError]=useState("");
+  const [chip,setChip]=useState(initChip||"All");
+
+  const filterCurated=useCallback(c=>{
+    if(c==="All")return CURATED_HOME;
+    const q=c.toLowerCase();
+    const map={music:["music","song","official","remix","audio"],gaming:["game","gta","minecraft","gaming","trailer","cyberpunk"],science:["science","universe","fermi","kurzgesagt","space","quantum","brain"],movies:["movie","film","trailer","official trailer"],india:["india","hindi","bollywood"],comedy:["funny","comedy","laugh"],trending:CURATED_HOME.map(v=>v.videoId),live:[]};
+    const keys=map[q]||[q];
+    return CURATED_HOME.filter(v=>keys.some(k=>v.title.toLowerCase().includes(k)||v.author.toLowerCase().includes(k)));
+  },[]);
+
+  const load=useCallback(async(c=chip)=>{
+    setLoading(true);setError("");
+    if(st.cfg.apiKey&&c==="All"){
+      try{setVideos(await ytTrend(st.cfg.apiKey));setLoading(false);return;}
+      catch(e){console.warn("API error, falling back to curated:",e.message);}
+    }
+    const filtered=filterCurated(c);
+    setVideos(filtered.length?filtered:CURATED_HOME);
+    setLoading(false);
+  },[st.cfg.apiKey,filterCurated]);
+
+  useEffect(()=>{load(chip);},[st.cfg.apiKey]);
+
+  const handleChip=c=>{setChip(c);load(c);};
+
+  return(
+    <div>
+      <div style={{padding:"12px 24px 0"}}>
+        <ApiBanner cfg={st.cfg} onSave={k=>st.updCfg({apiKey:k})}/>
+      </div>
+      <div className="chips-bar">
+        {SUGGESTION_CHIPS.map(c=>(
+          <button key={c} className={`chip${chip===c?" act":""}`} onClick={()=>handleChip(c)}>{c}</button>
+        ))}
+      </div>
+      {loading?<Skels/>:error?(
+        <div className="err-box"><div className="err-ico">⚠️</div><div className="err-msg">{error}</div><button className="err-btn" onClick={()=>load()}>Retry</button></div>
+      ):(
+        <div className="vgrid">
+          {videos.map((v,i)=><div key={v.videoId||i} style={{animationDelay:`${i*.03}s`}}><VCard v={v} onPlay={onPlay} st={st}/></div>)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── SEARCH PAGE ───────────────────────────────────────────────────────────────
+function SearchPage({query,onPlay,st}){
+  const [res,setRes]=useState([]);
+  const [loading,setLoading]=useState(false);
+  const [error,setError]=useState("");
+  const [next,setNext]=useState(null);
+  const [layout,setLayout]=useState("grid");
+
+  useEffect(()=>{
+    if(!query)return;
+    setLoading(true);setError("");setRes([]);setNext(null);
+    if(!st.cfg.apiKey){
+      const q=query.toLowerCase();
+      const seen=new Set();
+      const found=CURATED_HOME.filter(v=>{
+        if(seen.has(v.videoId))return false;seen.add(v.videoId);
+        return v.title.toLowerCase().includes(q)||v.author.toLowerCase().includes(q);
+      });
+      setRes(found.length?found:CURATED_HOME.slice(0,12));
+      setLoading(false);return;
+    }
+    ytSearch(query,st.cfg.apiKey).then(({videos,next:n})=>{setRes(videos);setNext(n);setLoading(false);}).catch(e=>{setError("Search failed: "+e.message);setLoading(false);});
+  },[query,st.cfg.apiKey]);
+
+  const more=()=>{if(!next||!st.cfg.apiKey)return;ytSearch(query,st.cfg.apiKey,next).then(({videos,next:n})=>{setRes(r=>[...r,...videos]);setNext(n);}).catch(()=>{});};
+
+  return(
+    <div>
+      <div className="search-hero" style={{padding:"12px 24px",borderBottom:"1px solid var(--border)",marginBottom:8}}>
+        <span>Search results for <strong>"{query}"</strong></span>
+        {!loading&&<span style={{marginLeft:8,fontSize:12,color:"var(--t3)"}}>About {res.length}{next?"+":""} results</span>}
+        <div className="search-sort">
+          <button className={`sort-btn${layout==="grid"?" act":""}`} onClick={()=>setLayout("grid")}>⊞ Grid</button>
+          <button className={`sort-btn${layout==="list"?" act":""}`} onClick={()=>setLayout("list")}>☰ List</button>
+        </div>
+      </div>
+      {loading?<Skels n={8}/>:error?(
+        <div className="err-box"><div className="err-ico">⚠️</div><div className="err-msg">{error}</div></div>
+      ):res.length===0?(
+        <div className="err-box"><div className="err-ico">🔍</div><div className="err-msg">No results for "{query}"</div></div>
+      ):(
+        <>
+          <div className={layout==="grid"?"vgrid":"vlist"}>
+            {res.filter(v=>v?.videoId).map((v,i)=><div key={v.videoId} style={{animationDelay:`${Math.min(i,20)*.025}s`}}><VCard v={v} onPlay={onPlay} layout={layout} st={st}/></div>)}
+          </div>
+          {next&&<div className="load-more"><button onClick={more}>Show more</button></div>}
+        </>
+      )}
+    </div>
+  );
+}
+
+// ── WATCH PAGE ────────────────────────────────────────────────────────────────
+function WatchPage({video,onPlay,st}){
+  const [descOpen,setDescOpen]=useState(false);
+  const fav=st.isFav(video.videoId),wl=st.isWL(video.videoId);
+
+  const related=useMemo(()=>{
+    const seen=new Set([video.videoId]);
+    return CURATED_HOME.filter(v=>{if(seen.has(v.videoId))return false;seen.add(v.videoId);return true;}).slice(0,20);
+  },[video.videoId]);
+
+  useEffect(()=>{
+    st.addHist({videoId:video.videoId,title:video.title,author:video.author,viewCount:video.viewCount,lengthSeconds:video.lengthSeconds,published:video.published,videoThumbnails:video.videoThumbnails});
+  },[video.videoId]);
+
+  return(
+    <div className="watch">
+      <div className="watch-main">
+        <div className="watch-player">
+          <iframe key={video.videoId} src={YTE(video.videoId)} title={video.title}
+            allow="accelerometer;autoplay;clipboard-write;encrypted-media;gyroscope;picture-in-picture;web-share" allowFullScreen/>
+        </div>
+
+        <div style={{padding:"0 4px"}}>
+          <h1 className="watch-title">{video.title}</h1>
+          <div className="watch-row">
+            <div className="watch-info-left">
+              {video.viewCount>0&&<span>{fv(video.viewCount)} views</span>}
+              {video.viewCount>0&&video.published>0&&<span> · </span>}
+              {video.published>0&&<span>{ago(video.published)}</span>}
+            </div>
+            <div className="watch-btns">
+              <button className={`w-btn${fav?" on":""}`} onClick={()=>st.togFav(video)}>
+                {fav?"♥ Liked":"♡ Like"}
+              </button>
+              <button className={`w-btn${wl?" on":""}`} onClick={()=>st.togWL(video)}>
+                {wl?"🕐 Saved":"+ Save"}
+              </button>
+              <a className="w-btn" href={YTW(video.videoId)} target="_blank" rel="noreferrer">↗ Share</a>
+            </div>
+          </div>
+
+          <div className="watch-ch-row">
+            <div className="watch-ch-av" style={{background:avColor(video.author)}}>
+              {(video.author||"?")[0].toUpperCase()}
+            </div>
+            <div style={{flex:1}}>
+              <div className="watch-ch-name">{video.author}</div>
+              <div className="watch-ch-sub">YouTube Channel</div>
+            </div>
+            <a href={YTW(video.videoId)} target="_blank" rel="noreferrer"
+              style={{padding:"0 16px",height:36,background:"var(--t1)",color:"var(--bg)",borderRadius:18,fontWeight:500,fontSize:14,display:"flex",alignItems:"center"}}>
+              Subscribe
+            </a>
+          </div>
+
+          <div className="watch-desc-box" onClick={()=>setDescOpen(!descOpen)}>
+            <div className="watch-desc-short">
+              {video.viewCount>0&&<strong>{fv(video.viewCount)} views</strong>}
+              {video.published>0&&<span style={{marginLeft:8,color:"var(--t2)"}}>{ago(video.published)}</span>}
+            </div>
+            {descOpen&&video.description&&<div className="watch-desc-full">{video.description}</div>}
+            <div className="watch-desc-tog" style={{color:"var(--t1)"}}>{descOpen?"Show less":"...more"}</div>
+          </div>
+        </div>
+      </div>
+
+      {st.cfg.showRelated&&(
+        <aside className="watch-side">
+          <div className="watch-side-title">Up next</div>
+          <div className="watch-side-list">
+            {related.map((v,i)=><VCard key={v.videoId||i} v={v} onPlay={onPlay} layout="list" st={st}/>)}
+          </div>
+        </aside>
+      )}
+    </div>
+  );
+}
+
+// ── LIBRARY ───────────────────────────────────────────────────────────────────
+function LibEmpty({ico,title,sub}){
+  return<div className="lib-empty"><div className="lib-empty-ico">{ico}</div><div className="lib-empty-title">{title}</div><div className="lib-empty-sub">{sub}</div></div>;
+}
+function HistPage({onPlay,st}){
+  return<div className="lib-pg">
+    <div className="lib-hd"><div className="lib-title">Watch history</div><span className="lib-cnt">{st.hist.length}</span>{st.hist.length>0&&<button className="lib-btn danger" onClick={st.clrHist}>Clear all history</button>}</div>
+    {st.hist.length===0?<LibEmpty ico="📺" title="No watch history" sub="Videos you watch will show up here"/>:
+      <div className="vlist">{st.hist.map(v=><div key={v.videoId} className="lib-row"><VCard v={v} onPlay={onPlay} layout="list" st={st}/><button className="lib-rm" title="Remove" onClick={()=>st.rmHist(v.videoId)}>✕</button></div>)}</div>}
+  </div>;
+}
+function FavsPage({onPlay,st}){
+  return<div className="lib-pg">
+    <div className="lib-hd"><div className="lib-title">Liked videos</div><span className="lib-cnt">{st.favs.length}</span></div>
+    {st.favs.length===0?<LibEmpty ico="♥" title="No liked videos" sub="Like videos to find them later"/>:
+      <div className="vgrid">{st.favs.map((v,i)=><div key={v.videoId} style={{animationDelay:`${i*.03}s`}}><VCard v={v} onPlay={onPlay} st={st}/></div>)}</div>}
+  </div>;
+}
+function WLPage({onPlay,st}){
+  return<div className="lib-pg">
+    <div className="lib-hd"><div className="lib-title">Watch later</div><span className="lib-cnt">{st.wl.length}</span></div>
+    {st.wl.length===0?<LibEmpty ico="🕐" title="No videos saved" sub="Save videos to watch later"/>:
+      <div className="vlist">{st.wl.map(v=><div key={v.videoId} className="lib-row"><VCard v={v} onPlay={onPlay} layout="list" st={st}/><button className="lib-rm" onClick={()=>st.togWL(v)}>✕</button></div>)}</div>}
+  </div>;
+}
+function PLPage({onPlay,st}){
+  const [nm,setNm]=useState("");const [show,setShow]=useState(false);const [open,setOpen]=useState(null);
+  if(open){
+    const pl=st.pls.find(p=>p.id===open);
+    if(pl)return<div className="lib-pg">
+      <div className="lib-hd"><button className="pl-back" onClick={()=>setOpen(null)}>← Playlists</button><div className="lib-title">{pl.name}</div><span className="lib-cnt">{pl.videos.length}</span></div>
+      {pl.videos.length===0?<LibEmpty ico="📋" title="This playlist is empty" sub="Save videos to this playlist"/>:
+        <div className="vgrid">{pl.videos.map((v,i)=><div key={v.videoId} style={{animationDelay:`${i*.03}s`}}><VCard v={v} onPlay={onPlay} st={st}/></div>)}</div>}
+    </div>;
+  }
+  return<div className="lib-pg">
+    <div className="lib-hd"><div className="lib-title">Playlists</div><button className="lib-btn" onClick={()=>setShow(true)}>＋ New playlist</button></div>
+    {show&&<div className="new-pl">
+      <input autoFocus placeholder="Playlist title" value={nm} onChange={e=>setNm(e.target.value)} onKeyDown={e=>e.key==="Enter"&&nm.trim()&&(st.mkPL(nm.trim()),setNm(""),setShow(false))}/>
+      <button className="lib-btn" style={{background:"#3ea6ff",color:"#0f0f0f"}} onClick={()=>{if(nm.trim()){st.mkPL(nm.trim());setNm("");setShow(false);}}}>Create</button>
+      <button className="lib-btn" onClick={()=>setShow(false)}>Cancel</button>
+    </div>}
+    {st.pls.length===0&&!show?<LibEmpty ico="📋" title="No playlists" sub="Create playlists to organize your videos"/>:
+      <div className="pl-grid">{st.pls.map((pl,i)=><div key={pl.id} className="pl-card" style={{animationDelay:`${i*.04}s`}} onClick={()=>setOpen(pl.id)}>
+        <div className="pl-thumb">{pl.videos[0]?.videoThumbnails?.[0]?.url?<img src={pl.videos[0].videoThumbnails[0].url} alt=""/>:"🎬"}<span className="pl-cnt">{pl.videos.length}</span></div>
+        <div className="pl-info"><div className="pl-name">{pl.name}</div><div className="pl-sub">{pl.videos.length} videos</div></div>
+        <button className="pl-rm" onClick={e=>{e.stopPropagation();st.rmPL(pl.id);}}>✕</button>
+      </div>)}</div>}
+  </div>;
+}
+
+// ── SETTINGS ──────────────────────────────────────────────────────────────────
+function SetPage({st}){
+  const [api,setApi]=useState(st.cfg.apiKey||"");const [saved,setSaved]=useState(false);
+  const upd=p=>{st.updCfg(p);setSaved(true);setTimeout(()=>setSaved(false),2000);};
+  return<div className="set-pg">
+    <div style={{display:"flex",alignItems:"center",marginBottom:24}}>
+      <div className="set-title" style={{margin:0}}>Settings</div>
+      {saved&&<span className="saved-toast">✓ Saved</span>}
+    </div>
+    <div className="set-blk">
+      <div className="set-blk-title">🔑 YouTube API Key <span style={{fontSize:12,fontWeight:400,color:"var(--t2)"}}>(Optional)</span></div>
+      <div className="set-blk-desc">Without API key, curated videos play perfectly. With a key, you get full search + live trending for India.</div>
+      <div className="set-api-row">
+        <input placeholder="AIza... (YouTube Data API v3)" value={api} onChange={e=>setApi(e.target.value)} onKeyDown={e=>e.key==="Enter"&&upd({apiKey:api.trim()})}/>
+        <button className="set-api-btn" onClick={()=>upd({apiKey:api.trim()})}>{st.cfg.apiKey?"Update":"Save"}</button>
+      </div>
+      {st.cfg.apiKey&&<button style={{fontSize:13,color:"#f28b82",marginBottom:12}} onClick={()=>{setApi("");upd({apiKey:""});}}>Remove key</button>}
+      <div className="set-hint">
+        <strong style={{color:"var(--t2)"}}>How to get a free key:</strong><br/>
+        1. Go to <a href="https://console.cloud.google.com" target="_blank">console.cloud.google.com</a><br/>
+        2. New Project → Enable "YouTube Data API v3"<br/>
+        3. Credentials → Create API Key → paste above<br/>
+        Free quota: 10,000 units/day
+      </div>
+    </div>
+    <div className="set-blk">
+      <div className="set-blk-title">⚡ Playback</div>
+      {[["Autoplay","Auto-play next video","autoplay"],["Show related videos","Show sidebar on watch page","showRelated"]].map(([l,s,k])=>(
+        <div key={k} className="tog-row" onClick={()=>upd({[k]:!st.cfg[k]})}>
+          <div><div className="tog-lbl">{l}</div><div className="tog-sub">{s}</div></div>
+          <div className={`toggle${st.cfg[k]?" on":""}`}><div className="tok"/></div>
+        </div>
+      ))}
+    </div>
+    <div className="set-blk">
+      <div className="set-blk-title">🔒 Privacy</div>
+      {[["YouTube embed only","Videos use YouTube's own player — no third-party proxies that can fail."],["No tracking or ads code","Zero analytics, zero ad scripts in this app."],["Your data stays local","History, likes, playlists stored only in your browser."]].map(([t,d])=>(
+        <div key={t} className="priv-item"><span className="priv-ico">✓</span><div><div className="priv-name">{t}</div><div className="priv-sub">{d}</div></div></div>
+      ))}
+      <button className="danger-btn" onClick={()=>window.confirm("Clear all watch history?")&&st.clrHist()}>Clear watch history</button>
+    </div>
+    <div style={{textAlign:"center",padding:"16px 0",fontSize:13,color:"var(--t3)"}}>StreamVoid v2.0 · Made for India 🇮🇳 · No ads</div>
+  </div>;
+}
+
+// ── SIDEBAR ───────────────────────────────────────────────────────────────────
+function Sidebar({page,nav,st,open,setOpen,mini}){
+  return(
+    <aside className={`sidebar${mini?" mini":""}${!open&&!mini?" closed":""}`}>
+      <div className="s-group">
+        <button className={`s-item${page==="home"?" act":""}`} onClick={()=>nav("home")}><span className="s-ico">🏠</span><span className="s-lbl">Home</span></button>
+        <button className="s-item" onClick={()=>nav("search","Shorts")}><span className="s-ico">📱</span><span className="s-lbl">Shorts</span></button>
+        <button className={`s-item${page==="trending"?" act":""}`} onClick={()=>nav("trending")}><span className="s-ico">🔥</span><span className="s-lbl">Trending</span></button>
+      </div>
+      <div className="s-divider"/>
+      <div className="s-group">
+        <div className="s-label">You</div>
+        <button className={`s-item${page==="history"?" act":""}`} onClick={()=>nav("history")}><span className="s-ico">🕐</span><span className="s-lbl">History</span>{st.hist.length>0&&<span className="s-cnt">{st.hist.length}</span>}</button>
+        <button className={`s-item${page==="playlists"?" act":""}`} onClick={()=>nav("playlists")}><span className="s-ico">📋</span><span className="s-lbl">Playlists</span></button>
+        <button className={`s-item${page==="favorites"?" act":""}`} onClick={()=>nav("favorites")}><span className="s-ico">♥</span><span className="s-lbl">Liked Videos</span>{st.favs.length>0&&<span className="s-cnt">{st.favs.length}</span>}</button>
+        <button className={`s-item${page==="watchlater"?" act":""}`} onClick={()=>nav("watchlater")}><span className="s-ico">🕓</span><span className="s-lbl">Watch Later</span>{st.wl.length>0&&<span className="s-cnt">{st.wl.length}</span>}</button>
+      </div>
+      <div className="s-divider"/>
+      <div className="s-group">
+        <div className="s-label">Explore</div>
+        {[["🎵","Music"],["🎮","Gaming"],["📰","News"],["🏏","Cricket"],["🎬","Movies"],["🎙","Podcasts"]].map(([ico,lbl])=>(
+          <button key={lbl} className="s-item" onClick={()=>nav("search",lbl.toLowerCase())}><span className="s-ico">{ico}</span><span className="s-lbl">{lbl}</span></button>
+        ))}
+      </div>
+      <div className="s-divider"/>
+      <div className="s-group">
+        <button className={`s-item${page==="settings"?" act":""}`} onClick={()=>nav("settings")}><span className="s-ico">⚙️</span><span className="s-lbl">Settings</span></button>
+      </div>
+    </aside>
+  );
+}
+
+// ── TOPBAR ────────────────────────────────────────────────────────────────────
+function Topbar({onSearch,onNav,open,setOpen}){
+  const [q,setQ]=useState("");const [foc,setFoc]=useState(false);const ref=useRef();
+  const go=e=>{e?.preventDefault();if(q.trim()){onSearch(q.trim());ref.current?.blur();}};
+  return(
+    <header className="topbar">
+      <div className="tb-left">
+        <button className="tb-menu-btn" onClick={()=>setOpen(!open)}>☰</button>
+        <button className="tb-logo" onClick={()=>onNav("home")}>
+          <span className="tb-logo-icon">▶</span>
+          <span className="tb-logo-name">StreamVoid</span>
+          <span className="tb-logo-in">IN</span>
+        </button>
+      </div>
+      <div className="tb-search-wrap">
+        <form className={`tb-search${foc?" focused":""}`} onSubmit={go} style={{flex:1,display:"flex",alignItems:"center"}}>
+          {q&&<button type="button" className="tb-clr-btn" onClick={()=>{setQ("");ref.current?.focus();}}>✕</button>}
+          <input ref={ref} placeholder="Search" value={q} onChange={e=>setQ(e.target.value)} onFocus={()=>setFoc(true)} onBlur={()=>setFoc(false)} style={{flex:1,background:"none",border:"none",outline:"none",color:"var(--t1)",fontSize:16,padding:"0 8px",minWidth:0}}/>
+        </form>
+        <button className="tb-go" onClick={go}>🔍</button>
+      </div>
+      <div className="tb-right">
+        <button className="tb-icon-btn" title="Notifications">🔔</button>
+        <button className="tb-icon-btn" title="Account" style={{background:"var(--red)",color:"#fff",fontSize:14,fontWeight:700}}>U</button>
+      </div>
+    </header>
+  );
+}
+
+// ── ROOT APP ──────────────────────────────────────────────────────────────────
+function App(){
+  const [page,setPage]=useState("home");
+  const [searchQ,setSearchQ]=useState("");
+  const [curVid,setCurVid]=useState(null);
+  const [sidebarOpen,setSidebarOpen]=useState(true);
+  const [isMini,setIsMini]=useState(false);
+  const st=useStore();
+
+  useEffect(()=>{
+    const check=()=>{
+      const w=window.innerWidth;
+      if(w<=600){setSidebarOpen(false);setIsMini(false);}
+      else if(w<=900){setSidebarOpen(true);setIsMini(true);}
+      else{setSidebarOpen(true);setIsMini(false);}
+    };
+    check();window.addEventListener("resize",check);return()=>window.removeEventListener("resize",check);
+  },[]);
+
+  const nav=(t,q="")=>{
+    if(t==="search"&&q){setSearchQ(q);setPage("search");}
+    else setPage(t);
+    window.scrollTo({top:0,behavior:"smooth"});
+  };
+  const onSearch=q=>{setSearchQ(q);setPage("search");window.scrollTo({top:0});};
+  const onPlay=v=>{setCurVid(v);setPage("watch");window.scrollTo({top:0});};
+
+  const mainClass=`main${isMini?" mini-margin":""}${!sidebarOpen&&!isMini?" no-margin":""}`;
+
+  return(
+    <div className="layout">
+      <Topbar onSearch={onSearch} onNav={nav} open={sidebarOpen} setOpen={setSidebarOpen}/>
+      <Sidebar page={page} nav={nav} st={st} open={sidebarOpen} setOpen={setSidebarOpen} mini={isMini}/>
+      <div className={mainClass}>
+        <div className="main-wrap">
+          {page==="home"      &&<HomePage onPlay={onPlay} st={st} initChip="All"/>}
+          {page==="trending"  &&<HomePage onPlay={onPlay} st={st} initChip="Trending"/>}
+          {page==="search"    &&<SearchPage query={searchQ} onPlay={onPlay} st={st}/>}
+          {page==="watch"     &&curVid&&<WatchPage video={curVid} onPlay={onPlay} st={st}/>}
+          {page==="history"   &&<HistPage onPlay={onPlay} st={st}/>}
+          {page==="favorites" &&<FavsPage onPlay={onPlay} st={st}/>}
+          {page==="watchlater"&&<WLPage onPlay={onPlay} st={st}/>}
+          {page==="playlists" &&<PLPage onPlay={onPlay} st={st}/>}
+          {page==="settings"  &&<SetPage st={st}/>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
