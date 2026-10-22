@@ -466,8 +466,58 @@ const normStream=(api,d,id)=>({
   api,base:"",
 });
 
+// ── OPTIONAL: self-hosted yt-dlp backend (server/app.py) ─────────────────────
+// Same-origin by default. Static hosting pe ye probe fail hota hai (silently)
+// aur app public Invidious/Piped instances pe chalta rehta hai.
+const beBase=cfg=>String((cfg&&cfg.apiUrl)||"").trim().replace(/\/+$/,"");
+let BE_CACHE={ts:0,base:null,ok:false,info:null};
+let BE_LIST_FAIL=0; // cooldown when backend list endpoints error out
+const beUrl=(cfg,path)=>beBase(cfg)+path;
+async function ensureBackend(cfg,force){
+  if(cfg&&cfg.useBackend===false)return null;
+  const base=beBase(cfg);
+  if(!force&&BE_CACHE.base===base&&Date.now()-BE_CACHE.ts<60000)return BE_CACHE.ok?BE_CACHE.info:null;
+  try{
+    const ac=new AbortController();const t=setTimeout(()=>ac.abort(),3500);
+    const r=await fetch(base+"/api/health",{signal:ac.signal,headers:{Accept:"application/json"}});
+    clearTimeout(t);
+    if(!r.ok)throw new Error("HTTP "+r.status);
+    const d=await r.json();
+    const ok=!!(d&&d.ok);
+    BE_CACHE={ts:Date.now(),base,ok,info:ok?d:null};
+    return ok?d:null;
+  }catch(e){
+    BE_CACHE={ts:Date.now(),base,ok:false,info:null};
+    return null;
+  }
+}
+const beAbs=(cfg,u)=>!u?"":(/^https?:\/\//i.test(u)?u:beBase(cfg)+u);
+const beItem=x=>({videoId:x.videoId,title:x.title||"",author:x.author||"",authorId:x.authorId||"",
+  viewCount:x.viewCount||0,lengthSeconds:x.lengthSeconds||0,published:x.published||0,
+  videoThumbnails:[{url:x.thumbnail||YTT(x.videoId),quality:"medium"}],
+  description:x.description||""});
+
+async function beStream(cfg,id){
+  const d=await fetchJson(beUrl(cfg,`/api/stream/${encodeURIComponent(id)}`),20000);
+  if(!d)throw new Error("empty response");
+  const mp4=d.url?{url:beAbs(cfg,d.url),quality:d.quality||"mp4"}:null;
+  const hls=d.hls?beAbs(cfg,d.hls):"";
+  if(!mp4&&!hls)throw new Error(d.error||"backend returned no playable stream");
+  return{
+    videoId:id,title:d.title||"",description:d.description||"",author:d.author||"",
+    authorId:d.authorId||"",viewCount:d.viewCount||0,likes:d.likes||0,published:d.published||0,
+    lengthSeconds:d.lengthSeconds||0,live:!!d.live,mp4,hls,
+    related:(d.related||[]).map(beItem),
+    api:"ytdlp",base:d.source||beBase(cfg)||location.host,
+  };
+}
+
 // Try every instance until one returns something actually playable
 async function getStreams(id,cfg){
+  if(await ensureBackend(cfg)){
+    try{return await beStream(cfg,id);}
+    catch(e){console.warn("yt-dlp backend stream failed:",e.message);}
+  }
   const srcs=srcList(cfg);
   let lastErr=null,sandbox=null,tried=0;
   for(const s of srcs){
@@ -511,10 +561,22 @@ async function backendList(cfg,build,pick,limit=6,nextOf){
 }
 
 const trending=async(cfg,filter)=>{
+  if(Date.now()>BE_LIST_FAIL&&await ensureBackend(cfg)){
+    try{
+      const d=await fetchJson(beUrl(cfg,`/api/trending?region=${encodeURIComponent(cfg.region||"IN")}&filter=${encodeURIComponent(filter||"all")}`),15000);
+      if(d&&d.items&&d.items.length)return{list:d.items.map(beItem),base:d.source||"yt-dlp backend",api:"ytdlp"};
+    }catch(e){console.warn("yt-dlp backend trending failed:",e.message);BE_LIST_FAIL=Date.now()+45000;}
+  }
   const {list,base,api}=await backendList(cfg,(A,b)=>A.trending(b,filter,cfg.region||"IN"),l=>l);
   return{list,base,api};
 };
 const searchVideos=async(cfg,q,page=1,token="")=>{
+  if(Date.now()>BE_LIST_FAIL&&await ensureBackend(cfg)){
+    try{
+      const d=await fetchJson(beUrl(cfg,`/api/search?q=${encodeURIComponent(q)}&limit=24${page>1?`&page=${page}`:""}`),20000);
+      if(d&&d.items&&d.items.length)return{list:d.items.map(beItem),base:d.source||"yt-dlp backend",api:"ytdlp",next:d.hasMore?page+1:null};
+    }catch(e){console.warn("yt-dlp backend search failed:",e.message);BE_LIST_FAIL=Date.now()+45000;}
+  }
   const {list,base,api,next}=await backendList(cfg,(A,b)=>A.search(b,q,page,token),l=>l,6,
     (a,d)=>a==="piped"?(d.nextpage||null):(page+1));
   return{list,base,api,next};
@@ -526,7 +588,7 @@ function useStore(){
   const [favs,setFavs]=useState(()=>ls("ytc_f",[]));
   const [wl,setWl]=useState(()=>ls("ytc_w",[]));
   const [pls,setPls]=useState(()=>ls("ytc_p",[]));
-  const DEFAULT_CFG={backend:"invidious",proxyStreams:true,sources:[],autoplay:true,showRelated:true,region:"IN"};
+  const DEFAULT_CFG={backend:"invidious",proxyStreams:true,sources:[],apiUrl:"",useBackend:true,autoplay:true,showRelated:true,region:"IN"};
   const [cfg,setCfg]=useState(()=>({...DEFAULT_CFG,...ls("ytc_c",{})}));
   const addHist=v=>{const h=[v,...hist.filter(x=>x.videoId!==v.videoId)].slice(0,300);setHist(h);ss("ytc_h",h);};
   const clrHist=()=>{setHist([]);ss("ytc_h",[]);};
@@ -614,15 +676,16 @@ function Skels({n=12}){
 }
 
 // ── BACKEND BAR ───────────────────────────────────────────────────────────────
-function BackendBar({cfg,src,onAdd}){
+function BackendBar({cfg,src,onAdd,be}){
   const [val,setVal]=useState("");
   const add=()=>{const v=val.trim();if(!v)return;onAdd(v);setVal("");};
+  const label=x=>x==="ytdlp"?"yt-dlp backend":x==="piped"?"Piped":"Invidious";
   return(
     <div className="api-banner">
-      <span style={{fontSize:18}}>📡</span>
+      <span style={{fontSize:18}}>{be?"🖥️":"📡"}</span>
       <div style={{flex:"1 1 260px",minWidth:0}}>
-        <div className="api-b-title">{src?`Live via ${String(src.base||"").replace(/^https?:\/\//,"")}`:"Open instances — no API key"}</div>
-        <div className="api-b-sub">Streams fetched from public Invidious / Piped mirrors · no Google login, no key{src&&src.api?` · ${src.api==="piped"?"Piped":"Invidious"}`:""}</div>
+        <div className="api-b-title">{src?`Live via ${src.api==="ytdlp"?"your yt-dlp backend":String(src.base||"").replace(/^https?:\/\//,"")}`:be?"yt-dlp backend connected":"Open instances — no API key"}</div>
+        <div className="api-b-sub">{be?`yt-dlp ${be.ytdlp||""} · search + streams server-side · no API key`: "Public Invidious / Piped mirrors · no Google login, no key"}{src&&src.api?` · ${label(src.api)}`:" · probing yt-dlp backend…"}</div>
       </div>
       <div className="api-b-inp">
         <input placeholder="Add your own instance  https://…" value={val} onChange={e=>setVal(e.target.value)}
@@ -641,6 +704,13 @@ function HomePage({onPlay,st,initChip}){
   const [src,setSrc]=useState(null);
   const [chip,setChip]=useState(initChip||"All");
   const [nonce,setNonce]=useState(0);
+  const [be,setBe]=useState(null);
+
+  useEffect(()=>{
+    let dead=false;
+    ensureBackend(st.cfg,true).then(x=>{if(!dead)setBe(x);});
+    return()=>{dead=true;};
+  },[st.cfg.apiUrl,st.cfg.useBackend]);
 
   const filterCurated=useCallback(c=>{
     if(c==="All")return CURATED_HOME;
@@ -673,14 +743,14 @@ function HomePage({onPlay,st,initChip}){
       }
     })();
     return()=>{dead=true;};
-  },[chip,nonce,st.cfg.backend,st.cfg.proxyStreams,(st.cfg.sources||[]).join(",")]);
+  },[chip,nonce,st.cfg.backend,st.cfg.proxyStreams,(st.cfg.sources||[]).join(","),st.cfg.apiUrl,st.cfg.useBackend]);
 
   const addSrc=url=>{st.updCfg({sources:[...(st.cfg.sources||[]),url]});setNonce(n=>n+1);};
 
   return(
     <div>
       <div style={{padding:"12px 24px 0"}}>
-        <BackendBar cfg={st.cfg} src={src} onAdd={addSrc}/>
+        <BackendBar cfg={st.cfg} src={src} onAdd={addSrc} be={be}/>
       </div>
       <div className="chips-bar">
         {SUGGESTION_CHIPS.map(c=>(
@@ -727,7 +797,7 @@ function SearchPage({query,onPlay,st}){
       setRes(f);setError(e.message);setLoading(false);
     });
     return()=>{dead=true;};
-  },[query,st.cfg.backend,st.cfg.proxyStreams,(st.cfg.sources||[]).join(",")]);
+  },[query,st.cfg.backend,st.cfg.proxyStreams,(st.cfg.sources||[]).join(","),st.cfg.apiUrl,st.cfg.useBackend]);
 
   const loadMore=async()=>{
     if(!next||more)return;
@@ -884,7 +954,7 @@ function SrcLine({info}){
     <div className="pl-srcbar">
       <span className="pl-src ok">● playing</span>
       <span className="pl-src">via {String(info.base||"").replace(/^https?:\/\//,"")}</span>
-      <span className="pl-src">{info.api==="piped"?"Piped":"Invidious"}</span>
+      <span className="pl-src">{info.api==="ytdlp"?"yt-dlp":info.api==="piped"?"Piped":"Invidious"}</span>
       {info.mp4&&info.mp4.quality&&<span className="pl-src">{info.mp4.quality}</span>}
       {info.hls&&!info.mp4&&<span className="pl-src">HLS</span>}
       {info.live&&<span className="pl-src ok">LIVE</span>}
@@ -1033,6 +1103,13 @@ function PLPage({onPlay,st}){
 function SetPage({st}){
   const [saved,setSaved]=useState(false);
   const [inst,setInst]=useState("");
+  const [apiUrl,setApiUrl]=useState(st.cfg.apiUrl||"");
+  const [beStat,setBeStat]=useState(null); // null | "checking" | {..} | false
+  const testBackend=async()=>{
+    setBeStat("checking");
+    const r=await ensureBackend({...st.cfg,apiUrl:apiUrl.trim()},true);
+    setBeStat(r||false);
+  };
   const upd=p=>{st.updCfg(p);setSaved(true);setTimeout(()=>setSaved(false),2000);};
   const sources=st.cfg.sources||[];
   const addInst=()=>{const v=inst.trim().replace(/\/+$/,"");if(!v)return;upd({sources:[...sources,v]});setInst("");};
@@ -1087,6 +1164,26 @@ function SetPage({st}){
         Invidious: <a href="https://api.invidious.io/instances.json" target="_blank" rel="noreferrer">api.invidious.io</a><br/>
         Piped: <a href="https://github.com/TeamPiped/Piped/wiki/Instances" target="_blank" rel="noreferrer">Piped instances wiki</a><br/>
         Host URL daalein (https://…), app automatically Invidious/Piped API detect kar leta hai.
+      </div>
+    </div>
+
+    <div className="set-blk">
+      <div className="set-blk-title">🖥️ yt-dlp backend <span style={{fontSize:12,fontWeight:400,color:"var(--t2)"}}>(optional — sabse reliable)</span></div>
+      <div className="set-blk-desc">Browser me yt-dlp nahi chal sakta (Python + YouTube ka CORS block). Repo me <code>server/app.py</code> hai — use run karo, phir search aur stream URLs server se aayenge. Static host pe ye silently skip ho jata hai.</div>
+      <div className="set-api-row">
+        <input placeholder="Backend URL (blank = same origin)" value={apiUrl} onChange={e=>setApiUrl(e.target.value)}
+          onKeyDown={e=>e.key==="Enter"&&(upd({apiUrl:apiUrl.trim()}),testBackend())}/>
+        <button className="set-api-btn" onClick={()=>{upd({apiUrl:apiUrl.trim()});testBackend();}}>Test</button>
+      </div>
+      <div style={{fontSize:12.5,marginBottom:10,color:"var(--t2)"}}>
+        {beStat===null&&"Status: not checked"}
+        {beStat==="checking"&&"Status: checking…"}
+        {beStat===false&&<span style={{color:"#f28b82"}}>Status: not reachable — public mirrors use honge</span>}
+        {beStat&&beStat!=="checking"&&<span style={{color:"#7ee787"}}>Status: connected (yt-dlp {beStat.ytdlp||"?"})</span>}
+      </div>
+      <div className="tog-row" onClick={()=>upd({useBackend:!st.cfg.useBackend})}>
+        <div><div className="tog-lbl">Use yt-dlp backend when available</div><div className="tog-sub">Off = sirf public Invidious / Piped instances</div></div>
+        <div className={`toggle${st.cfg.useBackend?" on":""}`}><div className="tok"/></div>
       </div>
     </div>
 
