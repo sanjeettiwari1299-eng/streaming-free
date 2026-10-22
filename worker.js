@@ -59,6 +59,19 @@ const CLIENT_SPECS = [
   },
   { id: "mweb", num: "2", ctx: { clientName: "MWEB", clientVersion: "2.20241202.07.00", hl: "en", gl: "IN" }, ua: UA.web },
   { id: "web", num: "1", ctx: { clientName: "WEB", clientVersion: "2.20241202.07.00", hl: "en", gl: "IN" }, ua: UA.web },
+  {
+    id: "web_embedded",
+    num: "56",
+    ctx: { clientName: "WEB_EMBEDDED_PLAYER", clientVersion: "2.20241202.07.00", clientScreen: "EMBED", hl: "en", gl: "IN" },
+    ua: UA.web,
+  },
+  { id: "tvhtml5", num: "7", ctx: { clientName: "TVHTML5", clientVersion: "7.20250101.10.00", hl: "en", gl: "IN" }, ua: UA.web },
+  {
+    id: "android_testsuite",
+    num: "30",
+    ctx: { clientName: "ANDROID_TESTSUITE", clientVersion: "1.9", androidSdkVersion: 30, osName: "Android", osVersion: "11", hl: "en", gl: "IN" },
+    uaFn: UA_ANDROID,
+  },
 ];
 
 // Baked-in fallbacks — only used when discovery fails.
@@ -69,18 +82,23 @@ const FALLBACK_VERSIONS = {
   TVHTML5_SIMPLY_EMBEDDED_PLAYER: "2.0",
   MWEB: "2.20241202.07.00",
   WEB: "2.20241202.07.00",
+  WEB_EMBEDDED_PLAYER: "2.20241202.07.00",
+  TVHTML5: "7.20250101.10.00",
+  ANDROID_TESTSUITE: "1.9",
 };
 
 const VERSION_TTL = 6 * 3600; // seconds
 let VERSION_CACHE = { ts: 0, versions: null, source: {} };
 
 // Cache API with in-memory fallback (works without any binding).
-async function cachedText(tag, url, ttl, init) {
+async function cachedText(tag, url, ttl, init, noCache = false) {
   try {
     if (typeof caches !== "undefined" && caches.default) {
       const key = new Request(`https://sv.internal/${tag}`);
-      const hit = await caches.default.match(key);
-      if (hit) return await hit.text();
+      if (!noCache) {
+        const hit = await caches.default.match(key);
+        if (hit) return await hit.text();
+      }
       const r = await fetch(url, init);
       if (r.ok) {
         const text = await r.text();
@@ -123,9 +141,17 @@ async function discoverVersions(env, force = false) {
   const source = {};
 
   // 1) WEB/MWEB straight from YouTube's homepage payload
-  const html = await cachedText("yt_web", "https://www.youtube.com/", 12 * 3600, {
-    headers: { "user-agent": WEB_UA, "accept-language": "en-US,en;q=0.9" },
-  });
+  const html = await cachedText(
+    "yt_web",
+    "https://www.youtube.com/",
+    12 * 3600,
+    { headers: { "user-agent": WEB_UA, "accept-language": "en-US,en;q=0.9" } },
+    force
+  );
+  const visitorData =
+    (html.match(/"VISITOR_DATA"\s*:\s*"([^"]+)"/) || [])[1] ||
+    (env && env.VISITOR_DATA) ||
+    "";
   const webVer = (html.match(/"INNERTUBE_CLIENT_VERSION"\s*:\s*"([\d.]+)"/) || [])[1];
   if (webVer) {
     versions.WEB = webVer;
@@ -161,7 +187,14 @@ async function discoverVersions(env, force = false) {
     }
   }
 
-  VERSION_CACHE = { ts: now, versions, source };
+  // web-family clients track the WEB version unless yt-dlp knows better
+  for (const name of ["WEB_EMBEDDED_PLAYER", "MWEB", "TVHTML5"]) {
+    if (!source[name] && versions.WEB) {
+      versions[name] = versions[name] || versions.WEB;
+    }
+  }
+
+  VERSION_CACHE = { ts: now, versions, source, visitorData };
   return VERSION_CACHE;
 }
 
@@ -205,6 +238,56 @@ const jsonPost = async (url, body, headers) => {
   }
   return data;
 };
+
+// ── resilience layer ──────────────────────────────────────────────────────────
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const jitter = (ms) => Math.round(ms + Math.random() * ms * 0.5);
+
+// fetch with retries for transient failures (429 / 5xx / network) + per-try timeout
+async function fetchRetry(url, init = {}, { retries = 1, timeout = 9000 } = {}) {
+  let lastErr;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), timeout);
+    try {
+      const r = await fetch(url, { ...init, signal: ac.signal });
+      if (r.status === 429 || r.status >= 500) throw new Error("HTTP " + r.status);
+      return r;
+    } catch (e) {
+      lastErr = e;
+      if (attempt < retries) await sleep(jitter(150 * (attempt + 1)));
+    } finally {
+      clearTimeout(t);
+    }
+  }
+  throw lastErr || new Error("fetch failed");
+}
+
+// Per client+version circuit breaker: stop hammering a combination YouTube just rejected.
+const BREAKER = new Map(); // key -> { fails, until }
+const BREAKER_BASE = 40; // seconds
+const BREAKER_MAX = 5 * 60;
+const breakerKey = (c) => `${c.id}@${c.ctx.clientVersion}`;
+const breakerCooling = (c) => {
+  const b = BREAKER.get(breakerKey(c));
+  return !!(b && b.until > Date.now() / 1000);
+};
+const noteOk = (c) => BREAKER.delete(breakerKey(c));
+const noteFail = (c) => {
+  const k = breakerKey(c);
+  const b = BREAKER.get(k) || { fails: 0, until: 0 };
+  b.fails += 1;
+  b.until = Date.now() / 1000 + Math.min(BREAKER_MAX, BREAKER_BASE * Math.pow(2, b.fails - 1));
+  BREAKER.set(k, b);
+  if (BREAKER.size > 60) BREAKER.delete(BREAKER.keys().next().value);
+};
+const resetBreakers = () => BREAKER.clear();
+const breakerSnapshot = () =>
+  [...BREAKER.entries()].map(([key, b]) => ({
+    key,
+    fails: b.fails,
+    cooling: Math.max(0, Math.round(b.until - Date.now() / 1000)),
+  }));
 
 // ── cookies (optional, secret-only) ───────────────────────────────────────────
 // Accepts: browser "a=1; b=2" header string, Netscape cookies.txt, or JSON array.
@@ -293,11 +376,23 @@ async function innertube(client, endpoint, extra, opts = {}) {
     headers["x-goog-authuser"] = "0";
     if (opts.authorization) headers.authorization = opts.authorization;
   }
-  return jsonPost(
-    `https://www.youtube.com/youtubei/v1/${endpoint}?key=${INNERTUBE_KEY}&prettyPrint=false`,
-    innertubeBody(client, extra),
-    headers
+
+  const body = innertubeBody(client, extra);
+  if (opts.visitorData) body.context.client.visitorData = opts.visitorData;
+  if (opts.poToken) body.serviceIntegrityDimensions = { poToken: opts.poToken };
+
+  const url = `https://www.youtube.com/youtubei/v1/${endpoint}?key=${INNERTUBE_KEY}&prettyPrint=false`;
+  const res = await fetchRetry(
+    url,
+    { method: "POST", headers, body: JSON.stringify(body) },
+    { retries: opts.retries ?? 1, timeout: opts.timeout ?? 9000 }
   );
+  const text = await res.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(`bad JSON from youtube (${res.status})`);
+  }
 }
 
 const listClient = (ladder) => ladder.find((c) => c.id === "mweb") || ladder[0];
@@ -558,15 +653,22 @@ async function tryClient(client, videoId, opts, attempts, tag) {
   const label = `${client.id}@${client.versionRoll || client.ctx.clientVersion}${tag ? "(" + tag + ")" : ""}`;
   let data;
   try {
-    data = await innertube(client, "player", { videoId, contentCheckOk: true, racyCheckOk: true }, opts);
+    data = await innertube(
+      client,
+      "player",
+      { videoId, contentCheckOk: true, racyCheckOk: true },
+      { ...opts, retries: 0, timeout: 7000 }
+    );
   } catch (e) {
     attempts.push(`${label}: ${e.message}`);
+    noteFail(client);
     return null;
   }
   const status = data?.playabilityStatus?.status || "UNKNOWN";
   const sd = data?.streamingData;
   if (status !== "OK" || !sd) {
     attempts.push(`${label}: ${status} ${data?.playabilityStatus?.reason || ""}`.trim());
+    noteFail(client);
     return null;
   }
   const assets =
@@ -600,10 +702,12 @@ async function tryClient(client, videoId, opts, attempts, tag) {
   formats.sort((a, b) => b.height - a.height);
   if (!formats.length) {
     attempts.push(`${label}: no muxed format (${adaptive.length} adaptive only)`);
+    noteFail(client);
     return null;
   }
 
   const vd = data.videoDetails || {};
+  noteOk(client);
   return {
     ok: true,
     client: client.id,
@@ -621,82 +725,200 @@ async function tryClient(client, videoId, opts, attempts, tag) {
       keywords: (vd.keywords || []).slice(0, 12),
       thumbnails: (vd.thumbnail?.thumbnails || []).map((t) => t.url),
     },
-    formats: formats.map((f) => ({ ...f, url: `/api/media?u=${encodeURIComponent(f.url)}` })),
+    formats: formats.map((f) => ({
+      ...f,
+      url: `/api/media?u=${encodeURIComponent(f.url)}&v=${encodeURIComponent(videoId)}&itag=${encodeURIComponent(f.itag)}`,
+    })),
     attempts,
   };
 }
 
+// ── emergency mirrors (opt-in via env, last resort only) ────────────────────
+// Only Invidious with local=true is usable here: the instance proxies the bytes,
+// so the URL is not tied to our IP. Piped direct URLs would 403.
+function emergencyMirrors(env) {
+  return String((env && env.EMERGENCY_MIRRORS) || "")
+    .split(",")
+    .map((x) => x.trim().replace(/\/+$/, ""))
+    .filter(Boolean);
+}
+
+async function mirrorStream(videoId, mirrors, attempts = []) {
+  for (const base of mirrors) {
+    try {
+      const r = await fetchRetry(`${base}/api/v1/videos/${encodeURIComponent(videoId)}?fields=title,author,authorId,viewCount,lengthSeconds,published,description,formatStreams,recommendedVideos`, {
+        headers: { "user-agent": WEB_UA, accept: "application/json" },
+      }, { retries: 0, timeout: 8000 });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const d = await r.json();
+      const streams = (d.formatStreams || []).filter((f) => f && f.url);
+      if (!streams.length) throw new Error("no formatStreams");
+      streams.sort((a, b) => parseInt(b.resolution || b.quality || 0) - parseInt(a.resolution || a.quality || 0));
+      const local = (u) => (/local=true/.test(u) ? u : `${base}${u.startsWith("/") ? "" : "/"}${u}${u.includes("?") ? "&" : "?"}local=true`);
+      return {
+        ok: true,
+        client: "emergency-mirror",
+        clientVersion: "",
+        authed: false,
+        video: {
+          videoId,
+          title: d.title || "",
+          description: d.description || "",
+          author: d.author || "",
+          authorId: d.authorId || "",
+          viewCount: Number(d.viewCount || 0),
+          lengthSeconds: Number(d.lengthSeconds || 0),
+          live: false,
+          thumbnails: [],
+        },
+        formats: streams.slice(0, 4).map((f) => ({
+          itag: f.itag,
+          quality: f.resolution || f.quality || "auto",
+          height: parseInt(f.resolution || 0) || 0,
+          mime: f.type || "video/mp4",
+          url: `/api/media?u=${encodeURIComponent(local(f.url))}&itag=${encodeURIComponent(f.itag)}`,
+          kind: "muxed",
+        })),
+        attempts: [...attempts, `mirror ${base}: ok`],
+      };
+    } catch (e) {
+      attempts.push(`mirror ${base}: ${e.message}`);
+    }
+  }
+  return null;
+}
+
 /**
- * Resolve a playable stream.
- * Pass 1: anonymous ladder (all clients, discovered + fallback versions).
- * Pass 2: only if cookies are configured AND the caller passed the right SV_KEY —
- *         retries the auth-capable clients with cookies + SAPISIDHASH.
+ * Resolve a playable stream — multi-pass, self-healing:
+ *   1. anonymous ladder (breaker-aware, 25s budget)
+ *   2. if everything failed: force version + visitorData re-discovery, try again
+ *   3. authenticated pass with cookies (only if the caller proved SV_KEY)
+ *   4. emergency mirrors (only if EMERGENCY_MIRRORS is configured)
  */
 async function player(videoId, opts = {}) {
   const env = opts.env || {};
   const attempts = [];
-  const { versions, source } = await discoverVersions(env);
-  const ladder = buildClients(versions, opts.region || "IN");
+  const deadline = Date.now() + 25000;
+  const poToken = (env && env.PO_TOKEN) || "";
 
-  for (const client of ladder) {
-    const res = await tryClient(client, videoId, {}, attempts, "");
-    if (res) return { ...res, versions, versionSource: source };
-  }
+  let { versions, source, visitorData } = await discoverVersions(env);
+  let ladder = buildClients(versions, opts.region || "IN");
 
+  const runPass = async (clients, extraOpts, tag, useBreakers = true) => {
+    for (const client of clients) {
+      if (Date.now() > deadline) {
+        attempts.push(`${tag || "pass"} stopped: time budget reached`);
+        return null;
+      }
+      if (useBreakers && breakerCooling(client)) {
+        attempts.push(`${client.id}@${client.ctx.clientVersion}: skipped (cooling down)`);
+        continue;
+      }
+      const res = await tryClient(client, videoId, { ...extraOpts, poToken }, attempts, tag);
+      if (res) return res;
+    }
+    return null;
+  };
+
+  // pass 1 — anonymous
+  let hit = await runPass(ladder, { visitorData }, "");
+  if (hit) return { ...hit, versions, versionSource: source, pass: 1 };
+
+  // pass 2 — self-heal: refresh versions + visitorData, retry anonymously
+  const fresh = await discoverVersions(env, true);
+  versions = fresh.versions;
+  source = fresh.source;
+  visitorData = fresh.visitorData || visitorData;
+  ladder = buildClients(versions, opts.region || "IN");
+  hit = await runPass(ladder, { visitorData }, "retry", false);
+  if (hit) return { ...hit, versions, versionSource: source, pass: 2, healed: true };
+
+  // pass 3 — cookies (only with a valid SV_KEY), SAPISIDHASH for web-family clients
   const cookieHeader = opts.cookieHeader || "";
   if (cookieHeader) {
     const auth = await sapisidHash(cookieHeader);
     const authClients = ladder.filter((c) =>
-      ["android", "web", "ios", "tv_embedded"].includes(c.id)
+      ["android", "web", "ios", "tv_embedded", "web_embedded"].includes(c.id)
     );
     for (const client of authClients) {
+      if (Date.now() > deadline) break;
+      const needsHash = client.id === "web" || client.id === "web_embedded";
       const res = await tryClient(
         client,
         videoId,
-        { cookies: cookieHeader, authorization: client.id === "web" ? auth : "" },
+        { visitorData, cookies: cookieHeader, authorization: needsHash ? auth : "" },
         attempts,
         "auth"
       );
-      if (res) return { ...res, versions, versionSource: source };
+      if (res) return { ...res, authed: true, versions, versionSource: source, pass: 3 };
     }
+  }
+
+  // pass 4 — emergency mirrors (disabled unless configured)
+  const mirrors = emergencyMirrors(env);
+  if (mirrors.length) {
+    const m = await mirrorStream(videoId, mirrors, attempts);
+    if (m) return { ...m, versions, versionSource: source, pass: 4 };
   }
 
   return {
     ok: false,
     error: cookieHeader
-      ? "no playable stream (tried anonymous + authenticated)"
+      ? "no playable stream (anonymous + authenticated + mirrors all failed)"
       : "no playable stream from any client",
     attempts,
     versions,
     versionSource: source,
     cookiesUsed: !!cookieHeader,
+    breakers: breakerSnapshot(),
   };
 }
 
 async function listCall(env, url, endpoint, extra) {
-  const { versions } = await discoverVersions(env);
-  const ladder = buildClients(versions, (url.searchParams.get("region") || "IN").toUpperCase());
-  const anon = listClient(ladder);
+  const region = (url.searchParams.get("region") || "IN").toUpperCase();
   const cookieHeader = cookieAuth(env, url);
-  const attempts = [];
 
-  const clients = [
-    { client: anon, opts: {} },
-    ...(cookieHeader
-      ? [{ client: ladder.find((c) => c.id === "web") || anon, opts: { cookies: cookieHeader, authorization: await sapisidHash(cookieHeader) } }]
-      : []),
-  ];
+  const attemptWith = async (force) => {
+    const { versions, visitorData } = await discoverVersions(env, force);
+    const ladder = buildClients(versions, region);
+    const order = [
+      ladder.find((c) => c.id === "mweb"),
+      ladder.find((c) => c.id === "web"),
+      ladder.find((c) => c.id === "android_vr"),
+      ...ladder,
+    ].filter(Boolean);
 
-  let lastError = null;
-  for (const { client, opts } of clients) {
-    try {
-      return await innertube(client, endpoint, extra, opts);
-    } catch (e) {
-      lastError = e;
-      attempts.push(`${client.id}: ${e.message}`);
+    const candidates = cookieHeader
+      ? [
+          { client: order[0], opts: { visitorData } },
+          { client: ladder.find((c) => c.id === "web"), opts: { visitorData, cookies: cookieHeader, authorization: await sapisidHash(cookieHeader) } },
+          { client: ladder.find((c) => c.id === "android_vr"), opts: { visitorData, cookies: cookieHeader } },
+        ]
+      : order.slice(0, 4).map((client) => ({ client, opts: { visitorData } }));
+
+    let lastError = null;
+    for (const { client, opts } of candidates) {
+      if (!client) continue;
+      if (breakerCooling(client)) continue;
+      try {
+        const data = await innertube(client, endpoint, extra, { ...opts, retries: 0, timeout: 8000 });
+        noteOk(client);
+        if (data && (data.contents || data.onResponseReceivedActions || data.items)) return data;
+        throw new Error("empty response");
+      } catch (e) {
+        lastError = e;
+        noteFail(client);
+      }
     }
+    if (!lastError) lastError = new Error("all clients cooling down");
+    throw lastError;
+  };
+
+  try {
+    return await attemptWith(false);
+  } catch {
+    return await attemptWith(true); // self-heal: refresh versions, one more round
   }
-  throw lastError || new Error("request failed");
 }
 
 async function search(q, page = 1, env = {}, url = new URL("https://x/")) {
@@ -728,7 +950,32 @@ async function related(videoId, env = {}, url = new URL("https://x/")) {
   return { items: normalizeList(data, 24) };
 }
 
-async function media(url, request) {
+function mirrorHosts(env) {
+  return emergencyMirrors(env).map((u) => {
+    try {
+      return new URL(u).hostname;
+    } catch {
+      return "";
+    }
+  }).filter(Boolean);
+}
+
+// Re-resolve a stream URL when the signed one expired / got rejected mid-playback.
+async function refreshedUrl(videoId, itag, env) {
+  try {
+    const fresh = await player(videoId, { env });
+    if (!fresh || !fresh.ok) return "";
+    const exact = fresh.formats.find((f) => String(f.itag) === String(itag));
+    const pick = exact || fresh.formats[0];
+    if (!pick) return "";
+    const raw = decodeURIComponent(pick.url.split("u=")[1].split("&")[0]);
+    return raw;
+  } catch {
+    return "";
+  }
+}
+
+async function media(url, request, env = {}) {
   let target;
   try {
     target = new URL(url);
@@ -736,22 +983,69 @@ async function media(url, request) {
     return err("bad media url", 400);
   }
   const host = target.hostname;
-  const allowed = /(^|\.)googlevideo\.com$/.test(host) || /(^|\.)youtube\.com$/.test(host) || /(^|\.)ytimg\.com$/.test(host);
+  const allowed =
+    /(^|\.)googlevideo\.com$/.test(host) ||
+    /(^|\.)youtube\.com$/.test(host) ||
+    /(^|\.)ytimg\.com$/.test(host) ||
+    mirrorHosts(env).includes(host);
   if (!allowed) return err("host not allowed: " + host, 400);
 
-  const headers = new Headers({ "user-agent": UA.web, referer: "https://www.youtube.com/" });
-  const range = request.headers.get("range");
-  if (range) headers.set("range", range);
+  const range = request.headers.get("range") || "";
+  const buildHeaders = () => {
+    const h = new Headers({ "user-agent": UA.web, referer: "https://www.youtube.com/" });
+    if (range) h.set("range", range);
+    return h;
+  };
 
-  const upstream = await fetch(target.toString(), { headers, redirect: "follow" });
+  let upstream = null;
+  let lastStatus = 0;
+  try {
+    upstream = await fetchRetry(target.toString(), { headers: buildHeaders(), redirect: "follow" }, { retries: 1, timeout: 25000 });
+    lastStatus = upstream.status;
+  } catch (e) {
+    return err("upstream fetch failed: " + e.message, 502);
+  }
+
+  // expired / rejected signature → ask YouTube for a fresh URL, retry once
+  let refreshed = false;
+  if (upstream.status === 403 || upstream.status === 410 || upstream.status === 404) {
+    const reqParams = new URL(request.url).searchParams;
+    const videoId = reqParams.get("v") || "";
+    const itag = reqParams.get("itag") || "";
+    if (videoId) {
+      const next = await refreshedUrl(videoId, itag, env);
+      if (next && next !== target.toString()) {
+        try {
+          upstream = await fetchRetry(next, { headers: buildHeaders(), redirect: "follow" }, { retries: 1, timeout: 25000 });
+          lastStatus = upstream.status;
+          refreshed = true;
+        } catch {
+          /* keep original response below */
+        }
+      }
+    }
+  }
+
   const out = new Headers();
   for (const h of ["content-length", "content-range", "accept-ranges", "content-type", "etag"]) {
-    if (upstream.headers.get(h)) out.set(h, upstream.headers.get(h));
+    const v = upstream.headers.get(h);
+    if (v) out.set(h, v);
   }
   out.set("access-control-allow-origin", "*");
   out.set("access-control-expose-headers", "content-length, content-range, accept-ranges");
   out.set("cache-control", "no-store");
-  return new Response(upstream.body, { status: upstream.status, headers: out });
+  if (refreshed) out.set("x-sv-refreshed", "1");
+
+  if (request.method === "HEAD") {
+    try {
+      upstream.body?.cancel?.();
+    } catch {
+      /* ignore */
+    }
+    return new Response(null, { status: upstream.status, headers: out });
+  }
+
+  return new Response(upstream.body, { status: upstream.status || lastStatus, headers: out });
 }
 
 const ROUTES = [
@@ -777,6 +1071,13 @@ const ROUTES = [
             }
           : { configured: false },
         versionCacheAge: Math.round(Date.now() / 1000 - VERSION_CACHE.ts) + "s",
+        resilience: {
+          visitorData: !!VERSION_CACHE.visitorData,
+          breakers: breakerSnapshot(),
+          emergencyMirrors: emergencyMirrors(env).length,
+          poToken: !!(env && env.PO_TOKEN),
+          passes: ["anonymous", "self-heal(versions+visitor)", "cookies(SV_KEY)", "emergency mirrors"],
+        },
       };
     },
   ],
@@ -792,6 +1093,30 @@ const ROUTES = [
         ladder: ladder.map((c) => ({ id: c.id, version: c.ctx.clientVersion })),
         cookieHeaderPresent: !!(env && env.YT_COOKIES),
         keyProtectsCookies: !!(env && env.SV_KEY),
+      };
+    },
+  ],
+  [
+    "/api/selftest",
+    async (u, env) => {
+      const id = u.searchParams.get("id") || "dQw4w9WgXcQ";
+      const t0 = Date.now();
+      const res = await player(id, {
+        env,
+        cookieHeader: cookieAuth(env, u),
+        region: (u.searchParams.get("region") || "IN").toUpperCase(),
+      });
+      return {
+        ok: !!res.ok,
+        video: id,
+        ms: Date.now() - t0,
+        pass: res.pass || 0,
+        client: res.client || null,
+        clientVersion: res.clientVersion || null,
+        healed: !!res.healed,
+        formats: (res.formats || []).map((f) => f.quality),
+        attempts: (res.attempts || []).slice(-12),
+        breakers: breakerSnapshot(),
       };
     },
   ],
@@ -818,7 +1143,7 @@ export default {
     }
     try {
       if (url.pathname === "/api/media" || url.pathname === "/api/thumb") {
-        return media(url.searchParams.get("u") || "", request);
+        return media(url.searchParams.get("u") || "", request, env);
       }
       for (const [path, handler] of ROUTES) {
         if (url.pathname === path) return json(await handler(url, env));
@@ -859,4 +1184,13 @@ export {
   sha1Hex,
   keyAllowed,
   cookieAuth,
+  fetchRetry,
+  breakerSnapshot,
+  resetBreakers,
+  noteFail,
+  noteOk,
+  breakerCooling,
+  emergencyMirrors,
+  mirrorStream,
+  refreshedUrl,
 };

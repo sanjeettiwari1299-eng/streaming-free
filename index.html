@@ -618,7 +618,7 @@ function Skels({ n = 12 }) {
 /* ════════════════════════════════════════════════════════════════════════════
    CUSTOM PLAYER (YouTube-style chrome on a plain <video>)
    ════════════════════════════════════════════════════════════════════════════ */
-function CPlayer({ video, formats, st, onNext, poster, onQuality }) {
+function CPlayer({ video, formats, st, onNext, poster, onQuality, onRefresh }) {
   const wrapRef = useRef(null), vidRef = useRef(null), hideT = useRef(null);
   const [qi, setQi] = useState(0);
   const [playing, setPlaying] = useState(false);
@@ -630,6 +630,7 @@ function CPlayer({ video, formats, st, onNext, poster, onQuality }) {
   const [waiting, setWaiting] = useState(true), [err, setErr] = useState(""), [flash, setFlash] = useState(null);
   const [showBig, setShowBig] = useState(true);
   const pendingSeek = useRef(null);
+  const refreshTries = useRef(0);
 
   const list = formats && formats.length ? formats : [];
   const cur = list[Math.min(qi, list.length - 1)];
@@ -774,7 +775,19 @@ function CPlayer({ video, formats, st, onNext, poster, onQuality }) {
         onPlaying={() => { setWaiting(false); setErr(""); }}
         onCanPlay={() => setWaiting(false)}
         onEnded={() => { setPlaying(false); setShowBig(true); if (st.cfg.autoplay && onNext) onNext(); }}
-        onError={() => { setErr(fmtErr({ target: vidRef.current })); setWaiting(false); }}
+        onError={() => {
+          // most common cause: the signed googlevideo URL expired → ask the engine for a fresh one
+          if (onRefresh && refreshTries.current < 2) {
+            refreshTries.current += 1;
+            pendingSeek.current = vidRef.current?.currentTime || 0;
+            setWaiting(true);
+            setErr("");
+            onRefresh();
+            return;
+          }
+          setErr(fmtErr({ target: vidRef.current }));
+          setWaiting(false);
+        }}
       />
 
       <div className={"cp-top" + (ui || !playing ? "" : " hidden")}>
@@ -1179,6 +1192,7 @@ function WatchPage({ video, onPlay, st, engine }) {
           )}
           {status === "ready" && stream && (
             <CPlayer video={meta} formats={stream.formats} st={st} onNext={rel.length ? nextVideo : null}
+              onRefresh={() => setAttempt((a) => a + 1)}
               poster={meta.thumbnail || YTT(video.videoId, "hqdefault")} />
           )}
         </div>

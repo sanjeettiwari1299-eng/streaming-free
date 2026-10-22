@@ -38,6 +38,7 @@ Playback stays 100% custom: a plain `<video>` element with our own YouTube-style
 | --- | --- |
 | `GET /api/health` | connection check, discovered client versions, cookie state |
 | `GET /api/debug` | full client ladder + version sources (`?refresh=1` re-discovers) |
+| `GET /api/selftest?id=` | end-to-end check: which pass/client worked, ms, breaker state |
 | `GET /api/search?q=` | InnerTube `search` → normalized video list (+ continuation token) |
 | `GET /api/searchmore?q=&token=` | next page |
 | `GET /api/trending?region=IN` | InnerTube `browse` `FEtrending` |
@@ -64,6 +65,33 @@ Optional hard override (no redeploy needed for version bumps):
 ```bash
 npx wrangler secret put CLIENT_VERSIONS
 # {"ANDROID":"19.50.1","IOS":"20.10.4"}
+```
+
+### Four-pass playback (self-healing)
+
+| Pass | What | When |
+| --- | --- | --- |
+| 1 | anonymous client ladder (9 clients × 2 versions, breaker-aware, 25s budget) | always |
+| 2 | **self-heal**: force re-discovery of versions + `visitorData`, ignore breakers, retry | pass 1 failed |
+| 3 | authenticated retry (`android`, `web`, `ios`, `tv_embedded`, `web_embedded` + `SAPISIDHASH`) | pass 2 failed **and** `SV_KEY` matched |
+| 4 | emergency mirrors (`EMERGENCY_MIRRORS`, Invidious `local=true` only) | everything else failed |
+
+Extra guards:
+
+- **Circuit breaker** per `client@version` — a combination YouTube just rejected is skipped for 40s → 5min,
+  so one broken client can't slow every request.
+- **`visitorData`** is scraped from `youtube.com` and sent with each request (helps against soft bot checks).
+- **`PO_TOKEN`** secret, if you have one, is attached as `serviceIntegrityDimensions`.
+- **Retries with jittered backoff** on 429/5xx/network (`fetchRetry`).
+- **Media proxy self-repair**: if a signed URL expires mid-playback (403/410), the worker re-runs the
+  player pipeline, swaps in a fresh URL and retries the range request; the response carries
+  `x-sv-refreshed: 1`. The app also re-requests `/api/player` automatically on a media error.
+- **`/api/selftest?id=…`** runs the whole pipeline and reports timing, which pass succeeded, and breaker state.
+
+Emergency mirrors are **off unless you set them** (you asked for no Piped/Invidious by default):
+
+```bash
+npx wrangler secret put EMERGENCY_MIRRORS   # https://inv.example.com
 ```
 
 ### Optional: cookies for age-restricted / members-only videos
@@ -125,9 +153,10 @@ click through the whole UI and player. It is a preview tool only — production 
   player then offers "Open on YouTube".
 - YouTube's bot checks (`PoToken`) can reject a client on some networks; the ladder + cookies cover most cases,
   and the worker always reports what it tried. If all fail, `Retry` after a moment or from another network.
-- Version discovery makes stale-version breakage unlikely, but not impossible: YouTube can still change the
-  cipher/player flow in a way that needs a code patch. Expect a small patch every few months — that is the
-  honest reality of every YouTube front-end.
+- Version discovery + 4-pass fallback make breakage rare and recoverable, but **"never breaks" is not a thing**:
+  YouTube can change the cipher/player flow in a way that needs a code patch. What this setup does give you is
+  graceful degradation (a dead client is skipped, playback self-heals, mirrors are the last resort) instead of
+  a blank screen.
 - Cloudflare free tier: 100k requests/day. Media proxying costs bandwidth — fine for personal use.
 
 ## Files
