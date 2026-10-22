@@ -36,7 +36,8 @@ Playback stays 100% custom: a plain `<video>` element with our own YouTube-style
 
 | Route | Purpose |
 | --- | --- |
-| `GET /api/health` | connection check + client list |
+| `GET /api/health` | connection check, discovered client versions, cookie state |
+| `GET /api/debug` | full client ladder + version sources (`?refresh=1` re-discovers) |
 | `GET /api/search?q=` | InnerTube `search` → normalized video list (+ continuation token) |
 | `GET /api/searchmore?q=&token=` | next page |
 | `GET /api/trending?region=IN` | InnerTube `browse` `FEtrending` |
@@ -46,6 +47,47 @@ Playback stays 100% custom: a plain `<video>` element with our own YouTube-style
 
 Signature handling: if a format comes back as `signatureCipher`, the worker fetches the video's `base.js`,
 extracts the sig and `n` transform functions and applies them (`buildDecipher`). Plain `url` formats skip all of that.
+
+---
+
+## Stays alive without you touching it
+
+| Breaks over time | How the worker handles it |
+| --- | --- |
+| **Client versions go stale** (the #1 cause of breakage) | `discoverVersions()` fetches `youtube.com`'s HTML for the current `INNERTUBE_CLIENT_VERSION` and yt-dlp's `_base.py` for the mobile/TV versions — cached 6h (Cache API, falls back to a plain fetch). Every client is tried **twice**: discovered version, then the baked-in fallback. |
+| **Signature / `n` algorithm changes** | `buildDecipher()` extracts the functions from the *current* `base.js` at runtime — nothing hardcoded. |
+| **Renderer JSON reshuffles** | `collect()` walks the tree recursively instead of relying on fixed paths. |
+| **Everything fails at once** | `/api/health` reports the versions it's using, `/api/debug` shows the full ladder + cookie state, and the player surfaces the per-client reasons (e.g. `android_vr@1.62.27: LOGIN_REQUIRED`). |
+
+Optional hard override (no redeploy needed for version bumps):
+
+```bash
+npx wrangler secret put CLIENT_VERSIONS
+# {"ANDROID":"19.50.1","IOS":"20.10.4"}
+```
+
+### Optional: cookies for age-restricted / members-only videos
+
+Cookies are **worker-side secrets only** — never in the browser, never in Settings:
+
+```bash
+npx wrangler secret put YT_COOKIES   # "SID=...; HSID=...; SSID=...; SAPISID=..." (or Netscape cookies.txt)
+npx wrangler secret put SV_KEY       # any random string; required to unlock cookie use
+```
+
+Then paste the same `SV_KEY` value into the app under **Settings → Access key**.
+
+Behaviour:
+
+1. Pass 1 always tries every client **without** cookies (public videos, zero account risk).
+2. Only if that fails, pass 2 retries `android`, `web`, `ios`, `tv_embedded` **with** cookies
+   (`web` also gets a computed `SAPISIDHASH`).
+3. Cookies are ignored entirely unless the request carries the correct `SV_KEY`, so a public worker
+   URL can't be used to ride your Google account.
+
+Notes: use a **throwaway Google account** (YouTube ToS discourages this), cookies expire after
+~1–2 years or on password/2FA change, and "confirm you're not a bot" issues are usually PoToken,
+which cookies do not fully solve.
 
 ---
 
@@ -81,8 +123,11 @@ click through the whole UI and player. It is a preview tool only — production 
   DASH tracks and would need MSE muxing in the browser.
 - Live streams and some age-restricted / members-only / region-locked videos return no muxed stream; the
   player then offers "Open on YouTube".
-- YouTube's bot checks (`PoToken`) can reject a client on some networks; the worker walks a client ladder and
-  surfaces the reasons it tried. If all fail, `Retry` after a moment or from another network.
+- YouTube's bot checks (`PoToken`) can reject a client on some networks; the ladder + cookies cover most cases,
+  and the worker always reports what it tried. If all fail, `Retry` after a moment or from another network.
+- Version discovery makes stale-version breakage unlikely, but not impossible: YouTube can still change the
+  cipher/player flow in a way that needs a code patch. Expect a small patch every few months — that is the
+  honest reality of every YouTube front-end.
 - Cloudflare free tier: 100k requests/day. Media proxying costs bandwidth — fine for personal use.
 
 ## Files

@@ -416,6 +416,7 @@ const { useState, useEffect, useRef, useCallback, useMemo } = React;
    ════════════════════════════════════════════════════════════════════════════ */
 const DEFAULT_CFG = {
   engineUrl: "",
+  accessKey: "",
   autoplay: true,
   showRelated: true,
   volume: 1,
@@ -470,7 +471,9 @@ async function ep(cfg, path, timeout = 25000) {
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), timeout);
   try {
-    const r = await fetch(baseOf(cfg) + path, { signal: ac.signal, headers: { Accept: "application/json" } });
+    const key = String((cfg && cfg.accessKey) || "").trim();
+    const withKey = key ? path + (path.includes("?") ? "&" : "?") + "key=" + encodeURIComponent(key) : path;
+    const r = await fetch(baseOf(cfg) + withKey, { signal: ac.signal, headers: { Accept: "application/json" } });
     const text = await r.text();
     let data = null;
     try { data = text ? JSON.parse(text) : null; } catch { throw new Error("engine returned non-JSON (worker URL galat hai?)"); }
@@ -872,6 +875,7 @@ function CPlayer({ video, formats, st, onNext, poster, onQuality }) {
    ════════════════════════════════════════════════════════════════════════════ */
 function SetupGate({ st, onRetry, busy }) {
   const [url, setUrl] = useState(st.cfg.engineUrl || "");
+  const [key, setKey] = useState(st.cfg.accessKey || "");
   const [copied, setCopied] = useState("");
   const copyWorker = async () => {
     try {
@@ -899,10 +903,15 @@ function SetupGate({ st, onRetry, busy }) {
         </ol>
         {copied && <div className="setup-note ok">{copied}</div>}
         <div className="setup-row">
+          <input className="setup-input" type="password" placeholder="Access key (only if you set SV_KEY)"
+            value={key} onChange={(e) => setKey(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && st.updCfg({ accessKey: key.trim() })} />
+        </div>
+        <div className="setup-row">
           <input className="setup-input" placeholder="https://your-worker.workers.dev" value={url}
             onChange={(e) => setUrl(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && st.updCfg({ engineUrl: url.trim() })} />
-          <button className="setup-btn" disabled={busy} onClick={() => st.updCfg({ engineUrl: url.trim() })}>
+          <button className="setup-btn" disabled={busy} onClick={() => st.updCfg({ engineUrl: url.trim(), accessKey: key.trim() })}>
             {busy ? "Checking…" : "Connect"}
           </button>
         </div>
@@ -1339,6 +1348,7 @@ function PLPage({ onPlay, st }) {
    ════════════════════════════════════════════════════════════════════════════ */
 function SetPage({ st, engine, onCheck }) {
   const [url, setUrl] = useState(st.cfg.engineUrl || "");
+  const [accessKey, setAccessKey] = useState(st.cfg.accessKey || "");
   const [saved, setSaved] = useState(false);
   const [copied, setCopied] = useState("");
   const upd = (patch) => { st.updCfg(patch); setSaved(true); setTimeout(() => setSaved(false), 1800); };
@@ -1373,6 +1383,16 @@ function SetPage({ st, engine, onCheck }) {
           <button className="setup-link" style={{ marginLeft: 8 }} onClick={onCheck}>↻ Re-check</button>
           <button className="setup-link" style={{ marginLeft: 4 }} onClick={copyWorker}>Copy worker.js</button>
           {copied && <span style={{ color: "#7ee787", marginLeft: 6 }}>{copied}</span>}
+        </div>
+        <div className="set-api-row" style={{ marginTop: 10 }}>
+          <input type="password" placeholder="Access key (optional — unlocks age-restricted videos)"
+            value={accessKey} onChange={(e) => setAccessKey(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") upd({ accessKey: accessKey.trim() }); }} />
+          <button className="set-api-btn" onClick={() => upd({ accessKey: accessKey.trim() })}>Save key</button>
+        </div>
+        <div className="set-blk-desc" style={{ marginTop: 6 }}>
+          Worker pe <code>SV_KEY</code> secret set hai to yahi key daalein. Key ke bina worker cookies use nahi karta
+          (public workers safe rehte hain).
         </div>
         <div className="set-hint">
           <strong style={{ color: "var(--t2)" }}>Setup:</strong><br />

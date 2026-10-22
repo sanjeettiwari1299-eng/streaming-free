@@ -11,6 +11,12 @@
  * player), picks muxed MP4 streams, and proxies the media bytes so playback works
  * from any IP (googlevideo URLs are IP-bound; this is why a plain static page can't do it).
  *
+ * Self-maintaining bits:
+ *   • client versions are discovered at runtime (youtube.com HTML + yt-dlp source)
+ *     and cached for 6h, with a 2-version ladder per client as a safety net
+ *   • optional cookies (wrangler secret YT_COOKIES) unlock age-restricted /
+ *     members-only videos; they are only used when the request carries SV_KEY
+ *
  * No Piped, no Invidious, no API key, no VM.
  */
 
@@ -20,63 +26,164 @@ const UA = {
   mobile: "com.google.android.youtube/19.29.37 (Linux; U; Android 11) gzip",
 };
 
-// Client ladder: cheapest-to-parse and most PoToken-free first.
-const CLIENTS = [
+// ── clients (spec) ────────────────────────────────────────────────────────────
+// `uaFn` gets the discovered version so mobile UAs stay in sync with the ladder.
+const UA_IOS = (v) => `com.google.ios.youtube/${v} (iPhone16,2; U; CPU iOS 18_1_0 like Mac OS X;)`;
+const UA_ANDROID = (v) => `com.google.android.youtube/${v} (Linux; U; Android 11) gzip`;
+const UA_VR = (v) => `com.google.android.apps.youtube.vr.oculus/${v} (Linux; U; Android 12L) gzip`;
+
+const CLIENT_SPECS = [
   {
     id: "android_vr",
     num: "28",
-    ctx: {
-      clientName: "ANDROID_VR",
-      clientVersion: "1.60.19",
-      deviceMake: "Oculus",
-      deviceModel: "Quest 3",
-      androidSdkVersion: 32,
-      osName: "Android",
-      osVersion: "12L",
-      hl: "en",
-      gl: "IN",
-      utcOffsetMinutes: 330,
-    },
-    ua: UA.mobile,
+    ctx: { clientName: "ANDROID_VR", clientVersion: "1.60.19", deviceMake: "Oculus", deviceModel: "Quest 3", androidSdkVersion: 32, osName: "Android", osVersion: "12L", hl: "en", gl: "IN", utcOffsetMinutes: 330 },
+    uaFn: UA_VR,
   },
   {
     id: "ios",
     num: "5",
     ctx: { clientName: "IOS", clientVersion: "19.45.4", deviceMake: "Apple", deviceModel: "iPhone16,2", osName: "iPhone", osVersion: "18.1.0.22B83", hl: "en", gl: "IN" },
-    ua: "com.google.ios.youtube/19.45.4 (iPhone16,2; U; CPU iOS 18_1_0 like Mac OS X;)",
+    uaFn: UA_IOS,
   },
   {
     id: "tv_embedded",
     num: "85",
-    ctx: {
-      clientName: "TVHTML5_SIMPLY_EMBEDDED_PLAYER",
-      clientVersion: "2.0",
-      clientScreen: "EMBED",
-      thirdParty: { embedUrl: "https://www.youtube.com/" },
-      hl: "en",
-      gl: "IN",
-    },
+    ctx: { clientName: "TVHTML5_SIMPLY_EMBEDDED_PLAYER", clientVersion: "2.0", clientScreen: "EMBED", thirdParty: { embedUrl: "https://www.youtube.com/" }, hl: "en", gl: "IN" },
     ua: UA.web,
   },
   {
     id: "android",
     num: "3",
     ctx: { clientName: "ANDROID", clientVersion: "19.29.37", androidSdkVersion: 30, osName: "Android", osVersion: "11", hl: "en", gl: "IN" },
-    ua: UA.mobile,
+    uaFn: UA_ANDROID,
   },
-  {
-    id: "mweb",
-    num: "2",
-    ctx: { clientName: "MWEB", clientVersion: "2.20241202.07.00", hl: "en", gl: "IN" },
-    ua: UA.web,
-  },
-  {
-    id: "web",
-    num: "1",
-    ctx: { clientName: "WEB", clientVersion: "2.20241202.07.00", hl: "en", gl: "IN" },
-    ua: UA.web,
-  },
+  { id: "mweb", num: "2", ctx: { clientName: "MWEB", clientVersion: "2.20241202.07.00", hl: "en", gl: "IN" }, ua: UA.web },
+  { id: "web", num: "1", ctx: { clientName: "WEB", clientVersion: "2.20241202.07.00", hl: "en", gl: "IN" }, ua: UA.web },
 ];
+
+// Baked-in fallbacks — only used when discovery fails.
+const FALLBACK_VERSIONS = {
+  ANDROID_VR: "1.60.19",
+  IOS: "19.45.4",
+  ANDROID: "19.29.37",
+  TVHTML5_SIMPLY_EMBEDDED_PLAYER: "2.0",
+  MWEB: "2.20241202.07.00",
+  WEB: "2.20241202.07.00",
+};
+
+const VERSION_TTL = 6 * 3600; // seconds
+let VERSION_CACHE = { ts: 0, versions: null, source: {} };
+
+// Cache API with in-memory fallback (works without any binding).
+async function cachedText(tag, url, ttl, init) {
+  try {
+    if (typeof caches !== "undefined" && caches.default) {
+      const key = new Request(`https://sv.internal/${tag}`);
+      const hit = await caches.default.match(key);
+      if (hit) return await hit.text();
+      const r = await fetch(url, init);
+      if (r.ok) {
+        const text = await r.text();
+        await caches.default.put(key, new Response(text, { headers: { "cache-control": `max-age=${ttl}` } }));
+        return text;
+      }
+      return "";
+    }
+  } catch {
+    /* fall through to a plain fetch */
+  }
+  try {
+    const r = await fetch(url, init);
+    return r.ok ? await r.text() : "";
+  } catch {
+    return "";
+  }
+}
+
+const WEB_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+
+// Parse yt-dlp's INNERTUBE client table: 'clientName': 'X', … 'clientVersion': 'Y'
+function parseYtdlpVersions(py) {
+  const out = {};
+  if (!py) return out;
+  const src = py.length > 4_000_000 ? py.slice(0, 4_000_000) : py;
+  const re = /clientName['"]?\s*:\s*['"]([A-Z0-9_]+)['"][\s\S]{0,400}?clientVersion['"]?\s*:\s*['"]([\d.]+)['"]/g;
+  for (const m of src.matchAll(re)) {
+    if (!(m[1] in out)) out[m[1]] = m[2];
+  }
+  return out;
+}
+
+// Discover current client versions. Never throws — always returns usable numbers.
+async function discoverVersions(env, force = false) {
+  const now = Date.now() / 1000;
+  if (!force && VERSION_CACHE.versions && now - VERSION_CACHE.ts < VERSION_TTL) return VERSION_CACHE;
+
+  const versions = { ...FALLBACK_VERSIONS };
+  const source = {};
+
+  // 1) WEB/MWEB straight from YouTube's homepage payload
+  const html = await cachedText("yt_web", "https://www.youtube.com/", 12 * 3600, {
+    headers: { "user-agent": WEB_UA, "accept-language": "en-US,en;q=0.9" },
+  });
+  const webVer = (html.match(/"INNERTUBE_CLIENT_VERSION"\s*:\s*"([\d.]+)"/) || [])[1];
+  if (webVer) {
+    versions.WEB = webVer;
+    versions.MWEB = webVer;
+    source.WEB = source.MWEB = "youtube.com";
+  }
+
+  // 2) Mobile / TV clients from yt-dlp (they track these daily)
+  const py = await cachedText(
+    "ytdlp_base",
+    "https://raw.githubusercontent.com/yt-dlp/yt-dlp/master/yt_dlp/extractor/youtube/_base.py",
+    6 * 3600,
+    { headers: { "user-agent": WEB_UA } }
+  );
+  const fromYtdlp = parseYtdlpVersions(py);
+  for (const name of Object.keys(fromYtdlp)) {
+    // youtube.com is authoritative for the web client — don't let yt-dlp downgrade it
+    if (source[name] === "youtube.com") continue;
+    versions[name] = fromYtdlp[name];
+    source[name] = "yt-dlp";
+  }
+
+  // Explicit override wins: e.g. wrangler secret CLIENT_VERSIONS='{"ANDROID":"19.50.1"}'
+  if (env && env.CLIENT_VERSIONS) {
+    try {
+      const over = JSON.parse(env.CLIENT_VERSIONS);
+      for (const k of Object.keys(over)) {
+        versions[k] = String(over[k]);
+        source[k] = "env";
+      }
+    } catch {
+      /* ignore malformed override */
+    }
+  }
+
+  VERSION_CACHE = { ts: now, versions, source };
+  return VERSION_CACHE;
+}
+
+// Build the ladder: every client twice (discovered version, then baked fallback)
+function buildClients(versions, region = "IN") {
+  const v = { ...FALLBACK_VERSIONS, ...(versions || {}) };
+  const out = [];
+  for (const spec of CLIENT_SPECS) {
+    const name = spec.ctx.clientName;
+    const wanted = [v[name], spec.ctx.clientVersion].filter((x, i, a) => x && a.indexOf(x) === i);
+    for (const ver of wanted) {
+      out.push({
+        id: spec.id,
+        num: spec.num,
+        versionRoll: ver,
+        ctx: { ...spec.ctx, clientVersion: ver, gl: region },
+        ua: spec.uaFn ? spec.uaFn(ver) : spec.ua,
+      });
+    }
+  }
+  return out;
+}
 
 // ── tiny utils ────────────────────────────────────────────────────────────────
 const json = (data, status = 200, extra = {}) =>
@@ -99,23 +206,101 @@ const jsonPost = async (url, body, headers) => {
   return data;
 };
 
+// ── cookies (optional, secret-only) ───────────────────────────────────────────
+// Accepts: browser "a=1; b=2" header string, Netscape cookies.txt, or JSON array.
+function parseCookies(raw) {
+  if (!raw) return "";
+  const text = String(raw).trim();
+  if (!text) return "";
+  if (text.startsWith("[") || text.startsWith("{")) {
+    try {
+      const data = JSON.parse(text);
+      const arr = Array.isArray(data) ? data : data.cookies || [];
+      const pairs = arr
+        .map((c) => (c && c.name ? `${c.name}=${c.value ?? ""}` : ""))
+        .filter(Boolean);
+      if (pairs.length) return pairs.join("; ");
+    } catch {
+      /* fall through */
+    }
+  }
+  if (text.includes("\t")) {
+    const pairs = text
+      .split(/\r?\n/)
+      .filter((l) => l && !l.startsWith("#"))
+      .map((l) => {
+        const p = l.split("\t");
+        return p.length >= 7 ? `${p[5]}=${p[6]}` : "";
+      })
+      .filter(Boolean);
+    if (pairs.length) return pairs.join("; ");
+  }
+  return text.replace(/\r?\n+/g, "; ").replace(/;\s*;/g, ";").replace(/^;\s*|;\s*$/g, "");
+}
+
+const cookieValue = (header, name) => {
+  const m = header.match(new RegExp(`(?:^|;\\s*)${name.replace(/[$]/g, "\\$")}=([^;]+)`));
+  return m ? m[1].trim() : "";
+};
+
+async function sha1Hex(input) {
+  const buf = await crypto.subtle.digest("SHA-1", new TextEncoder().encode(input));
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+// SAPISIDHASH — required by the WEB client for account-scoped playback
+async function sapisidHash(cookieHeader, origin = "https://www.youtube.com") {
+  const sapisid = cookieValue(cookieHeader, "SAPISID") || cookieValue(cookieHeader, "__Secure-3PAPISID");
+  if (!sapisid) return "";
+  const ts = Math.floor(Date.now() / 1000);
+  const hex = await sha1Hex(`${ts} ${sapisid} ${origin}`);
+  return `SAPISIDHASH ${ts}_${hex}`;
+}
+
+// Access key guard: cookies are only ever used for callers that know SV_KEY.
+function keyAllowed(env, url) {
+  if (!env || !env.SV_KEY) return true; // no key configured → worker is private-ish anyway
+  const given = url.searchParams.get("key") || "";
+  if (given.length !== String(env.SV_KEY).length) return false;
+  let diff = 0;
+  for (let i = 0; i < given.length; i++) diff |= given.charCodeAt(i) ^ String(env.SV_KEY).charCodeAt(i);
+  return diff === 0;
+}
+
+function cookieAuth(env, url) {
+  const raw = env && env.YT_COOKIES ? parseCookies(env.YT_COOKIES) : "";
+  if (!raw) return null;
+  if (!keyAllowed(env, url)) return null;
+  return raw;
+}
+
 // ── InnerTube ─────────────────────────────────────────────────────────────────
 function innertubeBody(client, extra) {
   return { context: { client: client.ctx }, ...extra };
 }
 
-async function innertube(client, endpoint, extra) {
+async function innertube(client, endpoint, extra, opts = {}) {
   const headers = {
     "content-type": "application/json",
     "user-agent": client.ua,
     "x-youtube-client-name": client.num,
     "x-youtube-client-version": client.ctx.clientVersion,
     origin: "https://www.youtube.com",
+    "accept-language": "en-US,en;q=0.9",
   };
-  return jsonPost(`https://www.youtube.com/youtubei/v1/${endpoint}?key=${INNERTUBE_KEY}&prettyPrint=false`, innertubeBody(client, extra), headers);
+  if (opts.cookies) {
+    headers.cookie = opts.cookies;
+    headers["x-goog-authuser"] = "0";
+    if (opts.authorization) headers.authorization = opts.authorization;
+  }
+  return jsonPost(
+    `https://www.youtube.com/youtubei/v1/${endpoint}?key=${INNERTUBE_KEY}&prettyPrint=false`,
+    innertubeBody(client, extra),
+    headers
+  );
 }
 
-const WEB = CLIENTS.find((c) => c.id === "mweb");
+const listClient = (ladder) => ladder.find((c) => c.id === "mweb") || ladder[0];
 
 // ── renderer walking ──────────────────────────────────────────────────────────
 function collect(node, keys, out = [], depth = 0) {
@@ -368,76 +553,154 @@ async function playableUrl(f) {
 }
 
 // ── routes ────────────────────────────────────────────────────────────────────
-async function player(videoId) {
-  const attempts = [];
-  for (const client of CLIENTS) {
-    let data;
-    try {
-      data = await innertube(client, "player", { videoId, contentCheckOk: true, racyCheckOk: true });
-    } catch (e) {
-      attempts.push(`${client.id}: ${e.message}`);
-      continue;
-    }
-    const status = data?.playabilityStatus?.status || "UNKNOWN";
-    const sd = data?.streamingData;
-    if (status !== "OK" || !sd) {
-      attempts.push(`${client.id}: ${status} ${data?.playabilityStatus?.reason || ""}`.trim());
-      continue;
-    }
-    const assets =
-      data?.assets?.js ||
-      (data?.assets?.jsUrl ? (data.assets.jsUrl.startsWith("http") ? data.assets.jsUrl : "https://www.youtube.com" + data.assets.jsUrl) : "") ||
-      (data?.playabilityStatus?.liveStreamability ? "" : "");
-
-    const muxed = (sd.formats || []).filter((f) => f.url || f.signatureCipher || f.cipher);
-    const adaptive = (sd.adaptiveFormats || []).filter((f) => (f.url || f.signatureCipher || f.cipher) && f.mimeType?.startsWith("video/"));
-
-    const formats = [];
-    for (const f of muxed) {
-      f.__assets = assets;
-      const u = await playableUrl(f).catch(() => null);
-      if (u) {
-        formats.push({
-          itag: f.itag,
-          quality: f.qualityLabel || (f.height ? `${f.height}p` : f.quality || "auto"),
-          height: f.height || 0,
-          mime: f.mimeType || "",
-          url: u,
-          kind: "muxed",
-        });
-      }
-    }
-    formats.sort((a, b) => b.height - a.height);
-    if (!formats.length) {
-      attempts.push(`${client.id}: no muxed format (${adaptive.length} adaptive only)`);
-      continue;
-    }
-
-    const vd = data.videoDetails || {};
-    return {
-      ok: true,
-      client: client.id,
-      video: {
-        videoId,
-        title: vd.title || "",
-        description: vd.shortDescription || "",
-        author: vd.author || "",
-        authorId: vd.channelId || "",
-        viewCount: Number(vd.viewCount || 0),
-        lengthSeconds: Number(vd.lengthSeconds || 0),
-        live: !!vd.isLive,
-        keywords: (vd.keywords || []).slice(0, 12),
-        thumbnails: (vd.thumbnail?.thumbnails || []).map((t) => t.url),
-      },
-      formats: formats.map((f) => ({ ...f, url: `/api/media?u=${encodeURIComponent(f.url)}` })),
-      attempts,
-    };
+// One player request for one client. Returns null when this client can't serve it.
+async function tryClient(client, videoId, opts, attempts, tag) {
+  const label = `${client.id}@${client.versionRoll || client.ctx.clientVersion}${tag ? "(" + tag + ")" : ""}`;
+  let data;
+  try {
+    data = await innertube(client, "player", { videoId, contentCheckOk: true, racyCheckOk: true }, opts);
+  } catch (e) {
+    attempts.push(`${label}: ${e.message}`);
+    return null;
   }
-  return { ok: false, error: "no playable stream from any client", attempts };
+  const status = data?.playabilityStatus?.status || "UNKNOWN";
+  const sd = data?.streamingData;
+  if (status !== "OK" || !sd) {
+    attempts.push(`${label}: ${status} ${data?.playabilityStatus?.reason || ""}`.trim());
+    return null;
+  }
+  const assets =
+    data?.assets?.js ||
+    (data?.assets?.jsUrl
+      ? data.assets.jsUrl.startsWith("http")
+        ? data.assets.jsUrl
+        : "https://www.youtube.com" + data.assets.jsUrl
+      : "");
+
+  const muxed = (sd.formats || []).filter((f) => f.url || f.signatureCipher || f.cipher);
+  const adaptive = (sd.adaptiveFormats || []).filter(
+    (f) => (f.url || f.signatureCipher || f.cipher) && f.mimeType?.startsWith("video/")
+  );
+
+  const formats = [];
+  for (const f of muxed) {
+    f.__assets = assets;
+    const u = await playableUrl(f).catch(() => null);
+    if (u) {
+      formats.push({
+        itag: f.itag,
+        quality: f.qualityLabel || (f.height ? `${f.height}p` : f.quality || "auto"),
+        height: f.height || 0,
+        mime: f.mimeType || "",
+        url: u,
+        kind: "muxed",
+      });
+    }
+  }
+  formats.sort((a, b) => b.height - a.height);
+  if (!formats.length) {
+    attempts.push(`${label}: no muxed format (${adaptive.length} adaptive only)`);
+    return null;
+  }
+
+  const vd = data.videoDetails || {};
+  return {
+    ok: true,
+    client: client.id,
+    clientVersion: client.ctx.clientVersion,
+    authed: !!opts.cookies,
+    video: {
+      videoId,
+      title: vd.title || "",
+      description: vd.shortDescription || "",
+      author: vd.author || "",
+      authorId: vd.channelId || "",
+      viewCount: Number(vd.viewCount || 0),
+      lengthSeconds: Number(vd.lengthSeconds || 0),
+      live: !!vd.isLive,
+      keywords: (vd.keywords || []).slice(0, 12),
+      thumbnails: (vd.thumbnail?.thumbnails || []).map((t) => t.url),
+    },
+    formats: formats.map((f) => ({ ...f, url: `/api/media?u=${encodeURIComponent(f.url)}` })),
+    attempts,
+  };
 }
 
-async function search(q, page = 1) {
-  const data = await innertube(WEB, "search", { query: q, params: page > 1 ? undefined : undefined });
+/**
+ * Resolve a playable stream.
+ * Pass 1: anonymous ladder (all clients, discovered + fallback versions).
+ * Pass 2: only if cookies are configured AND the caller passed the right SV_KEY —
+ *         retries the auth-capable clients with cookies + SAPISIDHASH.
+ */
+async function player(videoId, opts = {}) {
+  const env = opts.env || {};
+  const attempts = [];
+  const { versions, source } = await discoverVersions(env);
+  const ladder = buildClients(versions, opts.region || "IN");
+
+  for (const client of ladder) {
+    const res = await tryClient(client, videoId, {}, attempts, "");
+    if (res) return { ...res, versions, versionSource: source };
+  }
+
+  const cookieHeader = opts.cookieHeader || "";
+  if (cookieHeader) {
+    const auth = await sapisidHash(cookieHeader);
+    const authClients = ladder.filter((c) =>
+      ["android", "web", "ios", "tv_embedded"].includes(c.id)
+    );
+    for (const client of authClients) {
+      const res = await tryClient(
+        client,
+        videoId,
+        { cookies: cookieHeader, authorization: client.id === "web" ? auth : "" },
+        attempts,
+        "auth"
+      );
+      if (res) return { ...res, versions, versionSource: source };
+    }
+  }
+
+  return {
+    ok: false,
+    error: cookieHeader
+      ? "no playable stream (tried anonymous + authenticated)"
+      : "no playable stream from any client",
+    attempts,
+    versions,
+    versionSource: source,
+    cookiesUsed: !!cookieHeader,
+  };
+}
+
+async function listCall(env, url, endpoint, extra) {
+  const { versions } = await discoverVersions(env);
+  const ladder = buildClients(versions, (url.searchParams.get("region") || "IN").toUpperCase());
+  const anon = listClient(ladder);
+  const cookieHeader = cookieAuth(env, url);
+  const attempts = [];
+
+  const clients = [
+    { client: anon, opts: {} },
+    ...(cookieHeader
+      ? [{ client: ladder.find((c) => c.id === "web") || anon, opts: { cookies: cookieHeader, authorization: await sapisidHash(cookieHeader) } }]
+      : []),
+  ];
+
+  let lastError = null;
+  for (const { client, opts } of clients) {
+    try {
+      return await innertube(client, endpoint, extra, opts);
+    } catch (e) {
+      lastError = e;
+      attempts.push(`${client.id}: ${e.message}`);
+    }
+  }
+  throw lastError || new Error("request failed");
+}
+
+async function search(q, page = 1, env = {}, url = new URL("https://x/")) {
+  const data = await listCall(env, url, "search", { query: q, params: page > 1 ? undefined : undefined });
   const items = normalizeList(data, 32);
   const tokens = collect(data, ["continuationItemRenderer"])
     .map((c) => c.continuationEndpoint?.continuationCommand?.token)
@@ -445,25 +708,23 @@ async function search(q, page = 1) {
   return { items, continuation: page > 1 ? null : tokens[0] || null };
 }
 
-async function searchMore(q, token) {
-  const data = await innertube(WEB, "search", { query: q, continuation: token });
+async function searchMore(q, token, env = {}, url = new URL("https://x/")) {
+  const data = await listCall(env, url, "search", { query: q, continuation: token });
   return { items: normalizeList(data, 32) };
 }
 
-async function trending(region = "IN") {
-  const client = { ...WEB, ctx: { ...WEB.ctx, gl: region } };
-  const data = await innertube(client, "browse", { browseId: "FEtrending" });
+async function trending(region = "IN", env = {}, url = new URL("https://x/")) {
+  const data = await listCall(env, url, "browse", { browseId: "FEtrending" });
   let items = normalizeList(data, 40);
   if (!items.length) {
-    // fallback: plain search that behaves like a trending feed
-    const alt = await innertube(client, "search", { query: `trending ${region}` });
+    const alt = await listCall(env, url, "search", { query: `trending ${region}` });
     items = normalizeList(alt, 40);
   }
   return { items };
 }
 
-async function related(videoId) {
-  const data = await innertube(WEB, "next", { videoId });
+async function related(videoId, env = {}, url = new URL("https://x/")) {
+  const data = await listCall(env, url, "next", { videoId });
   return { items: normalizeList(data, 24) };
 }
 
@@ -494,16 +755,55 @@ async function media(url, request) {
 }
 
 const ROUTES = [
-  ["/api/health", async () => ({ ok: true, service: "streamvoid-worker", engine: "innertube", clients: CLIENTS.map((c) => c.id) })],
-  ["/api/player", async (u) => player(u.searchParams.get("id") || "")],
-  ["/api/search", async (u) => search(u.searchParams.get("q") || "", Number(u.searchParams.get("page") || 1))],
-  ["/api/searchmore", async (u) => searchMore(u.searchParams.get("q") || "", u.searchParams.get("token") || "")],
-  ["/api/trending", async (u) => trending((u.searchParams.get("region") || "IN").toUpperCase())],
-  ["/api/related", async (u) => related(u.searchParams.get("id") || "")],
+  [
+    "/api/health",
+    async (u, env) => {
+      const { versions, source } = await discoverVersions(env);
+      const cookies = env && env.YT_COOKIES ? parseCookies(env.YT_COOKIES) : "";
+      return {
+        ok: true,
+        service: "streamvoid-worker",
+        engine: "innertube",
+        clients: CLIENT_SPECS.map((c) => c.id),
+        versions,
+        versionSource: source,
+        ladder: "2 versions per client (discovered, then baked fallback)",
+        cookies: cookies
+          ? {
+              configured: true,
+              used: keyAllowed(env, u),
+              keys: cookies.split("; ").map((x) => x.split("=")[0]).slice(0, 12),
+              note: keyAllowed(env, u) ? "cookies enabled for this caller" : "SV_KEY mismatch → cookies NOT used",
+            }
+          : { configured: false },
+        versionCacheAge: Math.round(Date.now() / 1000 - VERSION_CACHE.ts) + "s",
+      };
+    },
+  ],
+  [
+    "/api/debug",
+    async (u, env) => {
+      const { versions, source } = await discoverVersions(env, u.searchParams.get("refresh") === "1");
+      const ladder = buildClients(versions, (u.searchParams.get("region") || "IN").toUpperCase());
+      return {
+        ok: true,
+        versions,
+        source,
+        ladder: ladder.map((c) => ({ id: c.id, version: c.ctx.clientVersion })),
+        cookieHeaderPresent: !!(env && env.YT_COOKIES),
+        keyProtectsCookies: !!(env && env.SV_KEY),
+      };
+    },
+  ],
+  ["/api/player", async (u, env) => player(u.searchParams.get("id") || "", { env, cookieHeader: cookieAuth(env, u), region: (u.searchParams.get("region") || "IN").toUpperCase() })],
+  ["/api/search", async (u, env) => search(u.searchParams.get("q") || "", Number(u.searchParams.get("page") || 1), env, u)],
+  ["/api/searchmore", async (u, env) => searchMore(u.searchParams.get("q") || "", u.searchParams.get("token") || "", env, u)],
+  ["/api/trending", async (u, env) => trending((u.searchParams.get("region") || "IN").toUpperCase(), env, u)],
+  ["/api/related", async (u, env) => related(u.searchParams.get("id") || "", env, u)],
 ];
 
 export default {
-  async fetch(request) {
+  async fetch(request, env = {}) {
     const url = new URL(request.url);
     if (request.method === "OPTIONS") {
       return new Response(null, {
@@ -521,9 +821,11 @@ export default {
         return media(url.searchParams.get("u") || "", request);
       }
       for (const [path, handler] of ROUTES) {
-        if (url.pathname === path) return json(await handler(url));
+        if (url.pathname === path) return json(await handler(url, env));
       }
-      return err("not found", 404, { routes: ["/api/health", "/api/player?id=", "/api/search?q=", "/api/trending?region=IN", "/api/related?id=", "/api/media?u="] });
+      return err("not found", 404, {
+        routes: ["/api/health", "/api/debug", "/api/player?id=", "/api/search?q=", "/api/trending?region=IN", "/api/related?id=", "/api/media?u="],
+      });
     } catch (e) {
       return err(e && e.message ? e.message : "worker error", 502);
     }
@@ -531,4 +833,30 @@ export default {
 };
 
 // exported for tests
-export { findSigName, findNName, buildDecipher, fnSource, objectSource, balanced, normalizeList, normVideo, durToSec, VIEWS, player, search, trending, related };
+export {
+  findSigName,
+  findNName,
+  buildDecipher,
+  fnSource,
+  objectSource,
+  balanced,
+  normalizeList,
+  normVideo,
+  durToSec,
+  VIEWS,
+  player,
+  search,
+  trending,
+  related,
+  // new: version discovery + cookies
+  parseYtdlpVersions,
+  discoverVersions,
+  buildClients,
+  CLIENT_SPECS,
+  FALLBACK_VERSIONS,
+  parseCookies,
+  sapisidHash,
+  sha1Hex,
+  keyAllowed,
+  cookieAuth,
+};
