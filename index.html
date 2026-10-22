@@ -8,6 +8,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js"></script>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -136,6 +137,27 @@ img{max-width:100%;display:block}
 .watch-main{flex:1;min-width:0}
 .watch-player{width:100%;aspect-ratio:16/9;border-radius:12px;overflow:hidden;background:#000}
 .watch-player iframe{width:100%;height:100%;border:none;display:block}
+/* native player */
+.pl-wrap{position:relative;width:100%;height:100%;background:#000}
+.pl-video{width:100%;height:100%;display:block;background:#000;object-fit:contain}
+.pl-overlay{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;text-align:center;padding:20px;background:rgba(0,0,0,.72);color:#fff;z-index:2}
+.pl-overlay-t{font-size:16px;font-weight:500;display:flex;align-items:center;gap:8px}
+.pl-overlay-s{font-size:13px;color:#cfcfcf;max-width:520px;line-height:1.5;word-break:break-word}
+.pl-spin{width:34px;height:34px;border-radius:50%;border:3px solid rgba(255,255,255,.25);border-top-color:#3ea6ff;animation:spn .8s linear infinite}
+@keyframes spn{to{transform:rotate(360deg)}}
+.pl-ov-btn{padding:0 16px;height:34px;border-radius:18px;background:rgba(255,255,255,.14);color:#fff;font-size:13px;transition:background .1s}
+.pl-ov-btn:hover{background:rgba(255,255,255,.26)}
+.pl-srcbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:10px 4px 0;font-size:12px;color:var(--t2)}
+.pl-src{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:10px;background:var(--bg3);color:var(--t2);font-size:12px}
+.pl-src.ok{color:#7ee787;background:rgba(76,175,80,.12)}
+.pl-src-mono{font-family:monospace;font-size:11px;color:var(--t3)}
+.pl-fallback{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;width:100%;height:100%;color:#ddd;text-align:center;padding:24px;background:#0a0a0a}
+.pl-fallback-t{font-size:16px;font-weight:500;color:#fff}
+.pl-fallback-s{font-size:13px;color:#9a9a9a;max-width:420px;line-height:1.55}
+.pl-fallback-btns{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
+.pl-fb-btn{padding:0 18px;height:38px;border-radius:19px;background:#fff;color:#0f0f0f;font-size:14px;font-weight:500;display:inline-flex;align-items:center;gap:6px}
+.pl-fb-btn.ghost{background:rgba(255,255,255,.13);color:#fff}
+.pl-fb-btn.ghost:hover{background:rgba(255,255,255,.24)}
 .watch-title{font-size:20px;font-weight:600;line-height:1.4;margin:12px 0 8px}
 .watch-row{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;padding-bottom:12px;border-bottom:1px solid var(--border);margin-bottom:12px}
 .watch-info-left{font-size:14px;color:var(--t2)}
@@ -319,22 +341,183 @@ const fd=s=>{if(!s)return"";const h=Math.floor(s/3600),m=Math.floor((s%3600)/60)
 const ago=ts=>{if(!ts)return"";const d=Date.now()/1000-ts;if(d<3600)return Math.floor(d/60)+" minutes ago";if(d<86400)return Math.floor(d/3600)+" hours ago";if(d<2592000)return Math.floor(d/86400)+" days ago";if(d<31536000)return Math.floor(d/2592000)+" months ago";return Math.floor(d/31536000)+" years ago";};
 const ls=(k,d)=>{try{const v=localStorage.getItem(k);return v?JSON.parse(v):d;}catch{return d;}};
 const ss=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v));}catch{}};
-const YTE=id=>`https://www.youtube.com/embed/${id}?autoplay=1&rel=0&modestbranding=1`;
 const YTW=id=>`https://www.youtube.com/watch?v=${id}`;
 const YTT=id=>`https://i.ytimg.com/vi/${id}/mqdefault.jpg`;
 
-// YouTube Data API
-const ytSearch=async(q,key,token="")=>{
-  const r=await fetch(`https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(q)}&maxResults=24&type=video&regionCode=IN&key=${key}${token?`&pageToken=${token}`:""}`);
-  if(!r.ok){const e=await r.json();throw new Error(e.error?.message||"API Error");}
-  const d=await r.json();
-  return{videos:d.items.map(i=>({videoId:i.id.videoId,title:i.snippet.title,author:i.snippet.channelTitle,published:new Date(i.snippet.publishedAt).getTime()/1000,viewCount:0,lengthSeconds:0,videoThumbnails:[{url:i.snippet.thumbnails?.medium?.url,quality:"medium"}]})),next:d.nextPageToken||null};
+// hls.js is only needed for live/HLS-only streams — load it on demand
+const HLS_CDNS=["https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js","https://unpkg.com/hls.js@1.5.17/dist/hls.min.js"];
+function ensureHls(){
+  if(window.Hls)return Promise.resolve(window.Hls);
+  const src=HLS_CDNS.find(u=>!document.querySelector(`script[data-hls="${u}"]`))||HLS_CDNS[0];
+  return new Promise((res,rej)=>{
+    const sc=document.createElement("script");
+    sc.src=src;sc.dataset.hls=src;
+    sc.onload=()=>window.Hls?res(window.Hls):rej(new Error("hls.js unavailable"));
+    sc.onerror=()=>rej(new Error("hls.js load failed"));
+    document.head.appendChild(sc);
+  });
+}
+
+// ── BACKENDS: public Piped / Invidious instances (no API key, no Google account)
+const DEFAULT_INVIDIOUS=[
+  "https://inv.nadeko.net",
+  "https://invidious.nerdvpn.de",
+  "https://iv.melmac.space",
+  "https://invidious.f5.si",
+  "https://yewtu.be",
+];
+const DEFAULT_PIPED=[
+  "https://pipedapi.kavin.rocks",
+  "https://pipedapi.adminforge.de",
+  "https://api.piped.private.coffee",
+  "https://pipedapi.ducks.party",
+];
+const HEALTH_KEY="sv_health_v2";
+let HEALTH=ls(HEALTH_KEY,{})||{};
+const HEALTH_TTL=10*60*1000;
+const healthState=h=>{const r=HEALTH[h];if(!r)return 0;if(Date.now()-(r.ts||0)>HEALTH_TTL)return 0;return r.ok?2:1;};
+const markHealth=(h,ok)=>{HEALTH[h]={ok,ts:Date.now()};ss(HEALTH_KEY,HEALTH);};
+
+// Build an ordered, de-duplicated source list: custom > preferred backend > other
+const srcList=cfg=>{
+  const custom=(cfg.sources||[]).map(s=>String(s||"").trim().replace(/\/+$/,"")).filter(Boolean).map(url=>({url,api:"auto"}));
+  const inv=DEFAULT_INVIDIOUS.map(url=>({url,api:"inv"}));
+  const pip=DEFAULT_PIPED.map(url=>({url,api:"piped"}));
+  const ordered=cfg.backend==="piped"?[...pip,...inv]:[...inv,...pip];
+  const seen=new Set();const list=[];
+  [...custom,...ordered].forEach(s=>{if(!seen.has(s.url)){seen.add(s.url);list.push(s);}});
+  const rank=s=>{const st=healthState(s.url);return st===2?0:st===0?1:2;};
+  return list.map((s,i)=>({s,i})).sort((a,b)=>rank(a.s)-rank(b.s)||a.i-b.i).map(x=>x.s);
 };
-const ytTrend=async(key)=>{
-  const r=await fetch(`https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics&chart=mostPopular&regionCode=IN&maxResults=24&key=${key}`);
-  if(!r.ok){const e=await r.json();throw new Error(e.error?.message||"API Error");}
-  const d=await r.json();
-  return d.items.map(i=>({videoId:i.id,title:i.snippet.title,author:i.snippet.channelTitle,published:new Date(i.snippet.publishedAt).getTime()/1000,viewCount:parseInt(i.statistics?.viewCount||0),lengthSeconds:0,videoThumbnails:[{url:i.snippet.thumbnails?.medium?.url,quality:"medium"}]}));
+
+async function fetchJson(url,timeout=8000){
+  const ctrl=new AbortController();
+  const t=setTimeout(()=>ctrl.abort(),timeout);
+  try{
+    const r=await fetch(url,{signal:ctrl.signal,headers:{Accept:"application/json"}});
+    if(!r.ok)throw new Error("HTTP "+r.status);
+    return await r.json();
+  }finally{clearTimeout(t);}
+}
+
+const P={
+  trending:(b,f,region)=>`${b}/trending?region=${region||"IN"}${f&&f!=="all"?`&filter=${f}`:""}`,
+  search:(b,q,page,token)=>`${b}/search?q=${encodeURIComponent(q)}&filter=videos${token?`&nextpage=${encodeURIComponent(token)}`:""}`,
+  streams:(b,id)=>`${b}/streams/${encodeURIComponent(id)}`,
+  channel:(b,id)=>`${b}/channel/${encodeURIComponent(id)}`,
+};
+const I={
+  trending:(b,f,region)=>`${b}/api/v1/trending?region=${region||"IN"}${f&&f!=="all"?`&type=${f}`:""}`,
+  search:(b,q,page)=>`${b}/api/v1/search?q=${encodeURIComponent(q)}&type=video&region=IN&page=${page||1}`,
+  streams:(b,id,proxy)=>`${b}/api/v1/videos/${encodeURIComponent(id)}${proxy?"?local=true":""}`,
+  channel:(b,id)=>`${b}/api/v1/channels/${encodeURIComponent(id)}`,
+};
+const API={piped:P,inv:I};
+
+const pipedItem=x=>{
+  const id=((x.url||"").split("v=")[1]||x.videoId||"").split("&")[0];
+  return{videoId:id,title:x.title||"",author:x.uploaderName||x.uploader||"",
+    authorId:((x.uploaderUrl||"").split("/channel/")[1]||""),
+    viewCount:x.views||0,lengthSeconds:x.duration||0,
+    published:x.uploaded>1e12?Math.floor(x.uploaded/1000):(x.uploaded||0),
+    videoThumbnails:[{url:x.thumbnail||YTT(id),quality:"medium"}],
+    description:x.shortDescription||""};
+};
+const invItem=x=>({videoId:x.videoId,title:x.title||"",author:x.author||"",authorId:x.authorId||"",
+  viewCount:x.viewCount||0,lengthSeconds:x.lengthSeconds||0,published:x.published||0,
+  videoThumbnails:[{url:YTT(x.videoId),quality:"medium"}],description:x.description||""});
+
+const mapList=(api,data)=>{
+  if(api==="piped"){
+    const arr=(data&&data.items)||[];
+    return arr.filter(x=>x&&(x.type==="stream"||/\/watch\?v=/.test(x.url||""))).map(pipedItem).filter(v=>v.videoId);
+  }
+  const arr=Array.isArray(data)?data:(data&&data.items)||[];
+  return arr.filter(x=>x&&x.videoId&&x.type!=="channel"&&x.type!=="playlist").map(invItem).filter(v=>v.videoId);
+};
+
+// Pick the best progressive (audio+video in one file) URL
+const qualityNum=q=>{const m=String(q||"").match(/(\d{3,4})/);return m?parseInt(m[1]):0;};
+const pickProgressive=(api,d)=>{
+  if(api==="piped"){
+    const v=(d.videoStreams||[]).filter(s=>s&&s.url&&s.videoOnly!==true);
+    v.sort((a,b)=>(b.height||qualityNum(b.quality))-(a.height||qualityNum(a.quality)));
+    return v.length?{url:v[0].url,quality:v[0].quality||"",mime:v[0].mimeType||""}:null;
+  }
+  const f=(d.formatStreams||[]).filter(s=>s&&s.url);
+  f.sort((a,b)=>qualityNum(b.quality||b.resolution)-qualityNum(a.quality||a.resolution));
+  return f.length?{url:f[0].url,quality:f[0].quality||"",mime:f[0].type||""}:null;
+};
+
+const normStream=(api,d,id)=>({
+  videoId:id,
+  title:d.title||"",
+  description:d.description||"",
+  author:d.uploader||d.author||"",
+  authorId:((d.uploaderUrl||"").split("/channel/")[1]||d.authorId||""),
+  viewCount:d.views||d.viewCount||0,
+  likes:d.likes||d.likeCount||0,
+  published:api==="piped"?(d.uploaded>1e12?Math.floor(d.uploaded/1000):(d.uploaded||0)):(d.published||0),
+  lengthSeconds:d.duration||d.lengthSeconds||0,
+  live:!!(d.livestream||d.liveNow),
+  mp4:pickProgressive(api,d),
+  hls:api==="piped"?(d.hls||""):(d.hlsUrl||""),
+  related:(api==="piped"?(d.relatedStreams||[]).map(pipedItem):(d.recommendedVideos||[]).map(invItem)).filter(v=>v.videoId),
+  api,base:"",
+});
+
+// Try every instance until one returns something actually playable
+async function getStreams(id,cfg){
+  const srcs=srcList(cfg);
+  let lastErr=null,sandbox=null,tried=0;
+  for(const s of srcs){
+    if(tried>=8)break;tried++;
+    const apis=s.api==="auto"?["inv","piped"]:[s.api];
+    for(const api of apis){
+      try{
+        const data=await fetchJson(API[api].streams(s.url,id,cfg.proxyStreams!==false),api==="piped"?7000:9000);
+        const info=normStream(api,data,id);
+        info.base=s.url;info.api=api;
+        if(info.mp4||info.hls){markHealth(s.url,true);return info;}
+        sandbox=sandbox||info;
+      }catch(e){
+        lastErr=e;
+        if(s.api!=="auto")break;
+      }
+    }
+    markHealth(s.url,false);
+  }
+  if(sandbox)return sandbox;
+  throw new Error(lastErr?`All instances failed (${lastErr.message})`:"All instances failed");
+}
+
+// Generic multi-instance call for lists (trending / search)
+async function backendList(cfg,build,pick,limit=6,nextOf){
+  const srcs=srcList(cfg);
+  let lastErr=null,tried=0;
+  for(const s of srcs){
+    if(tried>=limit)break;tried++;
+    const apis=s.api==="auto"?["inv","piped"]:[s.api];
+    for(const api of apis){
+      try{
+        const data=await fetchJson(build(API[api],s.url),api==="piped"?7000:8000);
+        const list=pick(mapList(api,data),data);
+        if(list&&list.length){markHealth(s.url,true);return{list,base:s.url,api,next:nextOf?nextOf(api,data):null};}
+      }catch(e){lastErr=e;if(s.api!=="auto")break;}
+    }
+    markHealth(s.url,false);
+  }
+  throw new Error(lastErr?`All instances failed (${lastErr.message})`:"All instances failed");
+}
+
+const trending=async(cfg,filter)=>{
+  const {list,base,api}=await backendList(cfg,(A,b)=>A.trending(b,filter,cfg.region||"IN"),l=>l);
+  return{list,base,api};
+};
+const searchVideos=async(cfg,q,page=1,token="")=>{
+  const {list,base,api,next}=await backendList(cfg,(A,b)=>A.search(b,q,page,token),l=>l,6,
+    (a,d)=>a==="piped"?(d.nextpage||null):(page+1));
+  return{list,base,api,next};
 };
 
 // ── STORE ─────────────────────────────────────────────────────────────────────
@@ -343,7 +526,8 @@ function useStore(){
   const [favs,setFavs]=useState(()=>ls("ytc_f",[]));
   const [wl,setWl]=useState(()=>ls("ytc_w",[]));
   const [pls,setPls]=useState(()=>ls("ytc_p",[]));
-  const [cfg,setCfg]=useState(()=>ls("ytc_c",{apiKey:"",autoplay:true,showRelated:true}));
+  const DEFAULT_CFG={backend:"invidious",proxyStreams:true,sources:[],autoplay:true,showRelated:true,region:"IN"};
+  const [cfg,setCfg]=useState(()=>({...DEFAULT_CFG,...ls("ytc_c",{})}));
   const addHist=v=>{const h=[v,...hist.filter(x=>x.videoId!==v.videoId)].slice(0,300);setHist(h);ss("ytc_h",h);};
   const clrHist=()=>{setHist([]);ss("ytc_h",[]);};
   const rmHist=id=>{const h=hist.filter(v=>v.videoId!==id);setHist(h);ss("ytc_h",h);};
@@ -429,22 +613,21 @@ function Skels({n=12}){
   ))}</div>;
 }
 
-// ── API BANNER ────────────────────────────────────────────────────────────────
-function ApiBanner({cfg,onSave}){
+// ── BACKEND BAR ───────────────────────────────────────────────────────────────
+function BackendBar({cfg,src,onAdd}){
   const [val,setVal]=useState("");
-  if(cfg.apiKey)return(
-    <div className="api-banner ok" style={{margin:"0 0 0"}}>
-      <span style={{fontSize:18}}>✅</span>
-      <div><div className="api-b-title ok">YouTube API Connected</div><div className="api-b-sub">Full search & live trending from India enabled</div></div>
-    </div>
-  );
+  const add=()=>{const v=val.trim();if(!v)return;onAdd(v);setVal("");};
   return(
-    <div className="api-banner" style={{margin:"0 0 0"}}>
-      <span style={{fontSize:18}}>🔑</span>
-      <div style={{flex:"0 0 auto"}}><div className="api-b-title">Optional: Add API Key for Full Search</div><div className="api-b-sub">Works without it — curated videos play fine</div></div>
+    <div className="api-banner">
+      <span style={{fontSize:18}}>📡</span>
+      <div style={{flex:"1 1 260px",minWidth:0}}>
+        <div className="api-b-title">{src?`Live via ${String(src.base||"").replace(/^https?:\/\//,"")}`:"Open instances — no API key"}</div>
+        <div className="api-b-sub">Streams fetched from public Invidious / Piped mirrors · no Google login, no key{src&&src.api?` · ${src.api==="piped"?"Piped":"Invidious"}`:""}</div>
+      </div>
       <div className="api-b-inp">
-        <input placeholder="YouTube Data API v3 key..." value={val} onChange={e=>setVal(e.target.value)} onKeyDown={e=>e.key==="Enter"&&val.trim()&&onSave(val.trim())}/>
-        <button className="api-b-btn" onClick={()=>val.trim()&&onSave(val.trim())}>Activate</button>
+        <input placeholder="Add your own instance  https://…" value={val} onChange={e=>setVal(e.target.value)}
+          onKeyDown={e=>e.key==="Enter"&&add()}/>
+        <button className="api-b-btn" onClick={add}>Add</button>
       </div>
     </div>
   );
@@ -454,45 +637,64 @@ function ApiBanner({cfg,onSave}){
 function HomePage({onPlay,st,initChip}){
   const [videos,setVideos]=useState([]);
   const [loading,setLoading]=useState(true);
-  const [error,setError]=useState("");
+  const [warn,setWarn]=useState("");
+  const [src,setSrc]=useState(null);
   const [chip,setChip]=useState(initChip||"All");
+  const [nonce,setNonce]=useState(0);
 
   const filterCurated=useCallback(c=>{
     if(c==="All")return CURATED_HOME;
     const q=c.toLowerCase();
-    const map={music:["music","song","official","remix","audio"],gaming:["game","gta","minecraft","gaming","trailer","cyberpunk"],science:["science","universe","fermi","kurzgesagt","space","quantum","brain"],movies:["movie","film","trailer","official trailer"],india:["india","hindi","bollywood"],comedy:["funny","comedy","laugh"],trending:CURATED_HOME.map(v=>v.videoId),live:[]};
+    const map={music:["music","song","official","remix","audio","official video"],gaming:["game","gta","minecraft","gaming","trailer","cyberpunk"],science:["science","universe","fermi","kurzgesagt","space","quantum","brain"],movies:["movie","film","trailer","official trailer"],india:["india","hindi","bollywood"],comedy:["funny","comedy","laugh"],trending:CURATED_HOME.map(v=>v.videoId),live:[]};
     const keys=map[q]||[q];
     return CURATED_HOME.filter(v=>keys.some(k=>v.title.toLowerCase().includes(k)||v.author.toLowerCase().includes(k)));
   },[]);
 
-  const load=useCallback(async(c=chip)=>{
-    setLoading(true);setError("");
-    if(st.cfg.apiKey&&c==="All"){
-      try{setVideos(await ytTrend(st.cfg.apiKey));setLoading(false);return;}
-      catch(e){console.warn("API error, falling back to curated:",e.message);}
-    }
-    const filtered=filterCurated(c);
-    setVideos(filtered.length?filtered:CURATED_HOME);
-    setLoading(false);
-  },[st.cfg.apiKey,filterCurated]);
+  useEffect(()=>{
+    let dead=false;
+    setLoading(true);setWarn("");
+    (async()=>{
+      const word=(chip||"").toLowerCase();
+      const filter=["music","gaming","movies"].includes(word)?word:"all";
+      try{
+        const r=await trending(st.cfg,filter);
+        if(dead)return;
+        let list=r.list;
+        if(!["music","gaming","movies","trending","all"].includes(word)){
+          const f=list.filter(v=>v.title.toLowerCase().includes(word)||v.author.toLowerCase().includes(word));
+          if(f.length)list=f;
+        }
+        setVideos(list.slice(0,48));setSrc({base:r.base,api:r.api});setLoading(false);
+      }catch(e){
+        if(dead)return;
+        setWarn(e.message);
+        const f=filterCurated(chip);
+        setVideos(f.length?f:CURATED_HOME);setLoading(false);
+      }
+    })();
+    return()=>{dead=true;};
+  },[chip,nonce,st.cfg.backend,st.cfg.proxyStreams,(st.cfg.sources||[]).join(",")]);
 
-  useEffect(()=>{load(chip);},[st.cfg.apiKey]);
-
-  const handleChip=c=>{setChip(c);load(c);};
+  const addSrc=url=>{st.updCfg({sources:[...(st.cfg.sources||[]),url]});setNonce(n=>n+1);};
 
   return(
     <div>
       <div style={{padding:"12px 24px 0"}}>
-        <ApiBanner cfg={st.cfg} onSave={k=>st.updCfg({apiKey:k})}/>
+        <BackendBar cfg={st.cfg} src={src} onAdd={addSrc}/>
       </div>
       <div className="chips-bar">
         {SUGGESTION_CHIPS.map(c=>(
-          <button key={c} className={`chip${chip===c?" act":""}`} onClick={()=>handleChip(c)}>{c}</button>
+          <button key={c} className={`chip${chip===c?" act":""}`} onClick={()=>setChip(c)}>{c}</button>
         ))}
       </div>
-      {loading?<Skels/>:error?(
-        <div className="err-box"><div className="err-ico">⚠️</div><div className="err-msg">{error}</div><button className="err-btn" onClick={()=>load()}>Retry</button></div>
-      ):(
+      {warn&&!loading&&(
+        <div style={{margin:"0 24px 12px",padding:"10px 14px",borderRadius:10,background:"rgba(255,152,0,.08)",border:"1px solid rgba(255,152,0,.22)",display:"flex",gap:10,alignItems:"center",flexWrap:"wrap"}}>
+          <span>⚠️</span>
+          <span style={{fontSize:12.5,color:"var(--t2)",flex:"1 1 240px"}}>Live feed nahi mila ({warn}) — curated picks dikha rahe hain.</span>
+          <button className="api-b-btn" onClick={()=>setNonce(n=>n+1)}>Retry</button>
+        </div>
+      )}
+      {loading?<Skels/>:(
         <div className="vgrid">
           {videos.map((v,i)=><div key={v.videoId||i} style={{animationDelay:`${i*.03}s`}}><VCard v={v} onPlay={onPlay} st={st}/></div>)}
         </div>
@@ -504,51 +706,189 @@ function HomePage({onPlay,st,initChip}){
 // ── SEARCH PAGE ───────────────────────────────────────────────────────────────
 function SearchPage({query,onPlay,st}){
   const [res,setRes]=useState([]);
-  const [loading,setLoading]=useState(false);
+  const [loading,setLoading]=useState(true);
   const [error,setError]=useState("");
   const [next,setNext]=useState(null);
+  const [src,setSrc]=useState(null);
+  const [more,setMore]=useState(false);
   const [layout,setLayout]=useState("grid");
 
   useEffect(()=>{
     if(!query)return;
-    setLoading(true);setError("");setRes([]);setNext(null);
-    if(!st.cfg.apiKey){
+    let dead=false;
+    setLoading(true);setError("");setRes([]);setNext(null);setSrc(null);
+    searchVideos(st.cfg,query).then(r=>{
+      if(dead)return;
+      setRes(r.list);setSrc({base:r.base,api:r.api});setNext(r.next);setLoading(false);
+    }).catch(e=>{
+      if(dead)return;
       const q=query.toLowerCase();
-      const seen=new Set();
-      const found=CURATED_HOME.filter(v=>{
-        if(seen.has(v.videoId))return false;seen.add(v.videoId);
-        return v.title.toLowerCase().includes(q)||v.author.toLowerCase().includes(q);
-      });
-      setRes(found.length?found:CURATED_HOME.slice(0,12));
-      setLoading(false);return;
-    }
-    ytSearch(query,st.cfg.apiKey).then(({videos,next:n})=>{setRes(videos);setNext(n);setLoading(false);}).catch(e=>{setError("Search failed: "+e.message);setLoading(false);});
-  },[query,st.cfg.apiKey]);
+      const f=CURATED_HOME.filter(v=>v.title.toLowerCase().includes(q)||v.author.toLowerCase().includes(q));
+      setRes(f);setError(e.message);setLoading(false);
+    });
+    return()=>{dead=true;};
+  },[query,st.cfg.backend,st.cfg.proxyStreams,(st.cfg.sources||[]).join(",")]);
 
-  const more=()=>{if(!next||!st.cfg.apiKey)return;ytSearch(query,st.cfg.apiKey,next).then(({videos,next:n})=>{setRes(r=>[...r,...videos]);setNext(n);}).catch(()=>{});};
+  const loadMore=async()=>{
+    if(!next||more)return;
+    setMore(true);
+    try{
+      const r=(src&&src.api==="piped")
+        ?await searchVideos(st.cfg,query,1,next)
+        :await searchVideos(st.cfg,query,Number(next)||1,"");
+      setRes(prev=>{const have=new Set(prev.map(v=>v.videoId));return [...prev,...r.list.filter(v=>!have.has(v.videoId))];});
+      setNext(r.next);
+    }catch(e){setError(e.message);}
+    setMore(false);
+  };
 
   return(
     <div>
       <div className="search-hero" style={{padding:"12px 24px",borderBottom:"1px solid var(--border)",marginBottom:8}}>
         <span>Search results for <strong>"{query}"</strong></span>
         {!loading&&<span style={{marginLeft:8,fontSize:12,color:"var(--t3)"}}>About {res.length}{next?"+":""} results</span>}
+        {src&&<span style={{marginLeft:8,fontSize:12,color:"var(--t3)"}}>· via {String(src.base||"").replace(/^https?:\/\//,"")}</span>}
         <div className="search-sort">
           <button className={`sort-btn${layout==="grid"?" act":""}`} onClick={()=>setLayout("grid")}>⊞ Grid</button>
           <button className={`sort-btn${layout==="list"?" act":""}`} onClick={()=>setLayout("list")}>☰ List</button>
         </div>
       </div>
-      {loading?<Skels n={8}/>:error?(
-        <div className="err-box"><div className="err-ico">⚠️</div><div className="err-msg">{error}</div></div>
-      ):res.length===0?(
+      {error&&!loading&&(
+        <div style={{margin:"0 24px 12px",padding:"10px 14px",borderRadius:10,background:"rgba(255,152,0,.08)",border:"1px solid rgba(255,152,0,.22)",fontSize:12.5,color:"var(--t2)"}}>
+          ⚠️ Search instance error: {error}{res.length?" — showing cached picks.":""}
+        </div>
+      )}
+      {loading?<Skels n={8}/>:res.length===0?(
         <div className="err-box"><div className="err-ico">🔍</div><div className="err-msg">No results for "{query}"</div></div>
       ):(
         <>
           <div className={layout==="grid"?"vgrid":"vlist"}>
             {res.filter(v=>v?.videoId).map((v,i)=><div key={v.videoId} style={{animationDelay:`${Math.min(i,20)*.025}s`}}><VCard v={v} onPlay={onPlay} layout={layout} st={st}/></div>)}
           </div>
-          {next&&<div className="load-more"><button onClick={more}>Show more</button></div>}
+          {next&&<div className="load-more"><button onClick={loadMore}>{more?"Loading…":"Show more"}</button></div>}
         </>
       )}
+    </div>
+  );
+}
+
+// ── NATIVE PLAYER: hls.js + progressive mp4 (Invidious / Piped streams) ──────
+function Player({video,st,onInfo}){
+  const [info,setInfo]=useState(null);
+  const [status,setStatus]=useState("loading"); // loading | ready | error
+  const [err,setErr]=useState("");
+  const [attempt,setAttempt]=useState(0);
+  const [mode,setMode]=useState("mp4"); // "mp4" | "hls"
+  const [tap,setTap]=useState(false);
+  const vidRef=useRef(null);
+  const hlsRef=useRef(null);
+  const infoRef=useRef(null);
+  const triedRef=useRef([]);
+
+  useEffect(()=>{infoRef.current=info;},[info]);
+
+  useEffect(()=>{
+    let dead=false;
+    setStatus("loading");setErr("");setInfo(null);setMode("mp4");setTap(false);triedRef.current=[];
+    getStreams(video.videoId,st.cfg).then(i=>{
+      if(dead)return;
+      if(onInfo)onInfo(i);
+      setInfo(i);
+      if(!i.mp4&&!i.hls){setStatus("error");setErr("The instance returned no playable stream for this video.");return;}
+      setMode(i.mp4?"mp4":"hls");
+      setStatus("ready");
+    }).catch(e=>{if(!dead){setStatus("error");setErr(e.message);}});
+    return()=>{dead=true;};
+  },[video.videoId,attempt]);
+
+  const failover=()=>{
+    const i=infoRef.current;
+    const alt=mode==="mp4"?"hls":"mp4";
+    const hasAlt=mode==="mp4"?(i&&i.hls):(i&&i.mp4);
+    if(hasAlt&&triedRef.current.indexOf(alt)<0){triedRef.current.push(alt);setMode(alt);return;}
+    if(i&&i.base)markHealth(i.base,false);
+    setAttempt(a=>a+1);
+  };
+
+  useEffect(()=>{
+    if(status!=="ready"||!info)return;
+    const el=vidRef.current;if(!el)return;
+    if(hlsRef.current){hlsRef.current.destroy();hlsRef.current=null;}
+    el.removeAttribute("src");
+    const url=mode==="hls"?(info.hls||""):((info.mp4&&info.mp4.url)||"");
+    if(!url){failover();return;}
+    let cancelled=false;
+    const startPlay=()=>{
+      if(cancelled||st.cfg.autoplay===false)return;
+      const pr=el.play&&el.play();
+      if(pr&&pr.catch)pr.catch(()=>setTap(true));
+    };
+    if(mode==="hls"){
+      if(el.canPlayType("application/vnd.apple.mpegurl")){
+        el.src=url;startPlay();
+      }else{
+        ensureHls().then(H=>{
+          if(cancelled||!el.isConnected)return;
+          if(!H||!H.isSupported()){failover();return;}
+          const h=new H({maxBufferLength:40,capLevelToPlayerSize:true});
+          h.loadSource(url);h.attachMedia(el);
+          h.on(H.Events.ERROR,(_e,d)=>{if(d&&d.fatal)setTimeout(failover,0);});
+          hlsRef.current=h;
+          startPlay();
+        }).catch(()=>{if(!cancelled)failover();});
+      }
+    }else{
+      el.src=url;startPlay();
+    }
+  },[status,info,mode]);
+
+  useEffect(()=>()=>{if(hlsRef.current){hlsRef.current.destroy();hlsRef.current=null;}},[]);
+
+  const retry=()=>{if(info&&info.base)markHealth(info.base,false);setAttempt(a=>a+1);};
+
+  return(
+    <div className="pl-wrap">
+      <video ref={vidRef} className="pl-video" controls playsInline preload="metadata"
+        autoPlay={st.cfg.autoplay!==false} poster={YTT(video.videoId)} onError={()=>{if(status==="ready")failover();}}/>
+      {status==="loading"&&(
+        <div className="pl-overlay">
+          <div className="pl-spin"/>
+          <div className="pl-overlay-t">Finding a working source…</div>
+          <div className="pl-overlay-s">Trying Invidious &amp; Piped mirrors — no API key needed</div>
+        </div>
+      )}
+      {status==="error"&&(
+        <div className="pl-fallback">
+          <div className="pl-fallback-t">⚠️ Stream load nahi hua</div>
+          <div className="pl-fallback-s">{err}</div>
+          <div className="pl-fallback-btns">
+            <button className="pl-fb-btn" onClick={retry}>Try another instance</button>
+            <a className="pl-fb-btn ghost" href={YTW(video.videoId)} target="_blank" rel="noreferrer">Open on YouTube</a>
+          </div>
+        </div>
+      )}
+      {status==="ready"&&tap&&(
+        <div className="pl-overlay" style={{background:"rgba(0,0,0,.55)"}}
+          onClick={()=>{const el=vidRef.current;if(el){el.muted=false;el.play().catch(()=>{});setTap(false);}}}>
+          <div style={{fontSize:44,lineHeight:1}}>▶</div>
+          <div className="pl-overlay-t">Tap to play</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SrcLine({info}){
+  if(!info)return null;
+  return(
+    <div className="pl-srcbar">
+      <span className="pl-src ok">● playing</span>
+      <span className="pl-src">via {String(info.base||"").replace(/^https?:\/\//,"")}</span>
+      <span className="pl-src">{info.api==="piped"?"Piped":"Invidious"}</span>
+      {info.mp4&&info.mp4.quality&&<span className="pl-src">{info.mp4.quality}</span>}
+      {info.hls&&!info.mp4&&<span className="pl-src">HLS</span>}
+      {info.live&&<span className="pl-src ok">LIVE</span>}
+      <span className="pl-src-mono">zero ads · no api key · no google login</span>
     </div>
   );
 }
@@ -556,12 +896,18 @@ function SearchPage({query,onPlay,st}){
 // ── WATCH PAGE ────────────────────────────────────────────────────────────────
 function WatchPage({video,onPlay,st}){
   const [descOpen,setDescOpen]=useState(false);
+  const [info,setInfo]=useState(null);
+  const meta=info?{...video,...info}:video;
   const fav=st.isFav(video.videoId),wl=st.isWL(video.videoId);
 
   const related=useMemo(()=>{
-    const seen=new Set([video.videoId]);
-    return CURATED_HOME.filter(v=>{if(seen.has(v.videoId))return false;seen.add(v.videoId);return true;}).slice(0,20);
-  },[video.videoId]);
+    const have=new Set([video.videoId]);
+    const out=[];
+    const push=v=>{if(v&&v.videoId&&!have.has(v.videoId)){have.add(v.videoId);out.push(v);}};
+    (info&&info.related?info.related:[]).forEach(push);
+    CURATED_HOME.forEach(push);
+    return out.slice(0,20);
+  },[video.videoId,info]);
 
   useEffect(()=>{
     st.addHist({videoId:video.videoId,title:video.title,author:video.author,viewCount:video.viewCount,lengthSeconds:video.lengthSeconds,published:video.published,videoThumbnails:video.videoThumbnails});
@@ -571,17 +917,17 @@ function WatchPage({video,onPlay,st}){
     <div className="watch">
       <div className="watch-main">
         <div className="watch-player">
-          <iframe key={video.videoId} src={YTE(video.videoId)} title={video.title}
-            allow="accelerometer;autoplay;clipboard-write;encrypted-media;gyroscope;picture-in-picture;web-share" allowFullScreen/>
+          <Player video={video} st={st} onInfo={setInfo}/>
         </div>
+        <SrcLine info={info}/>
 
         <div style={{padding:"0 4px"}}>
-          <h1 className="watch-title">{video.title}</h1>
+          <h1 className="watch-title">{meta.title||video.title}</h1>
           <div className="watch-row">
             <div className="watch-info-left">
-              {video.viewCount>0&&<span>{fv(video.viewCount)} views</span>}
-              {video.viewCount>0&&video.published>0&&<span> · </span>}
-              {video.published>0&&<span>{ago(video.published)}</span>}
+              {meta.viewCount>0&&<span>{fv(meta.viewCount)} views</span>}
+              {meta.likes>0&&<span>{meta.viewCount>0?" · ":""}{fv(meta.likes)} likes</span>}
+              {meta.published>0&&<span>{(meta.viewCount>0||meta.likes>0)?" · ":""}{ago(meta.published)}</span>}
             </div>
             <div className="watch-btns">
               <button className={`w-btn${fav?" on":""}`} onClick={()=>st.togFav(video)}>
@@ -590,31 +936,32 @@ function WatchPage({video,onPlay,st}){
               <button className={`w-btn${wl?" on":""}`} onClick={()=>st.togWL(video)}>
                 {wl?"🕐 Saved":"+ Save"}
               </button>
-              <a className="w-btn" href={YTW(video.videoId)} target="_blank" rel="noreferrer">↗ Share</a>
+              <a className="w-btn" href={YTW(video.videoId)} target="_blank" rel="noreferrer">↗ Open</a>
             </div>
           </div>
 
           <div className="watch-ch-row">
-            <div className="watch-ch-av" style={{background:avColor(video.author)}}>
-              {(video.author||"?")[0].toUpperCase()}
+            <div className="watch-ch-av" style={{background:avColor(meta.author)}}>
+              {(meta.author||"?")[0].toUpperCase()}
             </div>
             <div style={{flex:1}}>
-              <div className="watch-ch-name">{video.author}</div>
-              <div className="watch-ch-sub">YouTube Channel</div>
+              <div className="watch-ch-name">{meta.author||"Unknown channel"}</div>
+              <div className="watch-ch-sub">Channel</div>
             </div>
-            <a href={YTW(video.videoId)} target="_blank" rel="noreferrer"
+            <a href={`https://www.youtube.com/results?search_query=${encodeURIComponent(meta.author||"")}`}
+              target="_blank" rel="noreferrer"
               style={{padding:"0 16px",height:36,background:"var(--t1)",color:"var(--bg)",borderRadius:18,fontWeight:500,fontSize:14,display:"flex",alignItems:"center"}}>
-              Subscribe
+              More
             </a>
           </div>
 
           <div className="watch-desc-box" onClick={()=>setDescOpen(!descOpen)}>
             <div className="watch-desc-short">
-              {video.viewCount>0&&<strong>{fv(video.viewCount)} views</strong>}
-              {video.published>0&&<span style={{marginLeft:8,color:"var(--t2)"}}>{ago(video.published)}</span>}
+              {meta.viewCount>0&&<strong>{fv(meta.viewCount)} views</strong>}
+              {meta.published>0&&<span style={{marginLeft:8,color:"var(--t2)"}}>{ago(meta.published)}</span>}
             </div>
-            {descOpen&&video.description&&<div className="watch-desc-full">{video.description}</div>}
-            <div className="watch-desc-tog" style={{color:"var(--t1)"}}>{descOpen?"Show less":"...more"}</div>
+            {descOpen&&meta.description&&<div className="watch-desc-full" style={{whiteSpace:"pre-wrap"}}>{meta.description.slice(0,4000)}</div>}
+            {meta.description&&<div className="watch-desc-tog" style={{color:"var(--t1)"}}>{descOpen?"Show less":"...more"}</div>}
           </div>
         </div>
       </div>
@@ -684,49 +1031,85 @@ function PLPage({onPlay,st}){
 
 // ── SETTINGS ──────────────────────────────────────────────────────────────────
 function SetPage({st}){
-  const [api,setApi]=useState(st.cfg.apiKey||"");const [saved,setSaved]=useState(false);
+  const [saved,setSaved]=useState(false);
+  const [inst,setInst]=useState("");
   const upd=p=>{st.updCfg(p);setSaved(true);setTimeout(()=>setSaved(false),2000);};
+  const sources=st.cfg.sources||[];
+  const addInst=()=>{const v=inst.trim().replace(/\/+$/,"");if(!v)return;upd({sources:[...sources,v]});setInst("");};
+  const rmInst=u=>upd({sources:sources.filter(x=>x!==u)});
+  const resetHealth=()=>{HEALTH={};ss(HEALTH_KEY,{});upd({});};
+  const live=Object.keys(HEALTH).filter(h=>healthState(h)===2);
   return<div className="set-pg">
     <div style={{display:"flex",alignItems:"center",marginBottom:24}}>
       <div className="set-title" style={{margin:0}}>Settings</div>
       {saved&&<span className="saved-toast">✓ Saved</span>}
     </div>
+
     <div className="set-blk">
-      <div className="set-blk-title">🔑 YouTube API Key <span style={{fontSize:12,fontWeight:400,color:"var(--t2)"}}>(Optional)</span></div>
-      <div className="set-blk-desc">Without API key, curated videos play perfectly. With a key, you get full search + live trending for India.</div>
-      <div className="set-api-row">
-        <input placeholder="AIza... (YouTube Data API v3)" value={api} onChange={e=>setApi(e.target.value)} onKeyDown={e=>e.key==="Enter"&&upd({apiKey:api.trim()})}/>
-        <button className="set-api-btn" onClick={()=>upd({apiKey:api.trim()})}>{st.cfg.apiKey?"Update":"Save"}</button>
+      <div className="set-blk-title">📡 Backend <span style={{fontSize:12,fontWeight:400,color:"var(--t2)"}}>(no API key needed)</span></div>
+      <div className="set-blk-desc">Streams aaye jaate hain public <b>Invidious</b> aur <b>Piped</b> mirrors se. Koi Google API key, account ya login required nahi. Ek instance fail ho to app khud dusra try karta hai.</div>
+      <div style={{display:"flex",gap:8,margin:"12px 0 4px",flexWrap:"wrap"}}>
+        {[["invidious","Invidious"],["piped","Piped"]].map(([k,l])=>(
+          <button key={k} onClick={()=>upd({backend:k})}
+            style={{padding:"0 16px",height:36,borderRadius:18,fontSize:13.5,fontWeight:500,
+              background:st.cfg.backend===k?"#3ea6ff":"var(--bg3)",color:st.cfg.backend===k?"#0f0f0f":"var(--t1)"}}>
+            {l}{st.cfg.backend===k?" ✓":""}
+          </button>
+        ))}
       </div>
-      {st.cfg.apiKey&&<button style={{fontSize:13,color:"#f28b82",marginBottom:12}} onClick={()=>{setApi("");upd({apiKey:""});}}>Remove key</button>}
-      <div className="set-hint">
-        <strong style={{color:"var(--t2)"}}>How to get a free key:</strong><br/>
-        1. Go to <a href="https://console.cloud.google.com" target="_blank">console.cloud.google.com</a><br/>
-        2. New Project → Enable "YouTube Data API v3"<br/>
-        3. Credentials → Create API Key → paste above<br/>
-        Free quota: 10,000 units/day
+      <div className="tog-row" onClick={()=>upd({proxyStreams:!st.cfg.proxyStreams})} style={{marginTop:8}}>
+        <div><div className="tog-lbl">Proxy streams through instance</div><div className="tog-sub">On rakhna zyada reliable — direct links kabhi 403 dete hain</div></div>
+        <div className={`toggle${st.cfg.proxyStreams?" on":""}`}><div className="tok"/></div>
+      </div>
+
+      <div className="set-blk-title" style={{fontSize:14,marginTop:20}}>My instances</div>
+      <div className="set-api-row" style={{marginTop:8}}>
+        <input placeholder="https://your-invidious-or-piped-instance" value={inst} onChange={e=>setInst(e.target.value)}
+          onKeyDown={e=>e.key==="Enter"&&addInst()}/>
+        <button className="set-api-btn" onClick={addInst}>Add</button>
+      </div>
+      {sources.length===0
+        ?<div style={{fontSize:12.5,color:"var(--t3)",marginBottom:8}}>Kuch custom instances nahi — built-in list chal rahi hai.</div>
+        :<div style={{display:"flex",flexDirection:"column",gap:6,marginBottom:10}}>
+          {sources.map(u=>(
+            <div key={u} style={{display:"flex",alignItems:"center",gap:8,background:"var(--bg3)",borderRadius:8,padding:"6px 10px"}}>
+              <span style={{fontFamily:"monospace",fontSize:12,flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{u}</span>
+              <button onClick={()=>rmInst(u)} style={{color:"#f28b82",fontSize:12}}>Remove</button>
+            </div>
+          ))}
+        </div>}
+      <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap",marginTop:4}}>
+        <button className="lib-btn" onClick={resetHealth}>↻ Reset instance health</button>
+        <span style={{fontSize:12,color:"var(--t3)"}}>{live.length?`Working right now: ${live.length}`:"Health cache empty"}</span>
+      </div>
+      <div className="set-hint" style={{marginTop:12}}>
+        <strong style={{color:"var(--t2)"}}>Instance list kahan se milegi?</strong><br/>
+        Invidious: <a href="https://api.invidious.io/instances.json" target="_blank" rel="noreferrer">api.invidious.io</a><br/>
+        Piped: <a href="https://github.com/TeamPiped/Piped/wiki/Instances" target="_blank" rel="noreferrer">Piped instances wiki</a><br/>
+        Host URL daalein (https://…), app automatically Invidious/Piped API detect kar leta hai.
       </div>
     </div>
+
     <div className="set-blk">
       <div className="set-blk-title">⚡ Playback</div>
-      {[["Autoplay","Auto-play next video","autoplay"],["Show related videos","Show sidebar on watch page","showRelated"]].map(([l,s,k])=>(
+      {[["Autoplay","Video khulte hi play karo","autoplay"],["Show related videos","Watch page par sidebar dikhao","showRelated"]].map(([l,s,k])=>(
         <div key={k} className="tog-row" onClick={()=>upd({[k]:!st.cfg[k]})}>
           <div><div className="tog-lbl">{l}</div><div className="tog-sub">{s}</div></div>
           <div className={`toggle${st.cfg[k]?" on":""}`}><div className="tok"/></div>
         </div>
       ))}
     </div>
+
     <div className="set-blk">
       <div className="set-blk-title">🔒 Privacy</div>
-      {[["YouTube embed only","Videos use YouTube's own player — no third-party proxies that can fail."],["No tracking or ads code","Zero analytics, zero ad scripts in this app."],["Your data stays local","History, likes, playlists stored only in your browser."]].map(([t,d])=>(
+      {[["No API key, no account","Koi Google key, OAuth ya login required nahi."],["No YouTube player, no ads","Native HTML5 player (hls.js) — YouTube ka ad-serving player load hi nahi hota."],["Your data stays local","History, likes, playlists sirf aapke browser me."]].map(([t,d])=>(
         <div key={t} className="priv-item"><span className="priv-ico">✓</span><div><div className="priv-name">{t}</div><div className="priv-sub">{d}</div></div></div>
       ))}
       <button className="danger-btn" onClick={()=>window.confirm("Clear all watch history?")&&st.clrHist()}>Clear watch history</button>
     </div>
-    <div style={{textAlign:"center",padding:"16px 0",fontSize:13,color:"var(--t3)"}}>StreamVoid v2.0 · Made for India 🇮🇳 · No ads</div>
+    <div style={{textAlign:"center",padding:"16px 0",fontSize:13,color:"var(--t3)"}}>StreamVoid v3.0 · keyless · Invidious / Piped powered 🇮🇳</div>
   </div>;
 }
-
 // ── SIDEBAR ───────────────────────────────────────────────────────────────────
 function Sidebar({page,nav,st,open,setOpen,mini}){
   return(
