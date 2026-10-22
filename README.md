@@ -1,103 +1,94 @@
-# StreamVoid — keyless YouTube front-end
+# StreamVoid — serverless YouTube front-end + custom player
 
-Single-file front-end (`index.html`) + a tiny optional backend (`server/app.py`) that uses
-[yt-dlp](https://github.com/yt-dlp/yt-dlp) for search and stream extraction.
-
-**No API key, no Google account, no build step, no YouTube player (so no YouTube ads).**
+`index.html` (whole app, one file) + `worker.js` (Cloudflare Worker, free tier).
+**No API key. No Google login. No Piped/Invidious. No server/VPS. No YouTube iframe.**
 
 ---
 
-## Two ways to run it
+## Why a worker at all? (the honest bit)
 
-### 1. Backend mode (recommended — yt-dlp)
+A browser cannot talk to YouTube directly, for two reasons:
 
-```bash
-cd server
-pip install -r requirements.txt        # fastapi, uvicorn, httpx, yt-dlp
-uvicorn app:app --host 0.0.0.0 --port 8000
-# open http://localhost:8000
-```
+1. **CORS** — `youtube.com/youtubei/*` sends no `Access-Control-Allow-Origin`, so `fetch()` from a page is blocked.
+2. **IP-bound streams** — the `googlevideo.com` URLs in a player response are signed for the IP that requested
+   them. Even with a CORS proxy, the URL dies when played from your machine.
 
-The same server serves `index.html` and the API, so `Settings → Backend URL` can stay empty
-(same origin).
+A Cloudflare Worker (free, serverless, no machine to maintain) solves both: it calls YouTube's own InnerTube
+API and proxies the media bytes. That replaces Piped/Invidious completely — no third-party video infra.
 
-Docker:
-
-```bash
-docker build -t streamvoid .
-docker run -p 8000:8000 streamvoid
-```
-
-What the backend adds:
-- `/api/search` → yt-dlp `ytsearch` (real YouTube search, no key)
-- `/api/stream/{id}` → yt-dlp extraction, best progressive MP4 (audio+video in one file)
-- `/api/media/{id}` → Range-aware **media proxy** (this is what avoids the googlevideo
-  403 / CORS problems you get with direct URLs and keeps seeking working)
-- `/api/trending` → server-side Invidious/Piped mirror with caching (yt-dlp has no trending feed)
-- `/api/live/{id}.m3u8` → HLS manifest rewrite + segment proxy for live streams
-
-Env vars: `SV_MOCK=1` (canned data, no network — great for UI work / tests), `SV_CACHE_TTL`
-(default 5400s), `SV_PROXY=0` (hand out raw googlevideo URLs instead of proxying).
-
-### 2. Static mode (no server)
-
-Just open `index.html` (or any static host). The app probes `/api/health`, gets nothing, and
-falls back to public **Invidious / Piped** instances for everything. Works, but depends on
-community instances that rate-limit and go down.
-
-You can also host the front-end statically and put the backend elsewhere:
-`Settings → yt-dlp backend → Backend URL = https://your-api.example.com` (CORS is open).
+Playback stays 100% custom: a plain `<video>` element with our own YouTube-style chrome.
 
 ---
 
-## Why a backend at all?
+## Setup (2 minutes, once)
 
-`yt-dlp` is a Python program and `youtube.com` does not send CORS headers, so a browser cannot
-either run it or talk to YouTube directly. JS-only libraries (`yt-search`, `youtube-sr`,
-`youtubei.js`, …) have the same wall: they need Node or a proxy for the actual stream URLs.
-So: front-end stays static, extraction happens server-side.
+1. <https://dash.cloudflare.com> → **Workers & Pages** → **Create Worker** → Deploy.
+2. Open **Edit code**, paste all of `worker.js`, **Deploy**.
+3. Open `https://<your-worker>.workers.dev/api/health` → `{"ok":true,...}`
+4. Open StreamVoid → **Settings → YouTube engine** → paste the worker URL → **Save & test**.
+   The dot turns green and full search/trending/playback goes live.
 
-## Player
+`index.html` can be hosted anywhere static (GitHub Pages, Netlify, S3, or just opened locally).
 
-- Native `<video>` element; no YouTube iframe/embed is ever created.
-- Progressive MP4 by default, `hls.js` loaded on demand only for HLS/live, native HLS on Safari.
-- Failover chain: yt-dlp backend → best Invidious/Piped instance → other formats → "Try another
-  instance" / "Open on YouTube".
-- Instance health is cached for 10 min in `localStorage`, so dead mirrors are skipped next time.
-- If autoplay is blocked, a "tap to play" overlay appears.
+---
 
-## Settings
+## What the worker does
 
-| Setting | What it does |
+| Route | Purpose |
 | --- | --- |
-| Backend URL | Where the yt-dlp API lives (blank = same origin) |
-| Use yt-dlp backend | Off = public Invidious/Piped only |
-| Backend preference | Invidious first or Piped first for the fallback path |
-| Proxy streams through instance | Recommended; direct links often 403 |
-| My instances | Add your own instance URLs (auto-detects Invidious vs Piped) |
-| Reset instance health | Clears the good/bad cache |
+| `GET /api/health` | connection check + client list |
+| `GET /api/search?q=` | InnerTube `search` → normalized video list (+ continuation token) |
+| `GET /api/searchmore?q=&token=` | next page |
+| `GET /api/trending?region=IN` | InnerTube `browse` `FEtrending` |
+| `GET /api/player?id=` | InnerTube `player` with a client ladder (android_vr → ios → tv_embedded → android → mweb → web), picks muxed MP4, rewrites URLs to the proxy |
+| `GET /api/related?id=` | InnerTube `next` → Up next list |
+| `GET /api/media?u=` | **Range-aware** byte proxy for `googlevideo.com` (host allowlist) |
 
-History, likes, playlists live only in `localStorage`.
+Signature handling: if a format comes back as `signatureCipher`, the worker fetches the video's `base.js`,
+extracts the sig and `n` transform functions and applies them (`buildDecipher`). Plain `url` formats skip all of that.
 
-## Known limitations
+---
 
-- Public instances are community-run: they rate-limit, break, or block videos. Failover is a
-  mitigation, not a fix.
-- Some videos (age-restricted, members-only, region-locked, DRM) return no stream from any path;
-  the player then offers "Open on YouTube".
-- Proxying media costs bandwidth — host it on something that allows it (VPS, Render, Fly, etc.).
-- Keep `yt-dlp` updated (`pip install -U yt-dlp`); YouTube changes break old versions regularly.
+## The player (hand-built)
 
-## Instance lists
+- Big centre play, auto-hiding gradient controls, buffered + played bars, scrub tooltip on hover, drag-to-seek.
+- Volume slider, mute, current/total time, quality menu, playback speed (0.5×–2×), theater mode, fullscreen.
+- Keyboard: `space`/`k` play-pause · `j`/`l` ±10s · `←`/`→` ±5s · `↑`/`↓` volume · `m` mute · `f` fullscreen ·
+  `t` theater · `n` next · `0`–`9` jump to %
+- Double-click = fullscreen, click = play/pause, "tap to play" overlay when a browser blocks autoplay.
+- Quality switching keeps your position; autoplay pushes the next Up-next video on end.
+- Errors are specific (unsupported format / network / decode) with Retry + "Open on YouTube".
 
-- Invidious: <https://api.invidious.io/instances.json>
-- Piped: <https://github.com/TeamPiped/Piped/wiki/Instances>
+UI is a YouTube-style shell: collapsible sidebar, chips, hover cards with duration badges, watch page with
+like/share/save pills, channel row, expandable description, and the Up next rail with an autoplay toggle.
 
-## Layout
+---
+
+## Local preview (no worker needed)
+
+```bash
+node dev-server.mjs        # http://localhost:3000
+```
+
+This serves the real app, but answers `/api/*` with mock data and Google's public sample MP4s, so you can
+click through the whole UI and player. It is a preview tool only — production uses your worker.
+
+---
+
+## Known limits
+
+- Worker returns **muxed** formats only (usually 360p/720p). Higher resolutions come as separate video/audio
+  DASH tracks and would need MSE muxing in the browser.
+- Live streams and some age-restricted / members-only / region-locked videos return no muxed stream; the
+  player then offers "Open on YouTube".
+- YouTube's bot checks (`PoToken`) can reject a client on some networks; the worker walks a client ladder and
+  surfaces the reasons it tried. If all fail, `Retry` after a moment or from another network.
+- Cloudflare free tier: 100k requests/day. Media proxying costs bandwidth — fine for personal use.
+
+## Files
 
 ```
-index.html        the whole app (React 18 UMD + Babel in-browser, no build)
-server/app.py     FastAPI + yt-dlp backend (search, stream, proxy, trending, live HLS)
-server/requirements.txt
-Dockerfile        python:3.12-slim + ffmpeg + yt-dlp
+index.html       entire app (React 18 UMD + Babel in-browser, no build step)
+worker.js        Cloudflare Worker: InnerTube API + sig decipher + media proxy
+dev-server.mjs   local preview with mock API + sample MP4s
 ```
