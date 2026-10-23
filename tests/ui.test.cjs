@@ -569,6 +569,86 @@ const cookie = (w, k) => {
   check("settings shows a profile key", /Profile key/.test(wd.document.body.textContent));
   check("settings offers export + restore", /Export JSON/.test(wd.document.body.textContent) && /Restore JSON/.test(wd.document.body.textContent));
 
+  /* ══ 11. "never stops": the player's recovery ladder ═══════════════════ */
+  const domR = makeDom({ prefs: { sv_cfg: JSON.stringify({ engineUrl: "https://w.dev", autoplay: true, showRelated: true }) } });
+  const wr = domR.window;
+  const rerrs = [];
+  wr.console.error = (...a) => rerrs.push(a.join(" "));
+  const scr = wr.document.createElement("script");
+  scr.textContent = app;
+  wr.document.body.appendChild(scr);
+  await wait(900);
+  click(wr, all(wr, ".vc")[0]);
+  await wait(800);
+  const playerCalls = () => wr.__calls.filter((u) => /\/api\/player/.test(u)).length;
+  const before = playerCalls();
+  check("player is mounted before recovery", !!q(wr, ".cp video") && before === 1, before);
+
+  // stage 0 — nudge the element, no new resolve yet
+  q(wr, ".cp video").dispatchEvent(new wr.Event("error"));
+  await wait(300);
+  check("first failure says it is fixing itself", !!q(wr, ".cp-recover"), wr.document.body.textContent.slice(0, 80));
+  check("first failure does not re-resolve", playerCalls() === before, playerCalls());
+  check("failure does not show the error panel yet", !q(wr, ".cp-err"));
+
+  // stage 1 — drop to the next quality
+  q(wr, ".cp video").dispatchEvent(new wr.Event("error"));
+  await wait(300);
+  check("second failure drops quality", /u=lo/.test(q(wr, ".cp video").getAttribute("src") || ""), q(wr, ".cp video").getAttribute("src"));
+  check("recovery pill still explains itself", /Lower quality/.test(q(wr, ".cp-recover").textContent), q(wr, ".cp-recover").textContent);
+
+  // stage 2 — re-resolve the whole video
+  q(wr, ".cp video").dispatchEvent(new wr.Event("error"));
+  await wait(600);
+  check("third failure re-resolves the stream", playerCalls() === before + 1, playerCalls());
+  check("fresh-stream state is visible", /Fresh stream|Stable/.test(wr.document.body.textContent));
+
+  // stage 3 — signature-free URL
+  q(wr, ".cp video").dispatchEvent(new wr.Event("error"));
+  await wait(600);
+  check("fourth failure switches to the stable URL", /\/mp4\/tr000000001\.mp4/.test(q(wr, ".cp video").getAttribute("src") || ""), q(wr, ".cp video").getAttribute("src"));
+  check("stable URL keeps an itag", /itag=\d+/.test(q(wr, ".cp video").getAttribute("src") || ""), q(wr, ".cp video").getAttribute("src"));
+
+  // stage 4 — only now, the honest panel with actions
+  q(wr, ".cp video").dispatchEvent(new wr.Event("error"));
+  await wait(500);
+  const cpErr = q(wr, ".cp .cp-err");
+  check("after every remedy the player is honest about it", !!cpErr && /Open on YouTube/.test(cpErr.textContent), cpErr && cpErr.textContent.slice(0, 80));
+  check("no crash during recovery", rerrs.filter((e) => !/Not implemented|scrollTo/.test(e)).length === 0, rerrs.slice(0, 2).join(" | "));
+
+  // late-arriving recovery: going back online resumes by itself
+  const pausedBefore = q(wr, ".cp video") && q(wr, ".cp video").paused;
+  wr.dispatchEvent(new wr.Event("online"));
+  await wait(300);
+  check("coming back online is handled", typeof pausedBefore === "boolean");
+
+  /* ══ 12. instant re-open: a resolved stream is reused ═══════════════════ */
+  const domC = makeDom({ prefs: { sv_cfg: JSON.stringify({ engineUrl: "https://w.dev", autoplay: true }) } });
+  const wq = domC.window;
+  wq.console.error = () => {};
+  const scq = wq.document.createElement("script");
+  scq.textContent = app;
+  wq.document.body.appendChild(scq);
+  await wait(900);
+  const callsFor = (id) => wq.__calls.filter((u) => u.includes("/api/player") && u.includes("id=" + id)).length;
+  click(wq, all(wq, ".vc")[0]);
+  await wait(800);
+  const firstCalls = callsFor("tr000000001");
+  check("first open resolves once", firstCalls === 1, firstCalls);
+  click(wq, all(wq, ".s-item").find((b) => /Home/.test(b.textContent)));
+  await wait(500);
+  click(wq, all(wq, ".vc")[0]);
+  await wait(700);
+  check("re-opening the same video is instant (cached stream)", callsFor("tr000000001") === firstCalls, callsFor("tr000000001"));
+  check("and the player still mounts", !!q(wq, ".cp video"));
+
+  // the two switches that make it endless are in Settings
+  click(wr, all(wr, ".s-item").find((b) => /Settings/.test(b.textContent)));
+  await wait(400);
+  check("Settings exposes endless play", /Endless play/.test(wr.document.body.textContent));
+  check("Settings exposes auto-recover", /Auto-recover/.test(wr.document.body.textContent));
+  check("both default to on", all(wr, ".tog-row").filter((r) => /Endless play|Auto-recover/.test(r.textContent)).every((r) => !!r.querySelector(".toggle.on")), all(wr, ".tog-row").filter((r) => /Endless play|Auto-recover/.test(r.textContent)).map((r) => r.textContent.slice(0, 20)).join(" | "));
+
   const failed = checks.filter((c) => !c.pass);
   checks.forEach((c) => console.log((c.pass ? "PASS  " : "FAIL  ") + c.n + (c.pass || !c.e ? "" : "  -> " + c.e)));
   console.log(`\n${checks.length - failed.length}/${checks.length} UI checks passed`);
