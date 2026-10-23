@@ -71,6 +71,69 @@ check("durToSec", W.durToSec("1:02:03") === 3723);
 check("VIEWS", W.VIEWS("1.2M views") === 1200000);
 const list = W.normalizeList(JSON.parse(SEARCH), 10);
 check("normalizeList", list.length === 2 && list[0].title === "Hello World" && list[0].lengthSeconds === 605);
+/* ── 2026 shapes: lockupViewModel + generic fallback ─────────────────────── */
+const LOCKUP = {
+  contents: {
+    x: [
+      {
+        lockupViewModel: {
+          contentId: "dQw4w9WgXcQ",
+          contentType: "LOCKUP_CONTENT_TYPE_VIDEO",
+          metadata: {
+            lockupMetadataViewModel: {
+              title: { content: "Never Gonna Give You Up (Official Video)" },
+              metadata: {
+                contentMetadataViewModel: {
+                  metadataRows: [
+                    {
+                      metadataParts: [
+                        { text: { content: "Rick Astley", command: { innertubeCommand: { browseEndpoint: { browseId: "UCuAXFkgsw1L7xaCfnd5JJOw" } } } } },
+                        { text: { content: "1.6B views" } },
+                        { text: { content: "16 years ago" } },
+                      ],
+                    },
+                  ],
+                },
+              },
+            },
+          },
+          contentImage: {
+            thumbnailViewModel: {
+              image: { sources: [{ url: "https://i.ytimg.com/vi/dQw4w9WgXcQ/hq720.jpg", width: 720, height: 404 }, { url: "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg", width: 480, height: 360 }] },
+              overlays: [{ thumbnailOverlayBadgeViewModel: { thumbnailBadges: [{ thumbnailBadgeViewModel: { text: "3:33" } }] } }],
+            },
+          },
+          onTap: { innertubeCommand: { watchEndpoint: { videoId: "dQw4w9WgXcQ" } } },
+        },
+      },
+      { lockupViewModel: { contentId: "not-an-id", metadata: { lockupMetadataViewModel: { title: { content: "junk" } } } } },
+      { lockupViewModel: { contentId: "abcdefghijk", metadata: { lockupMetadataViewModel: { title: { content: "Second one" } } }, onTap: { innertubeCommand: { reelWatchEndpoint: { videoId: "abcdefghijk" } } } } },
+    ],
+  },
+};
+
+const lockItems = W.normalizeList(LOCKUP, 10);
+check("parses lockupViewModel", lockItems.length === 2, JSON.stringify(lockItems.map((v) => v.videoId)));
+check("lockup title", lockItems[0].title === "Never Gonna Give You Up (Official Video)", lockItems[0].title);
+check("lockup author from metadata row", lockItems[0].author === "Rick Astley", lockItems[0].author);
+check("lockup authorId from browseEndpoint", lockItems[0].authorId === "UCuAXFkgsw1L7xaCfnd5JJOw", lockItems[0].authorId);
+check("lockup views", lockItems[0].viewCount === 1_600_000_000, lockItems[0].viewCount);
+check("lockup publishedText", lockItems[0].publishedText === "16 years ago", lockItems[0].publishedText);
+check("lockup duration from badge", lockItems[0].lengthSeconds === 213, lockItems[0].lengthSeconds);
+check("lockup biggest thumbnail", /hq720/.test(lockItems[0].thumbnail), lockItems[0].thumbnail);
+check("lockup drops junk ids", !lockItems.some((v) => v.videoId === "not-an-id"));
+
+const UNKNOWN = { a: [{ weirdNewRenderer: { videoId: "xyz12345678", headline: { content: "Unknown shape video" }, metadataText: { content: "77K views" }, publishedText: { content: "3 days ago" }, thumbnail: { thumbnails: [{ url: "https://i/u.jpg", width: 320, height: 180 }] } } }] };
+const genItems = W.normalizeList(UNKNOWN, 10);
+check("generic fallback finds unknown renderers", genItems.length === 1 && genItems[0].videoId === "xyz12345678", JSON.stringify(genItems));
+check("generic fallback keeps title", genItems[0].title === "Unknown shape video", genItems[0] && genItems[0].title);
+check("generic fallback keeps views", genItems[0].viewCount === 77000, genItems[0] && genItems[0].viewCount);
+check("generic fallback keeps thumbnail", /i\/u\.jpg/.test(genItems[0].thumbnail), genItems[0] && genItems[0].thumbnail);
+check("no duplicates across shapes", W.normalizeList({ x: [{ videoRenderer: { videoId: "sameVid1234", title: { simpleText: "A" } } }, { lockupViewModel: { contentId: "sameVid1234", metadata: { lockupMetadataViewModel: { title: { content: "A dup" } } } } }] }, 10).length === 1);
+
+const hist = W.rendererHistogram(LOCKUP);
+check("renderer histogram", hist.some((h) => h.name === "lockupViewModel" && h.count === 3), JSON.stringify(hist).slice(0, 80));
+
 const sigFn = W.buildDecipher(PLAYER_JS, "XY");
 check("sig decipher built", typeof sigFn === "function");
 if (sigFn) {

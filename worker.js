@@ -414,11 +414,15 @@ function collect(node, keys, out = [], depth = 0) {
 const textOf = (o) => {
   if (!o) return "";
   if (typeof o === "string") return o;
+  if (typeof o === "number") return String(o);
   if (o.simpleText) return o.simpleText;
   // newer renderers use a plain `content` string (shorts lockups, overlay metadata)
   if (typeof o.content === "string") return o.content;
   if (o.runs) return o.runs.map((r) => r.text || "").join("");
   if (o.accessibility?.accessibilityData?.label) return o.accessibility.accessibilityData.label;
+  // …and some wrap it one level deeper: { text: { content } } / { text: { simpleText } }
+  if (o.text && typeof o.text === "object") return textOf(o.text);
+  if (o.title && typeof o.title === "object" && (o.title.content || o.title.simpleText || o.title.runs)) return textOf(o.title);
   return "";
 };
 
@@ -466,22 +470,195 @@ function normVideo(v) {
   };
 }
 
-const VIDEO_KEYS = ["videoRenderer", "compactVideoRenderer", "gridVideoRenderer", "playlistVideoRenderer"];
+const VIDEO_KEYS = [
+  "videoRenderer",
+  "compactVideoRenderer",
+  "gridVideoRenderer",
+  "playlistVideoRenderer",
+  "videoWithContextRenderer",
+  // 2025/26 shape: search, channel Videos tab and home now mostly use lockups
+  "lockupViewModel",
+];
+
+const ID_RE11 = /^[A-Za-z0-9_-]{11}$/;
+const DUR_RE = /^\d{1,2}(:\d{2}){1,2}$/;
+const VIEWS_RE = /[\d.,]+\s*[KMB]?\s*views/i;
+const AGO_RE = /(ago|premiered|streamed|scheduled)/i;
+
+// every string inside a subtree (bounded), used by the generic extractor below
+function deepStrings(node, out = [], budget = { n: 400 }, depth = 0) {
+  if (!node || typeof node !== "object" || depth > 12 || budget.n <= 0) return out;
+  if (Array.isArray(node)) {
+    for (const x of node) deepStrings(x, out, budget, depth + 1);
+    return out;
+  }
+  // `content`/`simpleText` wrappers, plus bare `text`/`label` (badge overlays use those)
+  for (const k of ["simpleText", "content", "text", "label"]) {
+    if (typeof node[k] === "string" && node[k].trim()) {
+      out.push(node[k]);
+      budget.n -= 1;
+    }
+  }
+  if (Array.isArray(node.runs)) {
+    const t = node.runs.map((r) => r.text || "").join("").trim();
+    if (t) {
+      out.push(t);
+      budget.n -= 1;
+    }
+  }
+  for (const k in node) {
+    const v = node[k];
+    if (v && typeof v === "object") deepStrings(v, out, budget, depth + 1);
+  }
+  return out;
+}
+
+function deepThumbs(node, out = [], depth = 0) {
+  if (!node || typeof node !== "object" || depth > 10) return out;
+  if (Array.isArray(node)) {
+    for (const x of node) deepThumbs(x, out, depth + 1);
+    return out;
+  }
+  for (const k of ["thumbnails", "sources"]) {
+    if (Array.isArray(node[k])) {
+      for (const t of node[k]) if (t && typeof t.url === "string") out.push(t);
+    }
+  }
+  for (const k in node) {
+    const v = node[k];
+    if (v && typeof v === "object") deepThumbs(v, out, depth + 1);
+  }
+  return out;
+}
+
+const biggestThumb = (node) => {
+  const list = deepThumbs(node).filter((t) => /^https?:/.test(t.url || ""));
+  if (!list.length) return "";
+  list.sort((a, b) => (b.width || 0) * (b.height || 0) - (a.width || 0) * (a.height || 0));
+  return list[0].url;
+};
+
+const browseIdIn = (node) => {
+  const b = collect(node, ["browseEndpoint"]).find((x) => /^UC[\w-]{10,}$/.test(x.browseId || ""));
+  return b ? b.browseId : "";
+};
+
+// lockupViewModel / any future shape: pull the id, then read the metadata rows
+function normLockup(m) {
+  if (!m) return null;
+  const cmd = m.onTap?.innertubeCommand || m.rendererContext?.commandContext?.onTap?.innertubeCommand || {};
+  const rawId = String(
+    m.contentId ||
+      m.entityId ||
+      cmd.videoId ||
+      cmd.watchEndpoint?.videoId ||
+      cmd.reelWatchEndpoint?.videoId ||
+      ""
+  ).replace(/^shorts-shelf-item-/, "");
+  if (!ID_RE11.test(rawId)) return null;
+
+  const meta = m.metadata?.lockupMetadataViewModel || m.metadataViewModel || {};
+  const strings = deepStrings(meta);
+  const rows = collect(meta, ["metadataParts"]).flat().map((p) => textOf(p.text)).filter(Boolean);
+
+  const title =
+    textOf(meta.title) ||
+    strings.find((t) => t.length > 3 && !VIEWS_RE.test(t) && !AGO_RE.test(t) && !DUR_RE.test(t)) ||
+    "";
+  const authorId = browseIdIn(meta) || cmd.browseEndpoint?.browseId || "";
+  const author = rows.find((t) => t !== title && !VIEWS_RE.test(t) && !AGO_RE.test(t) && !DUR_RE.test(t)) || "";
+  const viewsText = rows.find((t) => VIEWS_RE.test(t)) || strings.find((t) => VIEWS_RE.test(t)) || "";
+  const agoText = rows.find((t) => AGO_RE.test(t)) || strings.find((t) => AGO_RE.test(t)) || "";
+  // duration usually lives in a thumbnail overlay badge, i.e. outside the metadata block
+  const allStrings = deepStrings(m);
+  const durText = allStrings.find((t) => DUR_RE.test(t)) || "";
+  const secs = durToSec(durText);
+  const thumb = biggestThumb(m.contentImage || m.thumbnail || m);
+  const live = /\bLIVE\b/.test(allStrings.join(" "));
+
+  return {
+    videoId: rawId,
+    title,
+    author,
+    authorId,
+    thumbnail: thumb || `https://i.ytimg.com/vi/${rawId}/mqdefault.jpg`,
+    lengthSeconds: secs,
+    viewCount: VIEWS(viewsText),
+    publishedText: agoText,
+    publishedAt: agoText,
+    live,
+    isShort: secs > 0 && secs <= 60,
+  };
+}
+
+// last resort: any object in the payload that carries a plausible 11-char video id
+function genericVideos(data, limit = 30) {
+  const out = [];
+  const seen = new Set();
+  const walk = (node, depth = 0) => {
+    if (!node || typeof node !== "object" || depth > 22 || out.length >= limit * 2) return;
+    if (Array.isArray(node)) {
+      for (const x of node) walk(x, depth + 1);
+      return;
+    }
+    const id =
+      (ID_RE11.test(node.videoId || "") && node.videoId) ||
+      (ID_RE11.test(node.contentId || "") && node.contentId) ||
+      (ID_RE11.test(node.entityId || "") && node.entityId) ||
+      (node.watchEndpoint && ID_RE11.test(node.watchEndpoint.videoId || "") && node.watchEndpoint.videoId) ||
+      (node.reelWatchEndpoint && ID_RE11.test(node.reelWatchEndpoint.videoId || "") && node.reelWatchEndpoint.videoId);
+    if (id && !seen.has(id)) {
+      const strings = deepStrings(node);
+      const title = strings.find((t) => t.length > 3 && !VIEWS_RE.test(t) && !AGO_RE.test(t) && !DUR_RE.test(t)) || "";
+      if (title) {
+        seen.add(id);
+        const secs = durToSec(strings.find((t) => DUR_RE.test(t)) || "");
+        out.push({
+          videoId: id,
+          title,
+          author: "",
+          authorId: browseIdIn(node),
+          thumbnail: biggestThumb(node) || `https://i.ytimg.com/vi/${id}/mqdefault.jpg`,
+          lengthSeconds: secs,
+          viewCount: VIEWS(strings.find((t) => VIEWS_RE.test(t)) || ""),
+          publishedText: strings.find((t) => AGO_RE.test(t)) || "",
+          publishedAt: "",
+          live: false,
+          isShort: secs > 0 && secs <= 60,
+        });
+      }
+    }
+    for (const k in node) {
+      const v = node[k];
+      if (v && typeof v === "object") walk(v, depth + 1);
+    }
+  };
+  walk(data);
+  return out.slice(0, limit);
+}
 
 function normalizeList(data, limit = 30) {
   const out = [];
   const seen = new Set();
-  for (const key of VIDEO_KEYS) {
-    for (const r of collect(data, [key])) {
-      const v = normVideo(r);
-      if (v && !seen.has(v.videoId)) {
-        seen.add(v.videoId);
-        out.push(v);
-      }
-      if (out.length >= limit * 2) break;
+  const push = (v) => {
+    if (v && v.videoId && !seen.has(v.videoId)) {
+      seen.add(v.videoId);
+      out.push(v);
     }
-    if (out.length) break;
-  }
+  };
+  const collectKey = (key) => {
+    let found = 0;
+    for (const r of collect(data, [key])) {
+      push(key === "lockupViewModel" ? normLockup(r) : normVideo(r));
+      found += 1;
+      if (found >= 80 || out.length >= limit * 2) break;
+    }
+    return found;
+  };
+  // walk every known shape — one payload can mix renderers and lockups
+  for (const key of VIDEO_KEYS) collectKey(key);
+  // nothing matched a shape we know → scan for anything that looks like a video
+  if (!out.length) for (const v of genericVideos(data, limit)) push(v);
   return out.slice(0, limit);
 }
 
@@ -899,7 +1076,7 @@ async function listCall(env, url, endpoint, extra, callOpts = {}) {
           { client: ladder.find((c) => c.id === "web"), opts: { visitorData, cookies: cookieHeader, authorization: await sapisidHash(cookieHeader) } },
           { client: ladder.find((c) => c.id === "android_vr"), opts: { visitorData, cookies: cookieHeader } },
         ]
-      : order.slice(0, 4).map((client) => ({ client, opts: { visitorData } }));
+      : order.slice(0, 6).map((client) => ({ client, opts: { visitorData } }));
 
     let lastError = null;
     for (const { client, opts } of candidates) {
@@ -910,8 +1087,18 @@ async function listCall(env, url, endpoint, extra, callOpts = {}) {
       try {
         const data = await innertube(client, endpoint, extra, { ...opts, retries: 0, timeout: 8000 });
         noteOk(client);
-        if (data && (data.contents || data.onResponseReceivedActions || data.items)) return data;
-        throw new Error("empty response");
+        if (
+          data &&
+          (data.contents ||
+            data.onResponseReceivedActions ||
+            data.onResponseReceivedEndpoints ||
+            data.continuationContents ||
+            data.items ||
+            data.header ||
+            data.frameworkUpdates)
+        )
+          return data;
+        throw new Error("empty response from " + client.id + " (keys: " + (data && typeof data === "object" ? Object.keys(data).slice(0, 6).join(",") : typeof data) + ")");
       } catch (e) {
         lastError = e;
         noteFail(client);
@@ -945,13 +1132,24 @@ async function searchMore(q, token, env = {}, url = new URL("https://x/")) {
 }
 
 async function trending(region = "IN", env = {}, url = new URL("https://x/"), callOpts = {}) {
-  const data = await listCall(env, url, "browse", { browseId: "FEtrending" }, callOpts);
-  let items = normalizeList(data, 40);
-  if (!items.length) {
-    const alt = await listCall(env, url, "search", { query: `trending ${region}` }, callOpts);
-    items = normalizeList(alt, 40);
+  const attempts = [];
+  const sources = [
+    { kind: "browse", extra: { browseId: "FEtrending" }, name: "FEtrending" },
+    { kind: "browse", extra: { browseId: "FEwhat_to_watch" }, name: "FEwhat_to_watch" },
+    { kind: "browse", extra: { browseId: "FEexplore" }, name: "FEexplore" },
+    { kind: "search", extra: { query: "trending " + region + " today" }, name: "search trending" },
+  ];
+  for (const src of sources) {
+    try {
+      const data = await listCall(env, url, src.kind, src.extra, { ...callOpts, ignoreCooling: src.name !== "FEtrending" });
+      const items = normalizeList(data, 40);
+      attempts.push({ source: src.name, found: items.length });
+      if (items.length) return { items, source: src.name, attempts };
+    } catch (e) {
+      attempts.push({ source: src.name, error: String((e && e.message) || e) });
+    }
   }
-  return { items };
+  return { items: [], source: null, attempts };
 }
 
 async function related(videoId, env = {}, url = new URL("https://x/")) {
@@ -1444,10 +1642,78 @@ async function resolveChannel(input) {
   return { channelId, name: title.replace(/\s*-\s*YouTube$/, ""), avatar, source: target };
 }
 
+// renderer histogram — tells us what shape YouTube is serving right now
+function rendererHistogram(data, limit = 24) {
+  const counts = {};
+  const walk = (node, depth = 0) => {
+    if (!node || typeof node !== "object" || depth > 24) return;
+    if (Array.isArray(node)) {
+      for (const x of node) walk(x, depth + 1);
+      return;
+    }
+    for (const k in node) {
+      if (/(Renderer|ViewModel)$/.test(k)) counts[k] = (counts[k] || 0) + 1;
+      const v = node[k];
+      if (v && typeof v === "object") walk(v, depth + 1);
+    }
+  };
+  walk(data);
+  return Object.entries(counts)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, limit)
+    .map(([name, count]) => ({ name, count }));
+}
+
+async function probe(u, env) {
+  const q = u.searchParams.get("q") || "lofi";
+  const kind = u.searchParams.get("endpoint") === "browse" ? "browse" : "search";
+  const extra = kind === "browse" ? { browseId: u.searchParams.get("browseId") || "FEtrending" } : { query: q };
+  const t0 = Date.now();
+  const out = { kind, extra, ms: 0, client: null, ok: false };
+  try {
+    const { versions, visitorData } = await discoverVersions(env);
+    const ladder = buildClients(versions, (u.searchParams.get("region") || "IN").toUpperCase());
+    const results = [];
+    for (const client of [ladder.find((c) => c.id === "mweb"), ladder.find((c) => c.id === "web"), ladder.find((c) => c.id === "android_vr")].filter(Boolean)) {
+      try {
+        const data = await innertube(client, kind, extra, { visitorData, retries: 0, timeout: 9000 });
+        const items = normalizeList(data, 5);
+        const sampleNode =
+          collect(data, ["lockupViewModel"])[0] ||
+          collect(data, ["videoRenderer"])[0] ||
+          collect(data, ["reelItemRenderer"])[0] ||
+          null;
+        results.push({
+          client: client.id + "@" + client.ctx.clientVersion,
+          keys: data && typeof data === "object" ? Object.keys(data) : [],
+          renderers: rendererHistogram(data),
+          parsed: items.length,
+          first: items[0] || null,
+          sample: sampleNode ? JSON.stringify(sampleNode).slice(0, 2500) : null,
+        });
+        if (items.length) {
+          out.ok = true;
+          out.client = client.id;
+          out.results = results;
+          break;
+        }
+      } catch (e) {
+        results.push({ client: client.id + "@" + client.ctx.clientVersion, error: String((e && e.message) || e) });
+      }
+    }
+    out.results = results;
+  } catch (e) {
+    out.error = String((e && e.message) || e);
+  }
+  out.ms = Date.now() - t0;
+  return out;
+}
+
 // one list, used by the landing page and the 404 body (no drift)
 const ROUTE_LIST = [
   "/api/health",
   "/api/debug",
+  "/api/probe?q=lofi",
   "/api/selftest?id=",
   "/api/player?id=",
   "/api/search?q=",
@@ -1615,6 +1881,7 @@ const ROUTES = [
   ["/api/related", async (u, env) => related(u.searchParams.get("id") || "", env, u)],
   ["/api/shorts", async (u, env) => shorts((u.searchParams.get("region") || "IN").toUpperCase(), env, u)],
   ["/api/rss", async (u, env) => rss(env, u.searchParams.get("channels") || "", u)],
+  ["/api/probe", async (u, env) => probe(u, env)],
   ["/api/channel", async (u) => resolveChannel(u.searchParams.get("q") || u.searchParams.get("id") || "")],
 ];
 
@@ -1704,6 +1971,10 @@ export {
   rss,
   resolveChannel,
   shorts,
+  probe,
+  rendererHistogram,
+  normLockup,
+  genericVideos,
   channelBrowse,
   channelFeed,
   parseRelDate,
