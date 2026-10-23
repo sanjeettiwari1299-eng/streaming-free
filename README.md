@@ -2,7 +2,7 @@
 
 `index.html` (whole app, one file) + `worker.js` (Cloudflare Worker, free tier).
 **No API key. No Google login. No Piped/Invidious. No server/VPS. No YouTube iframe. No localStorage.**
-Search · Trending · **Shorts** · **RSS subscriptions** · watch page · hand-built player.
+Search · Trending · **Shorts** (+ **ShortsFire** embed) · **RSS subscriptions** · watch page · hand-built player.
 
 ---
 
@@ -337,6 +337,26 @@ In the app:
 
 Refreshing is on demand (pull-to-refresh / the refresh button): 1 request per channel, so a 20-channel
 check costs 20 of your 100k daily worker requests. There is no background polling to burn quota.
+
+---
+
+## ShortsFire — your second site, inside Shorts
+
+`https://yt.sanjeettiwari205.workers.dev/` (ShortsFire) is a separate app. The Shorts page has a two-way toggle:
+
+**⚡ StreamVoid** — our own Shorts feed and player (YouTube data, proxied streams).
+**🔥 ShortsFire** — the whole ShortsFire site embedded in an iframe, in place of the feed.
+
+The embedded view gets its own status bar: `Reload` (remounts the frame), `Open ↗` (new tab) and back to
+StreamVoid. Switching tabs pauses the hidden Shorts, and the global Shorts shortcuts (↑ ↓ / j k / m) are disabled
+while the frame owns the keyboard.
+
+The URL is a setting, not a constant: **Settings → 🔥 ShortsFire → Save URL** (stored in your cloud profile like
+every other setting), default `https://yt.sanjeettiwari205.workers.dev/`.
+
+**Honest limit:** if that site ever sends `X-Frame-Options` / a CSP `frame-ancestors` rule, browsers will refuse
+to render it inside the page — the frame stays blank and `Open ↗` is the way in. Nothing on our side can override
+that, and the toggle is built so it degrades to a plain link rather than looking broken.
 
 ---
 

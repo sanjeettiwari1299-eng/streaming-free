@@ -575,6 +575,19 @@ img{max-width:100%;display:block}
 .shorts-nav{display:flex;gap:8px;justify-content:center}
 .shorts-nav-btn{width:40px;height:34px;border-radius:10px;background:var(--bg3);color:var(--t1);font-size:12px}
 .shorts-nav-btn:disabled{opacity:.35;cursor:default}
+
+/* ── ShortsFire (second site, embedded inside Shorts) ── */
+.sf-seg{display:flex;gap:4px;background:var(--bg3);padding:3px;border-radius:999px;margin-left:12px}
+.sf-seg-btn{padding:5px 12px;border-radius:999px;font-size:12.5px;font-weight:500;color:var(--t2);white-space:nowrap}
+.sf-seg-btn.on{background:var(--bg1);color:var(--t1);box-shadow:0 1px 3px rgba(0,0,0,.3)}
+.sf-wrap{display:flex;flex-direction:column;gap:8px}
+.sf-bar{display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--bg2);border:1px solid var(--border);border-radius:12px;font-size:13px;flex-wrap:wrap}
+.sf-dot{width:8px;height:8px;border-radius:50%;background:#ff4e45;box-shadow:0 0 8px #ff4e45;flex:0 0 auto}
+.sf-url{color:var(--t3);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:34vw}
+.sf-frame{width:100%;height:calc(100vh - 214px);min-height:460px;border:0;border-radius:14px;background:#0f0f0f;display:block}
+.sf-note{font-size:12px;color:var(--t3)}
+a.cp-pill{text-decoration:none;display:inline-flex;align-items:center}
+@media (max-width:900px){.sf-frame{height:calc(100vh - 258px);min-height:420px}.sf-url{display:none}}
 .shorts-hint{text-align:center;color:var(--t3);font-size:12px}
 .shorts-shelf{margin-bottom:20px}
 .shelf-head{display:flex;align-items:center;gap:8px;margin-bottom:10px}
@@ -674,6 +687,7 @@ const DEFAULT_CFG = {
   zoom: "fit",
   pitch: true,
   region: "IN",
+  shortsfireUrl: "https://yt.sanjeettiwari205.workers.dev/",
 };
 
 // player: 3× top speed, and the fit/zoom presets YouTube offers
@@ -2222,6 +2236,40 @@ function ShortCard({ v, idx, active, muted, data, st, onChannel, onAddSub, onOpe
   );
 }
 
+const SHORTSFIRE_DEFAULT = "https://yt.sanjeettiwari205.workers.dev/";
+
+/* The second site, embedded: its own app, its own data, inside our Shorts page. */
+function ShortsFire({ url, onBack, onOpenNew }) {
+  const [nonce, setNonce] = useState(0);
+  const raw = String(url || "").trim();
+  const src = /^https?:\/\//i.test(raw) ? raw : SHORTSFIRE_DEFAULT;
+  return (
+    <div className="sf-wrap">
+      <div className="sf-bar">
+        <span className="sf-dot" />
+        <b>ShortsFire</b>
+        <span className="sf-url">{src.replace(/^https?:\/\//, "")}</span>
+        <div style={{ flex: 1 }} />
+        <button className="cp-pill" onClick={() => setNonce((n) => n + 1)}>↻ Reload</button>
+        <a className="cp-pill" href={src} target="_blank" rel="noreferrer">Open ↗</a>
+        {onBack && <button className="cp-pill" onClick={onBack}>⚡ StreamVoid Shorts</button>}
+      </div>
+      <iframe
+        key={nonce}
+        className="sf-frame"
+        src={src}
+        title="ShortsFire"
+        allow="autoplay; encrypted-media; fullscreen; picture-in-picture; clipboard-write"
+        referrerPolicy="no-referrer"
+      />
+      <div className="sf-note">
+        ShortsFire tumhari alag site hai — yahin, isi page ke andar chal rahi hai. Awaaz/autoplay browser ki
+        policy follow karti hai; kuch na chale to <b>Open ↗</b> se naye tab me khol lo.
+      </div>
+    </div>
+  );
+}
+
 function ShortsPage({ st, engine, onPlay, onChannel, onAddSub }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -2230,6 +2278,7 @@ function ShortsPage({ st, engine, onPlay, onChannel, onAddSub }) {
   const [muted, setMuted] = useState(true);
   const [nonce, setNonce] = useState(0);
   const [data, setData] = useState({});   // videoId -> {status, src, video}
+  const [mode, setMode] = useState("streamvoid");   // streamvoid | shortsfire
   const feedRef = useRef(null);
   const cardRefs = useRef([]);
 
@@ -2302,8 +2351,16 @@ function ShortsPage({ st, engine, onPlay, onChannel, onAddSub }) {
     });
   }, [items.length, scrollTo]);
 
+  // switching to the embedded site must not leave a hidden Short playing audio
+  useEffect(() => {
+    if (mode === "streamvoid") return;
+    const vids = document.querySelectorAll(".short-video");
+    for (const v of vids) { try { v.pause(); } catch {} }
+  }, [mode]);
+
   useEffect(() => {
     const h = (e) => {
+      if (mode !== "streamvoid") return;                      // iframe owns the keyboard
       if (e.target && /INPUT|TEXTAREA/.test(e.target.tagName)) return;
       if (e.key === "ArrowDown" || e.key === "j") { e.preventDefault(); step(1); }
       else if (e.key === "ArrowUp" || e.key === "k") { e.preventDefault(); step(-1); }
@@ -2311,7 +2368,7 @@ function ShortsPage({ st, engine, onPlay, onChannel, onAddSub }) {
     };
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
-  }, [step]);
+  }, [step, mode]);
 
   const cur = items[active];
 
@@ -2319,7 +2376,13 @@ function ShortsPage({ st, engine, onPlay, onChannel, onAddSub }) {
     <div className="shorts-wrap">
       <div className="shorts-head">
         <div className="shorts-h-title"><span className="shorts-h-ico">⚡</span> Shorts
-          {items.length > 0 && <span className="shorts-h-count">{active + 1} / {items.length}</span>}
+          {items.length > 0 && mode === "streamvoid" && <span className="shorts-h-count">{active + 1} / {items.length}</span>}
+        </div>
+        <div className="sf-seg" role="tablist">
+          <button role="tab" aria-selected={mode === "streamvoid"} className={"sf-seg-btn" + (mode === "streamvoid" ? " on" : "")}
+            onClick={() => setMode("streamvoid")}>⚡ StreamVoid</button>
+          <button role="tab" aria-selected={mode === "shortsfire"} className={"sf-seg-btn" + (mode === "shortsfire" ? " on" : "")}
+            onClick={() => setMode("shortsfire")}>🔥 ShortsFire</button>
         </div>
         <div className="shorts-h-actions">
           <button className="cp-pill" onClick={() => setNonce((n) => n + 1)}>Refresh</button>
@@ -2327,12 +2390,14 @@ function ShortsPage({ st, engine, onPlay, onChannel, onAddSub }) {
         </div>
       </div>
 
-      {warn && (
+      {warn && mode === "streamvoid" && (
         <div className="inline-warn"><span>⚠️</span><span style={{ flex: 1 }}>{warn}</span>
           <button className="cp-pill" onClick={() => setNonce((n) => n + 1)}>Retry</button></div>
       )}
 
-      {loading ? (
+      {mode === "shortsfire" ? (
+        <ShortsFire url={st.cfg.shortsfireUrl} onBack={() => setMode("streamvoid")} />
+      ) : loading ? (
         <div className="shorts-feed"><div className="short-card"><div className="short-stage"><div className="skel" style={{ width: "100%", height: "100%" }} /></div></div></div>
       ) : items.length === 0 ? (
         <div className="err-box"><div className="err-ico">⚡</div><div className="err-msg">Abhi koi Short nahi mila — Refresh try karein</div></div>
@@ -2903,6 +2968,7 @@ function CloudStore({ st }) {
 function SetPage({ st, engine, onCheck, onAddSub }) {
   const [url, setUrl] = useState(st.cfg.engineUrl || "");
   const [accessKey, setAccessKey] = useState(st.cfg.accessKey || "");
+  const [sfUrl, setSfUrl] = useState(st.cfg.shortsfireUrl || SHORTSFIRE_DEFAULT);
   const [saved, setSaved] = useState(false);
   const [copied, setCopied] = useState("");
   const upd = (patch) => { st.updCfg(patch); setSaved(true); setTimeout(() => setSaved(false), 1800); };
@@ -2979,6 +3045,24 @@ function SetPage({ st, engine, onCheck, onAddSub }) {
           {[["space / k", "play · pause"], ["j / l", "±10s"], ["← / →", "±5s"], ["↑ / ↓", "volume"], ["< / >", "speed step"], ["z", "zoom / fit"], ["m", "mute"], ["f", "fullscreen"], ["t", "theater"], ["n", "next video"], ["0–9", "jump to %"]].map(([k, d]) => (
             <div key={k} className="key-row"><kbd>{k}</kbd><span>{d}</span></div>
           ))}
+        </div>
+      </div>
+
+      <div className="set-blk">
+        <div className="set-blk-title">🔥 ShortsFire <span className="badge-mini">embed</span></div>
+        <div className="set-blk-desc">
+          Shorts page par <b>StreamVoid / ShortsFire</b> toggle — ShortsFire tumhari doosri site hai, jo usi page ke
+          andar iframe me chalti hai. URL badalna ho to yahan se.
+        </div>
+        <div className="set-api-row">
+          <input placeholder="https://yt.sanjeettiwari205.workers.dev/" value={sfUrl} onChange={(e) => setSfUrl(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") upd({ shortsfireUrl: sfUrl.trim() || SHORTSFIRE_DEFAULT }); }} />
+          <button className="set-api-btn" onClick={() => upd({ shortsfireUrl: sfUrl.trim() || SHORTSFIRE_DEFAULT })}>Save URL</button>
+          <a className="set-api-btn" style={{ textDecoration: "none", display: "inline-flex", alignItems: "center" }}
+            href={sfUrl.trim() || SHORTSFIRE_DEFAULT} target="_blank" rel="noreferrer">Open ↗</a>
+        </div>
+        <div style={{ color: "var(--t3)", fontSize: 12 }}>
+          Agar site iframe block kare (X-Frame-Options / CSP), embed blank rahega — tab “Open ↗” hi rasta hai.
         </div>
       </div>
 
