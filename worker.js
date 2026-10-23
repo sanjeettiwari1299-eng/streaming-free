@@ -1084,6 +1084,123 @@ async function media(url, request, env = {}) {
   return new Response(upstream.body, { status: upstream.status || lastStatus, headers: out });
 }
 
+// ── RSS subscriptions (channel feeds) ────────────────────────────────────────
+// YouTube publishes per-channel feeds at /feeds/videos.xml?channel_id=UC…
+// They have no CORS headers, so the browser can only reach them through us.
+function parseFeed(xml) {
+  if (!xml) return { items: [], channel: null };
+  const pick = (re, str = xml) => {
+    const m = str.match(re);
+    return m ? m[1] : "";
+  };
+  const decode = (t) =>
+    String(t || "")
+      .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/, "$1")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/&amp;/g, "&");
+
+  const channelId = pick(/<yt:channelId>([^<]+)<\/yt:channelId>/);
+  const channelName = decode(pick(/<author>\s*<name>([^<]*)<\/name>/));
+
+  const items = [];
+  const entryRe = /<entry>([\s\S]*?)<\/entry>/g;
+  let m;
+  while ((m = entryRe.exec(xml))) {
+    const e = m[1];
+    const videoId = pick(/<yt:videoId>([^<]+)<\/yt:videoId>/, e);
+    if (!videoId) continue;
+    const thumb =
+      pick(/<media:thumbnail[^>]*url="([^"]+)"/, e) || `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg`;
+    const views = pick(/<media:statistics[^>]*views="(\d+)"/, e);
+    const rating = pick(/<media:starRating[^>]*count="(\d+)"/, e);
+    items.push({
+      videoId,
+      title: decode(pick(/<title>([\s\S]*?)<\/title>/, e)),
+      author: channelName || decode(pick(/<author>\s*<name>([^<]*)<\/name>/, e)),
+      authorId: pick(/<yt:channelId>([^<]+)<\/yt:channelId>/, e) || channelId,
+      publishedText: "",
+      publishedAt: pick(/<published>([^<]+)<\/published>/, e),
+      published: Math.floor(new Date(pick(/<published>([^<]+)<\/published>/, e)).getTime() / 1000) || 0,
+      viewCount: Number(views || 0),
+      likes: Number(rating || 0),
+      lengthSeconds: 0,
+      thumbnail: thumb,
+      live: false,
+      description: decode(pick(/<media:description>([\s\S]*?)<\/media:description>/, e)).slice(0, 300),
+    });
+  }
+  return {
+    items,
+    channel: channelId ? { channelId, name: channelName, feedUrl: `https://www.youtube.com/feeds/videos.xml?channel_id=${channelId}` } : null,
+  };
+}
+
+async function rss(env, ids) {
+  const list = [...new Set(String(ids || "").split(",").map((x) => x.trim()).filter((x) => /^UC[\w-]{10,}$/.test(x)))].slice(0, 30);
+  if (!list.length) return { items: [], channels: [], errors: [] };
+
+  const results = await Promise.all(
+    list.map(async (id) => {
+      try {
+        const r = await fetchRetry(
+          `https://www.youtube.com/feeds/videos.xml?channel_id=${id}`,
+          { headers: { "user-agent": WEB_UA, "accept-language": "en-US,en;q=0.9" } },
+          { retries: 1, timeout: 8000 }
+        );
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        const parsed = parseFeed(await r.text());
+        return { id, ...parsed };
+      } catch (e) {
+        return { id, items: [], channel: null, error: e.message };
+      }
+    })
+  );
+
+  const items = [];
+  const seen = new Set();
+  for (const r of results) {
+    for (const it of r.items) {
+      if (seen.has(it.videoId)) continue;
+      seen.add(it.videoId);
+      items.push(it);
+    }
+  }
+  items.sort((a, b) => b.published - a.published);
+
+  return {
+    items: items.slice(0, 120),
+    channels: results.filter((r) => r.channel).map((r) => r.channel),
+    errors: results.filter((r) => r.error).map((r) => ({ id: r.id, error: r.error })),
+  };
+}
+
+// Resolve a channel from a URL / @handle / video id — used by "Subscribe".
+async function resolveChannel(input) {
+  const raw = String(input || "").trim();
+  if (/^UC[\w-]{10,}$/.test(raw)) return { channelId: raw };
+  if (!raw) throw new Error("empty input");
+
+  let target = raw;
+  const idInUrl = raw.match(/channel\/(UC[\w-]{10,})/);
+  if (idInUrl) return { channelId: idInUrl[1] };
+  if (!/^https?:/i.test(raw)) {
+    target = raw.startsWith("@") ? `https://www.youtube.com/${raw}` : `https://www.youtube.com/@${raw}`;
+  }
+  const r = await fetchRetry(target, { headers: { "user-agent": WEB_UA, "accept-language": "en-US,en;q=0.9" } }, { retries: 1, timeout: 9000 });
+  if (!r.ok) throw new Error("channel page HTTP " + r.status);
+  const html = await r.text();
+  const channelId = (html.match(/"channelId":"(UC[\w-]{10,})"/) || [])[1] || (html.match(/channel\/(UC[\w-]{10,})/) || [])[1];
+  if (!channelId) throw new Error("channel id not found (private or wrong link?)");
+  const title =
+    (html.match(/<meta property="og:title" content="([^"]+)"/) || [])[1] ||
+    (html.match(/<title>([^<]+)<\/title>/) || [])[1] || "";
+  const avatar = (html.match(/<meta property="og:image" content="([^"]+)"/) || [])[1] || "";
+  return { channelId, name: title.replace(/\s*-\s*YouTube$/, ""), avatar, source: target };
+}
+
 const ROUTES = [
   [
     "/api/health",
@@ -1161,6 +1278,8 @@ const ROUTES = [
   ["/api/searchmore", async (u, env) => searchMore(u.searchParams.get("q") || "", u.searchParams.get("token") || "", env, u)],
   ["/api/trending", async (u, env) => trending((u.searchParams.get("region") || "IN").toUpperCase(), env, u)],
   ["/api/related", async (u, env) => related(u.searchParams.get("id") || "", env, u)],
+  ["/api/rss", async (u, env) => rss(env, u.searchParams.get("channels") || "")],
+  ["/api/channel", async (u) => resolveChannel(u.searchParams.get("q") || u.searchParams.get("id") || "")],
 ];
 
 export default {
@@ -1233,4 +1352,7 @@ export {
   mirrorStream,
   refreshedUrl,
   directMp4,
+  parseFeed,
+  rss,
+  resolveChannel,
 };

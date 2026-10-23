@@ -44,6 +44,8 @@ Playback stays 100% custom: a plain `<video>` element with our own YouTube-style
 | `GET /api/trending?region=IN` | InnerTube `browse` `FEtrending` |
 | `GET /api/player?id=` | InnerTube `player` with a client ladder (android_vr → ios → tv_embedded → android → mweb → web), picks muxed MP4, rewrites URLs to the proxy |
 | `GET /api/related?id=` | InnerTube `next` → Up next list |
+| `GET /api/rss?channels=UC…,UC…` | fetch + merge YouTube RSS feeds for up to 30 channels → `{items, channels, errors}` (dedupe, newest first, per-channel failure isolated) |
+| `GET /api/channel?q=` | resolve anything you paste (`@handle`, `/channel/UC…`, `/c/name`, bare `UC…`) → `{channelId, name, avatar}` |
 | `GET /api/media?u=` | **Range-aware** byte proxy for `googlevideo.com` (host allowlist) |
 | `GET /mp4/<id>.mp4` | direct file endpoint: resolves the best muxed stream and serves it as `video/mp4` (Range/HEAD supported). `?itag=` picks a quality, `?dl=1` forces a download |
 | `GET /api/file/<id>.mp4` | same as above (alias) |
@@ -60,6 +62,33 @@ https://<worker>/mp4/dQw4w9WgXcQ.mp4              → inline video/mp4 (works in
 https://<worker>/mp4/dQw4w9WgXcQ.mp4?dl=1         → attachment download
 https://<worker>/mp4/dQw4w9WgXcQ.mp4?itag=18      → pick a specific quality
 ```
+
+---
+
+## Subscriptions = RSS (no account, no login)
+
+Subscribe to a channel once and its uploads come straight from YouTube's public feed:
+`https://www.youtube.com/feeds/videos.xml?channel_id=UC…`. No Google account, no OAuth, no API key.
+
+Why the worker has to proxy it: the feed sends no CORS header, so a page can't read it directly.
+`/api/rss?channels=A,B,C` fetches all of them **in parallel** (8s timeout each), merges, dedupes by
+video id, sorts newest-first and caps the result. If one channel fails you still get the rest — the
+failure is listed in `errors[]` and the UI shows a small warning instead of an empty page.
+
+In the app:
+
+- **Subscribe** — button under any video, on the channel page, or **Add channel** in the sidebar
+  (paste `@mkbhd`, a channel URL, or a `UC…` id — `/api/channel` resolves it; name + avatar come back too).
+- **Subscriptions page** — day-grouped feed (*Today / Yesterday / date*) across every channel you follow,
+  with a channel rail on the left showing avatars and a per-channel filter.
+- **Channel page** — banner, avatar, handle, subscriber line, subscribe/unsubscribe, and its uploads.
+- **Manage** — Settings → Subscriptions: remove individual channels, **Export OPML**
+  (`streamvoid-subscriptions.opml`, imports into Feedly/Inoreader/any RSS reader) and **Import OPML**
+  (drops the file in, it pulls the `channel_id`s out and subscribes).
+- Subscriptions live in `localStorage` (`sv_subs`) — nothing about you leaves the browser.
+
+Refreshing is on demand (pull-to-refresh / the refresh button): 1 request per channel, so a 20-channel
+check costs 20 of your 100k daily worker requests. There is no background polling to burn quota.
 
 ---
 
@@ -175,6 +204,20 @@ click through the whole UI and player. It is a preview tool only — production 
 
 ```
 index.html       entire app (React 18 UMD + Babel in-browser, no build step)
-worker.js        Cloudflare Worker: InnerTube API + sig decipher + media proxy
+worker.js        Cloudflare Worker: InnerTube API + sig decipher + media proxy + RSS
 dev-server.mjs   local preview with mock API + sample MP4s
+tests/           regression suites (worker: node tests/smoke.mjs etc; UI: see below)
 ```
+
+### Tests
+
+```bash
+node tests/smoke.mjs      # worker core: decipher, list calls, breakers, media, routes
+node tests/rsstest.mjs    # feeds: parsing, merge/dedupe/sort, resolveChannel, /api/rss + /api/channel
+node tests/mptest.mjs     # /mp4 endpoint: Range/206, HEAD, content-type, ?itag, ?dl
+
+npm i jsdom react react-dom @babel/core @babel/preset-react
+node tests/ui.test.cjs    # compiles the JSX out of index.html and drives it in jsdom
+```
+
+The first three need no dependencies — they import `worker.js` directly and stub `fetch`/`caches`.
