@@ -38,6 +38,12 @@ const RSS_ITEMS = [
   { videoId: "rss000000001", title: "Fresh upload", author: "Lofi Chill", authorId: UC1, thumbnail: "https://i/r1.jpg", published: Math.floor(Date.now() / 1000) - 3600, viewCount: 4200 },
   { videoId: "rss000000002", title: "Yesterday upload", author: "Tech Daily", authorId: UC2, thumbnail: "https://i/r2.jpg", published: Math.floor(Date.now() / 1000) - 90000, viewCount: 900 },
 ];
+const SHORTS = [
+  { videoId: "sh100000001", title: "Quick trick", thumbnail: "https://i/s1.jpg", viewCount: 1200000, lengthSeconds: 0, isShort: true, author: "", authorId: "" },
+  { videoId: "sh100000002", title: "Second short", thumbnail: "https://i/s2.jpg", viewCount: 45000, lengthSeconds: 0, isShort: true, author: "", authorId: "" },
+  { videoId: "sh100000003", title: "Third short", thumbnail: "https://i/s3.jpg", viewCount: 999, lengthSeconds: 0, isShort: true, author: "", authorId: "" },
+];
+
 const PLAYER = {
   ok: true, client: "android_vr", clientVersion: "1.62.27",
   video: { videoId: "tr000000001", title: "Resolved Title", author: "Resolved Chan", authorId: UC1, description: "desc", viewCount: 999, lengthSeconds: 240, thumbnails: [] },
@@ -86,8 +92,19 @@ function makeDom(opts = {}) {
           if (opts.channelFail) return { ok: false, status: 404, json: async () => ({ error: "channel id not found" }), text: async () => JSON.stringify({ error: "channel id not found" }) };
           return ok({ channelId: UC2, name: "Tech Daily", avatar: "https://yt3/av.jpg", source: q });
         }
+        if (/\/api\/shorts/.test(u)) return ok({ items: opts.noShorts ? [] : SHORTS, count: SHORTS.length, region: "IN", source: "FEshorts", attempts: [] });
         if (/\/api\/search/.test(u)) return ok({ items: TRENDING, continuation: null });
-        if (/\/api\/player/.test(u)) return ok(PLAYER);
+        if (/\/api\/player/.test(u)) {
+          const id = decodeURIComponent(u.split("id=")[1].split("&")[0]);
+          if (SHORTS.some((v) => v.videoId === id)) {
+            return ok({
+              ok: true, client: "android_vr",
+              video: { videoId: id, title: "Short " + id.slice(-1), author: "ShortChan", authorId: "UCshorts000000000000000", viewCount: 12345, lengthSeconds: 30, thumbnails: [] },
+              formats: [{ itag: 18, quality: "360p", url: "/api/media?u=" + id + "&v=" + id + "&itag=18" }],
+            });
+          }
+          return ok(PLAYER);
+        }
         if (/\/api\/related/.test(u)) return ok({ items: TRENDING });
         throw new Error("unexpected " + u);
       };
@@ -185,7 +202,43 @@ const check = (n, c, e) => checks.push({ n, pass: !!c, e });
 
   check("no JS errors (main flow)", errs.filter((e) => !/Not implemented|scrollTo/.test(e)).length === 0, errs.slice(0, 2).join(" | "));
 
-  /* ══ 6. empty subscriptions state ═══════════════════════════════════════ */
+  /* ══ 6. Shorts ══════════════════════════════════════════════════════════ */
+  const shortsNav = all(w, ".s-item").find((b) => /Shorts/.test(b.textContent));
+  check("sidebar has Shorts", !!shortsNav);
+  click(w, shortsNav);
+  await wait(900);
+  check("shorts page mounts", !!q(w, ".shorts-feed"));
+  check("shorts cards rendered", all(w, ".short-card").length === 3, all(w, ".short-card").length);
+  check("/api/shorts called with region", w.__calls.some((u) => /\/api\/shorts\?region=IN/.test(u)), w.__calls.filter((u) => /shorts/.test(u)).slice(0, 2).join(" "));
+  check("active short stream resolved", w.__calls.some((u) => u.includes("/api/player") && u.includes("id=sh100000001")));
+  const firstVid = q(w, ".short-card video.short-video");
+  check("short <video> gets proxied src", !!firstVid && /u=sh100000001/.test(firstVid.getAttribute("src") || ""), firstVid && firstVid.getAttribute("src"));
+
+  click(w, all(w, ".shorts-nav-btn")[1]);
+  await wait(800);
+  check("next short resolves", w.__calls.some((u) => u.includes("id=sh100000002")), w.__calls.filter((u) => /player/.test(u)).slice(-2).join(" "));
+  check("counter updated", /2 \/ 3/.test(q(w, ".shorts-h-count").textContent), q(w, ".shorts-h-count").textContent);
+
+  const activeSub = q(w, '.short-card[data-idx="1"] .short-sub');
+  click(w, activeSub);
+  await wait(200);
+  check("subscribe from a short", JSON.parse(w.localStorage.getItem("sv_subs") || "[]").some((x) => x.channelId === "UCshorts000000000000000"), w.localStorage.getItem("sv_subs"));
+  check("short sub button flips", /Subscribed/.test(q(w, '.short-card[data-idx="1"] .short-sub').textContent));
+
+  click(w, q(w, '.short-card[data-idx="1"] .short-btn'));
+  await wait(200);
+  check("like a short", (JSON.parse(w.localStorage.getItem("sv_f") || "[]")).some((x) => x.videoId === "sh100000002"));
+
+  w.dispatchEvent(new w.KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+  await wait(800);
+  check("keyboard ArrowDown advances", w.__calls.some((u) => u.includes("id=sh100000003")), q(w, ".shorts-h-count").textContent);
+
+  click(w, all(w, ".s-item").find((b) => /Home/.test(b.textContent)));
+  await wait(600);
+  check("home shows a Shorts shelf", !!q(w, ".shorts-shelf") && all(w, ".shelf-card").length === 3, all(w, ".shelf-card").length);
+  check("no JS errors after shorts", errs.filter((e) => !/Not implemented|scrollTo|navigate/.test(e)).length === 0, errs.slice(0, 2).join(" | "));
+
+  /* ══ 7. empty subscriptions state ═══════════════════════════════════════ */
   const dom2 = makeDom({ prefs: { sv_cfg: JSON.stringify({ engineUrl: "https://w.dev", autoplay: true, showRelated: true }) } });
   const w2 = dom2.window;
   w2.console.error = () => {};
@@ -198,7 +251,19 @@ const check = (n, c, e) => checks.push({ n, pass: !!c, e });
   check("empty state copy", /Koi subscription nahi/.test(w2.document.body.textContent));
   check("no rss call without subs", !w2.__calls.some((u) => /\/api\/rss/.test(u)), w2.__calls.filter((u) => /rss/.test(u)).join(" "));
 
-  /* ══ 7. offline → setup gate ════════════════════════════════════════════ */
+  /* ══ 8. no shorts → friendly empty state ═══════════════════════════════ */
+  const dom4 = makeDom({ noShorts: true, prefs: { sv_cfg: JSON.stringify({ engineUrl: "https://w.dev", autoplay: true, showRelated: true }) } });
+  const w4 = dom4.window;
+  w4.console.error = () => {};
+  const sc4 = w4.document.createElement("script");
+  sc4.textContent = app;
+  w4.document.body.appendChild(sc4);
+  await wait(700);
+  click(w4, all(w4, ".s-item").find((b) => /Shorts/.test(b.textContent)));
+  await wait(500);
+  check("empty shorts state", /koi Short nahi mila/i.test(w4.document.body.textContent), w4.document.body.textContent.slice(0, 0));
+
+  /* ══ 9. offline → setup gate ════════════════════════════════════════════ */
   const dom3 = makeDom({ offline: true });
   const w3 = dom3.window;
   w3.console.error = () => {};

@@ -46,7 +46,28 @@ const item = (s, i) => ({
 });
 
 const ITEMS = SAMPLES.map(item);
+
+// mock Shorts: portrait-ish cards that still play a real sample file
+const SHORTS = SAMPLES.slice(0, 8).map((smp, i) => {
+  const id = "demoSh" + String(i).padStart(6, "0");
+  return {
+    videoId: id,
+    title: smp.title + " #shorts",
+    author: smp.author,
+    authorId: "UCdemo" + (i % 3),
+    thumbnail: `${CDN}/${smp.thumb}`,
+    lengthSeconds: 30,
+    viewCount: 100000 + i * 37000,
+    publishedText: "1 day ago",
+    live: false,
+    isShort: true,
+  };
+});
+
 const byId = new Map(ITEMS.map((v, i) => [v.videoId, { ...v, sample: SAMPLES[i] }]));
+for (const sh of SHORTS) {
+  if (!byId.has(sh.videoId)) byId.set(sh.videoId, { ...sh, sample: SAMPLES.find((s) => s.title === sh.title.replace(" #shorts", "")) || SAMPLES[0] });
+}
 
 const json = (res, data, status = 200) => {
   res.writeHead(status, { "content-type": "application/json; charset=utf-8", "access-control-allow-origin": "*" });
@@ -60,6 +81,8 @@ const server = http.createServer((req, res) => {
     return json(res, { ok: true, service: "dev-preview", mode: "mock", note: "production = your Cloudflare Worker" });
   }
   if (u.pathname === "/api/trending") return json(res, { items: ITEMS });
+  if (u.pathname === "/api/shorts")
+    return json(res, { items: SHORTS, count: SHORTS.length, region: (u.searchParams.get("region") || "IN").toUpperCase(), source: "demo", attempts: [{ source: "demo", found: SHORTS.length }] });
   if (u.pathname === "/api/search") {
     const q = (u.searchParams.get("q") || "").toLowerCase();
     const hits = ITEMS.filter((v) => !q || v.title.toLowerCase().includes(q) || v.author.toLowerCase().includes(q));

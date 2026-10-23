@@ -2,6 +2,7 @@
 
 `index.html` (whole app, one file) + `worker.js` (Cloudflare Worker, free tier).
 **No API key. No Google login. No Piped/Invidious. No server/VPS. No YouTube iframe.**
+Search · Trending · **Shorts** · **RSS subscriptions** · watch page · hand-built player.
 
 ---
 
@@ -42,6 +43,7 @@ Playback stays 100% custom: a plain `<video>` element with our own YouTube-style
 | `GET /api/search?q=` | InnerTube `search` → normalized video list (+ continuation token) |
 | `GET /api/searchmore?q=&token=` | next page |
 | `GET /api/trending?region=IN` | InnerTube `browse` `FEtrending` |
+| `GET /api/shorts?region=IN` | Shorts feed: `browse` `FEshorts` (`shortsLockupViewModel` + `reelItemRenderer`), falling back to `#shorts` search, then to short items in trending |
 | `GET /api/player?id=` | InnerTube `player` with a client ladder (android_vr → ios → tv_embedded → android → mweb → web), picks muxed MP4, rewrites URLs to the proxy |
 | `GET /api/related?id=` | InnerTube `next` → Up next list |
 | `GET /api/rss?channels=UC…,UC…` | fetch + merge YouTube RSS feeds for up to 30 channels → `{items, channels, errors}` (dedupe, newest first, per-channel failure isolated) |
@@ -89,6 +91,39 @@ In the app:
 
 Refreshing is on demand (pull-to-refresh / the refresh button): 1 request per channel, so a 20-channel
 check costs 20 of your 100k daily worker requests. There is no background polling to burn quota.
+
+---
+
+## Shorts
+
+Shorts are just normal videos, so playback needs nothing new: `/api/shorts` gives the list, `/api/player`
+gives the stream, `/api/media` proxies it. The worker parses **both** shapes YouTube uses:
+
+- `shortsLockupViewModel` (current): `entityId: "shorts-shelf-item-<id>"`, `overlayMetadata` (title + views),
+  `thumbnailViewModel.image.sources` — the biggest source wins, and the id is validated before it is kept
+- `reelItemRenderer` (older): `videoId`, `headline`, `viewCountText`, `thumbnail.thumbnails`
+
+The feed ladder, in order:
+
+1. `browse` → `FEshorts` (the real Shorts tab)
+2. `search` → `#shorts`, then keep only items shorter than 90s (this is also how a normal search result
+   becomes a Short)
+3. `trending` → filter to ≤90s
+
+Every step is isolated, `attempts` records what each one found, and the fallback steps deliberately ignore
+the circuit breakers (`ignoreCooling`) so two dead sources don't kill the third. If you see a Short in a
+normal list, `lengthSeconds ≤ 60` marks it (`isShort`) and the thumbnail gets a **Shorts** pill.
+
+In the app:
+
+- **Shorts** in the sidebar → full-height cards, one at a time, scroll-snap (wheel/trackpad) plus
+  `↑`/`↓` / `j`/`k` to move, `m` to mute. Only the visible card (and the next one) resolves a stream, so
+  opening Shorts costs 1–2 `/api/player` calls, not one per card.
+- Autoplay starts **muted** (browsers block unmuted autoplay); tap the speaker or press `m` for sound.
+- Subscribe / like / share / "open watch page" sit on the card — the channel id comes from the resolved
+  player response when the lockup doesn't carry one.
+- Home gets a **Shorts shelf** (horizontal rail) above the grid, and any short video in a normal grid shows
+  the Shorts pill.
 
 ---
 
@@ -198,6 +233,8 @@ click through the whole UI and player. It is a preview tool only — production 
   YouTube can change the cipher/player flow in a way that needs a code patch. What this setup does give you is
   graceful degradation (a dead client is skipped, playback self-heals, mirrors are the last resort) instead of
   a blank screen.
+- Shorts: `/api/shorts` returns one page (up to 40). There is no endless scroll yet — hit Refresh for more,
+  and YouTube's `FEshorts` tab is region/algorithm dependent, which is why the two fallbacks exist.
 - Cloudflare free tier: 100k requests/day. Media proxying costs bandwidth — fine for personal use.
 
 ## Files
@@ -215,6 +252,7 @@ tests/           regression suites (worker: node tests/smoke.mjs etc; UI: see be
 node tests/smoke.mjs      # worker core: decipher, list calls, breakers, media, routes
 node tests/rsstest.mjs    # feeds: parsing, merge/dedupe/sort, resolveChannel, /api/rss + /api/channel
 node tests/mptest.mjs     # /mp4 endpoint: Range/206, HEAD, content-type, ?itag, ?dl
+node tests/shortstest.mjs # Shorts: both renderer shapes, dedupe, view parsing, 3-step ladder, route
 
 npm i jsdom react react-dom @babel/core @babel/preset-react
 node tests/ui.test.cjs    # compiles the JSX out of index.html and drives it in jsdom

@@ -415,6 +415,8 @@ const textOf = (o) => {
   if (!o) return "";
   if (typeof o === "string") return o;
   if (o.simpleText) return o.simpleText;
+  // newer renderers use a plain `content` string (shorts lockups, overlay metadata)
+  if (typeof o.content === "string") return o.content;
   if (o.runs) return o.runs.map((r) => r.text || "").join("");
   if (o.accessibility?.accessibilityData?.label) return o.accessibility.accessibilityData.label;
   return "";
@@ -448,16 +450,19 @@ function normVideo(v) {
   const thumbs = v.thumbnail?.thumbnails || v.thumbnail?.richThumbnail?.movingThumbnailRenderer?.thumbnail?.thumbnails || [];
   const thumb = thumbs.length ? thumbs[thumbs.length - 1].url : `https://i.ytimg.com/vi/${v.videoId}/mqdefault.jpg`;
   const live = !!v.badges?.some((b) => /LIVE/i.test(textOf(b.metadataBadgeRenderer?.label)));
+  const secs = durToSec(v.lengthText?.simpleText || textOf(v.lengthText));
   return {
     videoId: v.videoId,
     title: textOf(v.title) || "",
     author: textOf(v.ownerText) || textOf(v.longBylineText) || textOf(v.shortBylineText) || "",
     authorId: CHANNEL(v),
     thumbnail: thumb.startsWith("//") ? "https:" + thumb : thumb,
-    lengthSeconds: durToSec(v.lengthText?.simpleText || textOf(v.lengthText)),
+    lengthSeconds: secs,
     viewCount: VIEWS(textOf(v.viewCountText) || textOf(v.shortViewCountText)),
     publishedText: textOf(v.publishedTimeText) || "",
     live,
+    // ≤60s uploads are published as Shorts; the UI uses this for the pill / viewer
+    isShort: secs > 0 && secs <= 60,
   };
 }
 
@@ -874,7 +879,7 @@ async function player(videoId, opts = {}) {
   };
 }
 
-async function listCall(env, url, endpoint, extra) {
+async function listCall(env, url, endpoint, extra, callOpts = {}) {
   const region = (url.searchParams.get("region") || "IN").toUpperCase();
   const cookieHeader = cookieAuth(env, url);
 
@@ -899,7 +904,8 @@ async function listCall(env, url, endpoint, extra) {
     let lastError = null;
     for (const { client, opts } of candidates) {
       if (!client) continue;
-      if (breakerCooling(client)) continue;
+      // ignoreCooling: last-resort fallbacks still try even when other sources just tripped the breakers
+      if (!callOpts.ignoreCooling && breakerCooling(client)) continue;
       try {
         const data = await innertube(client, endpoint, extra, { ...opts, retries: 0, timeout: 8000 });
         noteOk(client);
@@ -935,11 +941,11 @@ async function searchMore(q, token, env = {}, url = new URL("https://x/")) {
   return { items: normalizeList(data, 32) };
 }
 
-async function trending(region = "IN", env = {}, url = new URL("https://x/")) {
-  const data = await listCall(env, url, "browse", { browseId: "FEtrending" });
+async function trending(region = "IN", env = {}, url = new URL("https://x/"), callOpts = {}) {
+  const data = await listCall(env, url, "browse", { browseId: "FEtrending" }, callOpts);
   let items = normalizeList(data, 40);
   if (!items.length) {
-    const alt = await listCall(env, url, "search", { query: `trending ${region}` });
+    const alt = await listCall(env, url, "search", { query: `trending ${region}` }, callOpts);
     items = normalizeList(alt, 40);
   }
   return { items };
@@ -948,6 +954,134 @@ async function trending(region = "IN", env = {}, url = new URL("https://x/")) {
 async function related(videoId, env = {}, url = new URL("https://x/")) {
   const data = await listCall(env, url, "next", { videoId });
   return { items: normalizeList(data, 24) };
+}
+
+// ── Shorts ────────────────────────────────────────────────────────────────────
+const SHORT_MAX_SEC = 90;
+const ID_RE = /^[A-Za-z0-9_-]{6,15}$/;
+const shortThumb = (id) => `https://i.ytimg.com/vi/${id}/oardefault.jpg`;
+
+function makeShort(x) {
+  if (!x || !ID_RE.test(x.videoId || "")) return null;
+  const views = typeof x.views === "number" ? x.views : VIEWS(x.views);
+  const thumb = x.thumb && /^https?:/.test(x.thumb) ? x.thumb : shortThumb(x.videoId);
+  return {
+    videoId: x.videoId,
+    title: x.title || "",
+    author: x.author || "",
+    authorId: x.authorId || "",
+    thumbnail: thumb,
+    lengthSeconds: x.lengthSeconds || 0,
+    viewCount: views,
+    publishedText: x.publishedText || "",
+    live: false,
+    isShort: true,
+  };
+}
+
+// older shape: reelItemRenderer { videoId, headline, viewCountText, thumbnail, navigationEndpoint }
+function shortFromReel(r) {
+  if (!r) return null;
+  const nav = r.navigationEndpoint || {};
+  const thumbs = r.thumbnail?.thumbnails || r.thumbnail?.richThumbnail?.movingThumbnailRenderer?.thumbnail?.thumbnails || [];
+  return makeShort({
+    videoId: r.videoId || nav.reelWatchEndpoint?.videoId || nav.watchEndpoint?.videoId || "",
+    title: textOf(r.headline) || textOf(r.title),
+    views: textOf(r.viewCountText) || textOf(r.shortViewCountText),
+    author: textOf(r.ownerText) || textOf(r.longBylineText) || textOf(r.channelTitle),
+    authorId: CHANNEL(r),
+    thumb: thumbs.length ? thumbs[thumbs.length - 1].url : "",
+  });
+}
+
+// current shape: shortsLockupViewModel { entityId, overlayMetadata, thumbnailViewModel, onTap }
+function shortFromLockup(m) {
+  if (!m) return null;
+  const cmd = m.onTap?.innertubeCommand || m.rendererContext?.commandContext?.onTap?.innertubeCommand || {};
+  const id = String(m.entityId || "").replace(/^shorts-shelf-item-/, "") ||
+    cmd.reelWatchEndpoint?.videoId || cmd.watchEndpoint?.videoId || "";
+  const sources = m.thumbnail?.sources || m.thumbnailViewModel?.image?.sources || [];
+  const sorted = sources.slice().sort((a, b) => (b.width || 0) - (a.width || 0));
+  const primary = m.overlayMetadata?.primaryText;
+  const secondary = m.overlayMetadata?.secondaryText;
+  const viewsText = textOf(secondary) || textOf(m.viewCountText);
+  const author = textOf(m.overlayMetadata?.bylineText) || textOf(m.channelTitle) || "";
+  return makeShort({
+    videoId: id,
+    title: textOf(primary) || textOf(m.accessibilityText),
+    views: viewsText,
+    author,
+    authorId: cmd.browseEndpoint?.browseId || "",
+    thumb: sorted.length ? sorted[0].url : "",
+  });
+}
+
+function parseShorts(data, limit = 40) {
+  const out = [];
+  const seen = new Set();
+  const push = (v) => {
+    if (v && !seen.has(v.videoId)) {
+      seen.add(v.videoId);
+      out.push(v);
+    }
+  };
+  for (const r of collect(data, ["reelItemRenderer"])) {
+    push(shortFromReel(r));
+    if (out.length >= limit * 2) break;
+  }
+  for (const m of collect(data, ["shortsLockupViewModel"])) {
+    push(shortFromLockup(m));
+    if (out.length >= limit * 2) break;
+  }
+  return out.slice(0, limit);
+}
+
+async function shorts(region = "IN", env = {}, url = new URL("https://x/")) {
+  const attempts = [];
+  let items = [];
+
+  // 1. the real Shorts feed
+  try {
+    const data = await listCall(env, url, "browse", { browseId: "FEshorts" });
+    items = parseShorts(data, 40);
+    attempts.push({ source: "FEshorts", found: items.length });
+  } catch (e) {
+    attempts.push({ source: "FEshorts", error: String((e && e.message) || e) });
+  }
+
+  // 2. #shorts search, then trim by duration
+  if (!items.length) {
+    try {
+      const data = await listCall(env, url, "search", { query: "#shorts" }, { ignoreCooling: true });
+      items = parseShorts(data, 40);
+      if (!items.length) {
+        items = normalizeList(data, 60)
+          .filter((v) => v.lengthSeconds > 0 && v.lengthSeconds <= SHORT_MAX_SEC)
+          .map((v) => makeShort({ ...v, views: v.viewCount, thumb: v.thumbnail }))
+          .filter(Boolean);
+      }
+      attempts.push({ source: "search #shorts", found: items.length });
+    } catch (e) {
+      attempts.push({ source: "search #shorts", error: String((e && e.message) || e) });
+    }
+  }
+
+  // 3. last resort: short items already in trending
+  if (!items.length) {
+    try {
+      const t = await trending(region, env, url, { ignoreCooling: true });
+      items = (t.items || [])
+        .filter((v) => v.lengthSeconds > 0 && v.lengthSeconds <= SHORT_MAX_SEC)
+        .map((v) => makeShort({ ...v, views: v.viewCount, thumb: v.thumbnail }))
+        .filter(Boolean);
+      attempts.push({ source: "trending<=90s", found: items.length });
+    } catch (e) {
+      attempts.push({ source: "trending<=90s", error: String((e && e.message) || e) });
+    }
+  }
+
+  const used = attempts.filter((a) => a.found > 0).pop();
+  return { items: items.slice(0, 40), count: Math.min(items.length, 40), region, source: used ? used.source : null, attempts };
 }
 
 function mirrorHosts(env) {
@@ -1278,6 +1412,7 @@ const ROUTES = [
   ["/api/searchmore", async (u, env) => searchMore(u.searchParams.get("q") || "", u.searchParams.get("token") || "", env, u)],
   ["/api/trending", async (u, env) => trending((u.searchParams.get("region") || "IN").toUpperCase(), env, u)],
   ["/api/related", async (u, env) => related(u.searchParams.get("id") || "", env, u)],
+  ["/api/shorts", async (u, env) => shorts((u.searchParams.get("region") || "IN").toUpperCase(), env, u)],
   ["/api/rss", async (u, env) => rss(env, u.searchParams.get("channels") || "")],
   ["/api/channel", async (u) => resolveChannel(u.searchParams.get("q") || u.searchParams.get("id") || "")],
 ];
@@ -1307,7 +1442,7 @@ export default {
         if (url.pathname === path) return json(await handler(url, env));
       }
       return err("not found", 404, {
-        routes: ["/api/health", "/api/debug", "/api/player?id=", "/api/search?q=", "/api/trending?region=IN", "/api/related?id=", "/api/media?u=", "/mp4/{id}.mp4"],
+        routes: ["/api/health", "/api/debug", "/api/player?id=", "/api/search?q=", "/api/trending?region=IN", "/api/shorts?region=IN", "/api/related?id=", "/api/rss?channels=", "/api/channel?q=", "/api/media?u=", "/mp4/{id}.mp4"],
       });
     } catch (e) {
       return err(e && e.message ? e.message : "worker error", 502);
@@ -1355,4 +1490,10 @@ export {
   parseFeed,
   rss,
   resolveChannel,
+  shorts,
+  parseShorts,
+  shortFromReel,
+  shortFromLockup,
+  makeShort,
+  SHORT_MAX_SEC,
 };

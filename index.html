@@ -457,6 +457,59 @@ img{max-width:100%;display:block}
 .ch-title{font-size:26px;font-weight:700;line-height:1.2}
 .ch-meta{font-size:13px;color:var(--t2);margin-top:4px}
 
+
+/* ════════════════ SHORTS ════════════════ */
+.shorts-wrap{display:flex;flex-direction:column;gap:12px}
+.shorts-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.shorts-h-title{display:flex;align-items:center;gap:8px;font-size:22px;font-weight:700}
+.shorts-h-ico{color:var(--red);font-size:20px}
+.shorts-h-count{font-size:13px;font-weight:500;color:var(--t2);background:var(--bg4);border-radius:999px;padding:4px 10px}
+.shorts-h-actions{display:flex;gap:8px}
+.shorts-feed{height:calc(100vh - 200px);min-height:420px;overflow-y:auto;scroll-snap-type:y mandatory;border-radius:16px;display:flex;flex-direction:column;gap:16px;scrollbar-width:none;overscroll-behavior:contain}
+.shorts-feed::-webkit-scrollbar{display:none}
+.short-card{flex:0 0 100%;scroll-snap-align:center;display:flex;align-items:center;justify-content:center;min-height:0}
+.short-stage{position:relative;height:100%;max-width:100%;aspect-ratio:9/16;background:#000;border-radius:16px;overflow:hidden;display:flex;align-items:center;justify-content:center;box-shadow:0 8px 30px rgba(0,0,0,.45)}
+.short-video,.short-poster{width:100%;height:100%;object-fit:cover;background:#000;display:block}
+.short-video{cursor:pointer}
+.short-spin{position:absolute;width:34px;height:34px;border-radius:50%;border:3px solid rgba(255,255,255,.25);border-top-color:#fff;animation:sv-spin .8s linear infinite}
+@keyframes sv-spin{to{transform:rotate(360deg)}}
+.short-err{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:#fff;font-size:14px;background:rgba(0,0,0,.55);text-align:center;padding:20px}
+.short-ov{position:absolute;left:0;right:0;bottom:0;padding:14px 12px 16px;background:linear-gradient(transparent,rgba(0,0,0,.82))}
+.short-who{display:flex;align-items:center;gap:10px;min-width:0}
+.short-av{border-radius:50%;overflow:hidden;flex-shrink:0;line-height:0;cursor:pointer}
+.short-txt{flex:1;min-width:0;color:#fff}
+.short-ch{font-size:13px;font-weight:600}
+.short-title{font-size:14px;font-weight:500;margin-top:2px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.short-views{font-size:12px;color:rgba(255,255,255,.72);margin-top:3px}
+.short-sub{flex-shrink:0;padding:7px 14px!important;font-size:12px!important;background:#fff!important;color:#0f0f0f!important;border-radius:999px!important}
+.short-sub.on{background:rgba(255,255,255,.18)!important;color:#fff!important}
+.short-side{position:absolute;right:10px;bottom:96px;display:flex;flex-direction:column;gap:10px}
+.short-btn{width:42px;height:42px;border-radius:50%;background:rgba(0,0,0,.45);backdrop-filter:blur(6px);color:#fff;display:flex;align-items:center;justify-content:center;border:1px solid rgba(255,255,255,.12);transition:background .15s,transform .15s}
+.short-btn:hover{background:rgba(0,0,0,.7);transform:scale(1.06)}
+.short-btn.on{color:var(--red)}
+.shorts-nav{display:flex;gap:8px;justify-content:center}
+.shorts-nav-btn{width:40px;height:34px;border-radius:10px;background:var(--bg3);color:var(--t1);font-size:12px}
+.shorts-nav-btn:disabled{opacity:.35;cursor:default}
+.shorts-hint{text-align:center;color:var(--t3);font-size:12px}
+.shorts-shelf{margin-bottom:20px}
+.shelf-head{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+.shelf-ico{color:var(--red)}
+.shelf-title{font-size:18px;font-weight:700}
+.shelf-more{margin-left:auto;color:var(--t2);font-size:13px;font-weight:600;padding:6px 12px;border-radius:999px;background:var(--bg3)}
+.shelf-more:hover{background:var(--bg4)}
+.shelf-rail{display:flex;gap:12px;overflow-x:auto;padding-bottom:6px;scrollbar-width:thin}
+.shelf-card{flex:0 0 auto;width:150px;text-align:left;cursor:pointer}
+.shelf-card img{width:150px;height:200px;object-fit:cover;border-radius:12px;background:var(--bg3);display:block}
+.shelf-card-t{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font-size:13px;font-weight:500;margin-top:8px;line-height:1.35}
+.shelf-card-v{font-size:12px;color:var(--t3);margin-top:2px}
+.vc-short{position:absolute;left:8px;bottom:8px;background:rgba(0,0,0,.72);color:#fff;font-size:11px;font-weight:700;letter-spacing:.3px;padding:3px 7px;border-radius:5px;display:flex;align-items:center;gap:4px}
+.vc-short:before{content:"⚡";font-size:10px}
+@media (max-width:640px){
+  .shorts-feed{height:calc(100vh - 232px)}
+  .short-stage{aspect-ratio:9/16;width:100%;border-radius:0}
+  .shelf-card,.shelf-card img{width:124px}
+  .shelf-card img{height:168px}
+}
 </style>
 </head>
 <body>
@@ -552,6 +605,7 @@ const apiSearch = (cfg, q) => ep(cfg, "/api/search?q=" + encodeURIComponent(q));
 const apiSearchMore = (cfg, q, token) => ep(cfg, "/api/searchmore?q=" + encodeURIComponent(q) + "&token=" + encodeURIComponent(token));
 const apiTrending = (cfg, region) => ep(cfg, "/api/trending?region=" + encodeURIComponent(region || "IN"));
 const apiRelated = (cfg, id) => ep(cfg, "/api/related?id=" + encodeURIComponent(id));
+const apiShorts = (cfg, region) => ep(cfg, "/api/shorts?region=" + encodeURIComponent(region || "IN"), 20000);
 const apiPlayer = (cfg, id) => ep(cfg, "/api/player?id=" + encodeURIComponent(id), 30000);
 const apiRss = (cfg, ids) => ep(cfg, "/api/rss?channels=" + encodeURIComponent(ids.join(",")), 30000);
 const apiChannel = (cfg, q) => ep(cfg, "/api/channel?q=" + encodeURIComponent(q), 20000);
@@ -657,6 +711,7 @@ function VCard({ v, onPlay, layout = "grid", st, onChannel, showAv = true }) {
         <img className="vc-thumb-img" src={thumb} alt="" loading="lazy" onError={(e) => { e.currentTarget.src = YTT(v.videoId); }} />
         {dur > 0 && <span className="vc-dur">{fd(dur)}</span>}
         {v.live && <span className="vc-live">LIVE</span>}
+        {v.isShort && !v.live && <span className="vc-short">Shorts</span>}
       </div>
       <div className="vc-body">
         {!row && showAv && (
@@ -1044,7 +1099,7 @@ function SetupGate({ st, onRetry, busy }) {
    ════════════════════════════════════════════════════════════════════════════ */
 const CHIPS = ["All", "Music", "Gaming", "News", "Movies", "Live", "Cricket", "Podcasts", "Science", "Comedy"];
 
-function HomePage({ onPlay, st, engine, onChannel }) {
+function HomePage({ onPlay, st, engine, onChannel, onShorts }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [warn, setWarn] = useState("");
@@ -1082,6 +1137,7 @@ function HomePage({ onPlay, st, engine, onChannel }) {
         <div className="inline-warn"><span>⚠️</span><span style={{ flex: 1 }}>{warn}</span>
           <button className="cp-pill" onClick={() => setNonce((n) => n + 1)}>Retry</button></div>
       )}
+      {chip === "All" && <ShortsShelf st={st} engine={engine} onOpen={() => onShorts()} />}
       {loading ? <Skels /> : items.length === 0 ? (
         <div className="err-box"><div className="err-ico">📭</div><div className="err-msg">Kuch nahi mila — engine connect karein ya chips try karein</div></div>
       ) : (
@@ -1270,6 +1326,260 @@ function ChannelPage({ channelId, name, st, engine, onPlay, onChannel }) {
 /* ════════════════════════════════════════════════════════════════════════════
    SEARCH
    ════════════════════════════════════════════════════════════════════════════ */
+
+/* ════════════════════════════════════════════════════════════════════════════
+   SHORTS — vertical snap feed, one stream resolved at a time
+   ════════════════════════════════════════════════════════════════════════════ */
+function ShortsShelf({ st, engine, onOpen }) {
+  const [items, setItems] = useState([]);
+  useEffect(() => {
+    let dead = false;
+    if (engine !== "ok") return;
+    apiShorts(st.cfg, st.cfg.region).then((d) => { if (!dead) setItems((d.items || []).slice(0, 12)); }).catch(() => {});
+    return () => { dead = true; };
+  }, [engine, st.cfg.engineUrl, st.cfg.region]);
+  if (!items.length) return null;
+  return (
+    <div className="shorts-shelf">
+      <div className="shelf-head">
+        <span className="shelf-ico">⚡</span>
+        <span className="shelf-title">Shorts</span>
+        <button className="shelf-more" onClick={onOpen}>View all</button>
+      </div>
+      <div className="shelf-rail">
+        {items.map((v) => (
+          <button key={v.videoId} className="shelf-card" onClick={onOpen} title={v.title}>
+            <img src={v.thumbnail} alt="" loading="lazy" />
+            <span className="shelf-card-t">{v.title}</span>
+            {v.viewCount > 0 && <span className="shelf-card-v">{fv(v.viewCount)} views</span>}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ShortCard({ v, idx, active, muted, data, st, onChannel, onAddSub, onOpenWatch, onLike, onToggleMute, cardRef }) {
+  const vidRef = useRef(null);
+  const meta = { ...v, ...((data && data.video) || {}) };
+  const subscribed = st.isSub(meta.authorId);
+  const fav = st.isFav(v.videoId);
+  const share = async () => {
+    const url = YTW(v.videoId);
+    try {
+      if (navigator.share) await navigator.share({ title: meta.title, url });
+      else { await navigator.clipboard.writeText(url); alert("Link copied"); }
+    } catch {}
+  };
+  return (
+    <div className="short-card" data-idx={idx} ref={cardRef}>
+      <div className="short-stage">
+        {data && data.src ? (
+          <video
+            ref={vidRef}
+            className="short-video"
+            src={data.src}
+            poster={v.thumbnail}
+            loop
+            playsInline
+            muted={muted || !active}
+            autoPlay={active}
+            preload={Math.abs(idx - active) <= 1 ? "auto" : "none"}
+            onClick={() => { const el = vidRef.current; if (!el) return; if (el.paused) el.play().catch(() => {}); else el.pause(); }}
+          />
+        ) : (
+          <img className="short-poster" src={v.thumbnail} alt="" />
+        )}
+        {data && data.status === "loading" && <div className="short-spin" />}
+        {data && data.status === "error" && (
+          <div className="short-err">
+            <div>Stream nahi mila</div>
+            <a href={YTW(v.videoId)} target="_blank" rel="noreferrer" className="cp-pill">Open on YouTube</a>
+          </div>
+        )}
+
+        <div className="short-ov">
+          <div className="short-who">
+            <button className="short-av" onClick={() => meta.authorId && onChannel(meta.authorId, meta.author)} title={meta.author}>
+              <Av name={meta.author} src={meta.avatar} size={38} />
+            </button>
+            <div className="short-txt">
+              <div className="short-ch">{meta.author || "Shorts"}</div>
+              <div className="short-title">{meta.title}</div>
+              {meta.viewCount > 0 && <div className="short-views">{fv(meta.viewCount)} views</div>}
+            </div>
+            <button
+              className={"sub-btn short-sub" + (subscribed ? " on" : "")}
+              onClick={() => {
+                if (subscribed) st.removeSub(meta.authorId);
+                else if (meta.authorId) st.addSub({ channelId: meta.authorId, name: meta.author });
+                else onAddSub();
+              }}
+            >
+              {subscribed ? "Subscribed" : "Subscribe"}
+            </button>
+          </div>
+        </div>
+
+        <div className="short-side">
+          <button className={"short-btn" + (fav ? " on" : "")} title="Like" onClick={() => onLike(meta)}>
+            <Icon d={I.like} size={22} />
+          </button>
+          <button className="short-btn" title={muted ? "Unmute" : "Mute"} onClick={() => onToggleMute()}>
+            <Icon d={muted ? I.mute : I.vol} size={22} />
+          </button>
+          <button className="short-btn" title="Watch page" onClick={() => onOpenWatch(meta)}>
+            <Icon d={I.play} size={22} />
+          </button>
+          <button className="short-btn" title="Share" onClick={share}>
+            <Icon d={I.share} size={20} />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ShortsPage({ st, engine, onPlay, onChannel, onAddSub }) {
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [warn, setWarn] = useState("");
+  const [active, setActive] = useState(0);
+  const [muted, setMuted] = useState(true);
+  const [nonce, setNonce] = useState(0);
+  const [data, setData] = useState({});   // videoId -> {status, src, video}
+  const feedRef = useRef(null);
+  const cardRefs = useRef([]);
+
+  useEffect(() => {
+    let dead = false;
+    setLoading(true); setWarn(""); setActive(0); setData({});
+    if (engine !== "ok") {
+      if (!dead) { setItems([]); setLoading(false); if (engine === "down") setWarn("Engine connect nahi hai — Settings me worker URL daalein"); }
+      return () => { dead = true; };
+    }
+    apiShorts(st.cfg, st.cfg.region)
+      .then((d) => {
+        if (dead) return;
+        const list = d.items || [];
+        setItems(list);
+        if (!list.length) setWarn("Shorts nahi mile — Retry karein");
+      })
+      .catch((e) => { if (!dead) setWarn(e.message); })
+      .then(() => { if (!dead) setLoading(false); });
+    return () => { dead = true; };
+  }, [engine, st.cfg.engineUrl, st.cfg.region, nonce]);
+
+  // resolve the current card (+1 so the next swipe is instant)
+  useEffect(() => {
+    if (engine !== "ok") return;
+    let dead = false;
+    [active, active + 1].forEach((i) => {
+      const v = items[i];
+      if (!v) return;
+      setData((d) => (d[v.videoId] ? d : { ...d, [v.videoId]: { status: "loading" } }));
+      apiPlayer(st.cfg, v.videoId)
+        .then((p) => {
+          if (dead) return;
+          const ok = p && p.ok && (p.formats || []).length;
+          setData((d) => ({ ...d, [v.videoId]: ok ? { status: "ready", src: p.formats[0].url, video: p.video || {} } : { status: "error" } }));
+        })
+        .catch(() => { if (!dead) setData((d) => ({ ...d, [v.videoId]: { status: "error" } })); });
+    });
+    return () => { dead = true; };
+  }, [active, items, engine, st.cfg.engineUrl]);
+
+  // play the active one, pause the rest
+  useEffect(() => {
+    const feed = feedRef.current;
+    if (!feed) return;
+    const vids = feed.querySelectorAll("video");
+    vids.forEach((el) => {
+      const card = el.closest(".short-card");
+      const on = card && Number(card.dataset.idx) === active;
+      if (on) {
+        el.muted = muted;
+        const pr = el.play && el.play();
+        if (pr && pr.catch) pr.catch(() => {});
+      } else {
+        try { el.pause(); el.currentTime = 0; } catch {}
+      }
+    });
+  }, [active, muted, data, items]);
+
+  const scrollTo = useCallback((i) => {
+    const el = cardRefs.current[i];
+    if (el && el.scrollIntoView) { try { el.scrollIntoView({ behavior: "smooth", block: "start" }); } catch {} }
+  }, []);
+
+  const step = useCallback((dir) => {
+    setActive((i) => {
+      const n = Math.max(0, Math.min(items.length - 1, i + dir));
+      scrollTo(n);
+      return n;
+    });
+  }, [items.length, scrollTo]);
+
+  useEffect(() => {
+    const h = (e) => {
+      if (e.target && /INPUT|TEXTAREA/.test(e.target.tagName)) return;
+      if (e.key === "ArrowDown" || e.key === "j") { e.preventDefault(); step(1); }
+      else if (e.key === "ArrowUp" || e.key === "k") { e.preventDefault(); step(-1); }
+      else if (e.key === "m") setMuted((m) => !m);
+    };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [step]);
+
+  const cur = items[active];
+
+  return (
+    <div className="shorts-wrap">
+      <div className="shorts-head">
+        <div className="shorts-h-title"><span className="shorts-h-ico">⚡</span> Shorts
+          {items.length > 0 && <span className="shorts-h-count">{active + 1} / {items.length}</span>}
+        </div>
+        <div className="shorts-h-actions">
+          <button className="cp-pill" onClick={() => setNonce((n) => n + 1)}>Refresh</button>
+          <button className="cp-pill" onClick={() => setMuted((m) => !m)}>{muted ? "🔇 Unmute" : "🔊 Mute"}</button>
+        </div>
+      </div>
+
+      {warn && (
+        <div className="inline-warn"><span>⚠️</span><span style={{ flex: 1 }}>{warn}</span>
+          <button className="cp-pill" onClick={() => setNonce((n) => n + 1)}>Retry</button></div>
+      )}
+
+      {loading ? (
+        <div className="shorts-feed"><div className="short-card"><div className="short-stage"><div className="skel" style={{ width: "100%", height: "100%" }} /></div></div></div>
+      ) : items.length === 0 ? (
+        <div className="err-box"><div className="err-ico">⚡</div><div className="err-msg">Abhi koi Short nahi mila — Refresh try karein</div></div>
+      ) : (
+        <>
+          <div className="shorts-feed" ref={feedRef}>
+            {items.map((v, i) => (
+              <ShortCard
+                key={v.videoId}
+                v={v} idx={i} active={i === active} muted={muted} data={data[v.videoId]}
+                st={st} onChannel={onChannel} onAddSub={onAddSub}
+                cardRef={(el) => { cardRefs.current[i] = el; }}
+                onOpenWatch={(meta) => onPlay({ ...meta, isShort: true })}
+                onLike={(meta) => st.togFav(meta)}
+                onToggleMute={() => setMuted((m) => !m)}
+              />
+            ))}
+          </div>
+          <div className="shorts-nav">
+            <button className="shorts-nav-btn" onClick={() => step(-1)} disabled={active === 0} title="Previous (↑)">▲</button>
+            <button className="shorts-nav-btn" onClick={() => step(1)} disabled={active >= items.length - 1} title="Next (↓)">▼</button>
+          </div>
+          <div className="shorts-hint">Scroll / ↓ ↑ se next · {cur ? cur.title : ""}</div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function SearchPage({ query, onPlay, st, engine, onChannel }) {
   const [res, setRes] = useState([]);
   const [token, setToken] = useState(null);
@@ -1753,6 +2063,7 @@ function Sidebar({ page, nav, st, open, mini, onAddSub, onChannel }) {
     <aside className={"sidebar" + (mini ? " mini" : "") + (!open && !mini ? " closed" : "")}>
       <div className="s-group">
         {item("home", "🏠", "Home")}
+        {item("shorts", "⚡", "Shorts")}
         {item("subscriptions", "📡", "Subscriptions", st.subs.length)}
         {item("trending", "🔥", "Trending")}
       </div>
@@ -1887,8 +2198,11 @@ function App() {
           {needsSetup ? <SetupGate st={st} onRetry={checkEngine} busy={busy} /> : (
             <>
               <EngineBar status={engine} onSetup={() => nav("settings")} />
-              {page === "home" && <HomePage onPlay={onPlay} st={st} engine={engine} onChannel={onChannel} />}
-              {page === "trending" && <HomePage onPlay={onPlay} st={st} engine={engine} onChannel={onChannel} />}
+              {page === "home" && <HomePage onPlay={onPlay} st={st} engine={engine} onChannel={onChannel} onShorts={() => nav("shorts")} />}
+              {page === "trending" && <HomePage onPlay={onPlay} st={st} engine={engine} onChannel={onChannel} onShorts={() => nav("shorts")} />}
+              {page === "shorts" && (
+                <ShortsPage st={st} engine={engine} onPlay={onPlay} onChannel={onChannel} onAddSub={openSubModal} />
+              )}
               {page === "subscriptions" && (
                 <SubsPage st={st} engine={engine} onPlay={onPlay} onChannel={onChannel} onAddSub={openSubModal} refreshKey={subsKey} />
               )}
