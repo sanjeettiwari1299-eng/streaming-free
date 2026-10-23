@@ -187,6 +187,13 @@ const server = http.createServer(async (req, res) => {
     if (!hit) return json(res, { error: "channel not found in dev preview" }, 404);
     return json(res, { channelId: hit.authorId, name: hit.author, avatar: null, source: q });
   }
+  if (u.pathname === "/api/stream" || /^\/(?:api\/)?(?:file|mp4)\/[A-Za-z0-9_-]{6,15}\.mp4$/.test(u.pathname)) {
+    // signature-free URL in production; here it just points at the sample file
+    const id = u.searchParams.get("id") || (u.pathname.match(/([A-Za-z0-9_-]{6,15})\.mp4$/) || [])[1] || "";
+    const v = byId.get(id) || byId.get(ITEMS[0].videoId);
+    res.writeHead(302, { location: `${CDN}/${v.sample.file}` });
+    return res.end();
+  }
   if (u.pathname === "/api/player") {
     const id = u.searchParams.get("id");
     const v = byId.get(id) || byId.get(ITEMS[0].videoId);
