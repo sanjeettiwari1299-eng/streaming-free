@@ -633,6 +633,25 @@ img{max-width:100%;display:block}
 .keys-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:6px 14px}
 .key-row{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--t2)}
 .key-row kbd{background:var(--bg3);border:1px solid var(--border);border-radius:5px;padding:1px 6px;font-size:11px;color:var(--t1);font-family:ui-monospace,monospace;white-space:nowrap}
+
+/* ── playback diagnosis panel ─────────────────────────────────────────── */
+.pl-badge{position:absolute;top:14px;left:16px;font-size:11px;letter-spacing:.6px;text-transform:uppercase;
+  color:#bbb;background:rgba(255,255,255,.08);border-radius:5px;padding:3px 8px}
+.pl-ico{font-size:32px;line-height:1}
+.pl-title{font-size:17px;font-weight:600;color:#fff}
+.pl-sub{font-size:13px;color:#aaa;max-width:520px;line-height:1.6}
+.pl-note{font-size:12.5px;color:#ffd79a;background:rgba(255,180,60,.1);border:1px solid rgba(255,180,60,.28);
+  border-radius:10px;padding:9px 12px;max-width:520px;line-height:1.6;text-align:left}
+.pl-note code{background:rgba(0,0,0,.35);border-radius:4px;padding:1px 5px;font-size:11.5px}
+.pl-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-top:2px}
+.pl-why{width:100%;max-width:560px;margin-top:6px}
+.pl-why-btn{font-size:12px;color:#8fb8d8;padding:6px 10px;border-radius:8px;background:rgba(255,255,255,.06)}
+.pl-why-btn:hover{background:rgba(255,255,255,.12)}
+.pl-why-body{text-align:left;margin-top:8px;background:rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.08);
+  border-radius:10px;padding:10px 12px;max-height:210px;overflow:auto}
+.pl-why-sum{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}
+.pl-chip{font-size:11px;color:#ddd;background:rgba(255,255,255,.1);border-radius:999px;padding:2px 8px}
+.pl-why-body ol{margin:0;padding-left:18px;font-size:11.5px;color:#9c9c9c;line-height:1.7;word-break:break-word}
 </style>
 </head>
 <body>
@@ -2155,16 +2174,19 @@ function WatchPage({ video, onPlay, st, engine, onChannel, onAddSub }) {
   const [rel, setRel] = useState([]);
   const [descOpen, setDescOpen] = useState(false);
   const [attempt, setAttempt] = useState(0);
+  const [diag, setDiag] = useState(null);   // worker's {reason, reasonLabel, hint, needAuth, attempts}
+  const [showWhy, setShowWhy] = useState(false);
 
   useEffect(() => {
     let dead = false;
-    setStatus("loading"); setErr(""); setStream(null);
+    setStatus("loading"); setErr(""); setStream(null); setDiag(null); setShowWhy(false);
     if (engine !== "ok") { setStatus("error"); setErr("engine-offline"); return; }
     apiPlayer(st.cfg, video.videoId)
       .then((d) => {
         if (dead) return;
         if (!d || !d.ok || !(d.formats || []).length) {
           setStatus("error");
+          setDiag(d || null);
           setErr((d && (d.error || (d.attempts || []).slice(-3).join(" · "))) || "koi playable stream nahi mila");
           return;
         }
@@ -2236,17 +2258,48 @@ function WatchPage({ video, onPlay, st, engine, onChannel, onAddSub }) {
           {status === "error" && (
             <div className="cp">
               <div className="cp-err">
-                <div style={{ fontSize: 34 }}>⚠️</div>
-                <div style={{ fontSize: 16, fontWeight: 500, color: "#fff" }}>
-                  {err === "engine-offline" ? "Engine connect nahi hai" : "Video play nahi ho paya"}
+                <div className="pl-badge">{err === "engine-offline" ? "engine" : (diag && diag.reason) || "error"}</div>
+                <div className="pl-ico">⚠️</div>
+                <div className="pl-title">
+                  {err === "engine-offline" ? "Engine connect nahi hai" : (diag && diag.reasonLabel) || "Video play nahi ho paya"}
                 </div>
-                <div style={{ fontSize: 13, color: "#aaa", maxWidth: 480, lineHeight: 1.6, wordBreak: "break-word" }}>
-                  {err === "engine-offline" ? "Settings → Engine URL set karein (Cloudflare Worker)." : err}
+                <div className="pl-sub">
+                  {err === "engine-offline"
+                    ? "Settings → Engine URL set karein (Cloudflare Worker)."
+                    : (diag && diag.hint) || err}
                 </div>
-                <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "center" }}>
-                  <button className="cp-pill" onClick={() => setAttempt((a) => a + 1)}>Retry</button>
+
+                {diag && diag.needAuth && (
+                  <div className="pl-note">
+                    <b>Ye video YouTube ke bot-check me atki hai.</b> Worker me <code>YT_COOKIES</code> (throwaway account)
+                    ya <code>PO_TOKEN</code> / <code>POTOKEN_URL</code> secret add karo — uske baad yehi video chal jayegi.
+                  </div>
+                )}
+
+                <div className="pl-actions">
+                  <button className="cp-pill" onClick={() => setAttempt((a) => a + 1)}>↻ Retry</button>
+                  <button className="cp-pill ghost" onClick={() => setAttempt((a) => a + 1)}>Fresh URL</button>
+                  <a className="cp-pill ghost" href={`${baseOf(st.cfg)}/mp4/${video.videoId}.mp4?dl=1`} target="_blank" rel="noreferrer">Download MP4</a>
                   <a className="cp-pill ghost" href={YTW(video.videoId)} target="_blank" rel="noreferrer">Open on YouTube</a>
                 </div>
+
+                {diag && (diag.attempts || []).length > 0 && (
+                  <div className="pl-why">
+                    <button className="pl-why-btn" onClick={() => setShowWhy((v) => !v)}>
+                      {showWhy ? "Hide" : "Why?"} · {diag.attempts.length} attempts tried
+                    </button>
+                    {showWhy && (
+                      <div className="pl-why-body">
+                        {(diag.failures && Object.keys(diag.failures).length > 0) && (
+                          <div className="pl-why-sum">
+                            {Object.entries(diag.failures).map(([k, n]) => <span key={k} className="pl-chip">{k} ×{n}</span>)}
+                          </div>
+                        )}
+                        <ol>{diag.attempts.slice(-14).map((a, i) => <li key={i}>{a}</li>)}</ol>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -2496,7 +2549,14 @@ function SetPage({ st, engine, onCheck, onAddSub }) {
 
       <div className="set-blk">
         <div className="set-blk-title">🧩 YouTube engine <span className="badge-mini">serverless</span></div>
-        <div className="set-blk-desc">Search, streams aur subscriptions — sab aapke Cloudflare Worker se.</div>
+        <div className="set-blk-desc">
+          Search, streams aur subscriptions — sab aapke Cloudflare Worker se.
+          <div style={{ marginTop: 6, color: "var(--t3)", fontSize: 12 }}>
+            Bot-check wali videos ke liye worker secrets: <code>YT_COOKIES</code> (throwaway account) ya
+            <code> PO_TOKEN</code> / <code>POTOKEN_URL</code>. Health check:
+            <a href={`${baseOf(st.cfg)}/api/canary?n=3`} target="_blank" rel="noreferrer" style={{ color: "#3ea6ff" }}> /api/canary</a>
+          </div>
+        </div>
         <div className="set-api-row">
           <input placeholder="https://your-worker.workers.dev" value={url} onChange={(e) => setUrl(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter") { upd({ engineUrl: url.trim() }); onCheck(); } }} />

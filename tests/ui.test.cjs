@@ -96,6 +96,15 @@ function makeDom(opts = {}) {
         if (/\/api\/search/.test(u)) return ok({ items: TRENDING, continuation: null });
         if (/\/api\/player/.test(u)) {
           const id = decodeURIComponent(u.split("id=")[1].split("&")[0]);
+          if (opts.gatedPlayer && id === "tr000000002") {
+            return ok({
+              ok: false, error: "YouTube bot-check: koi playable stream nahi mila",
+              reason: "bot", reasonLabel: "YouTube bot-check", needAuth: true, botCheck: true,
+              hint: "YouTube is asking this IP to prove it is not a bot (PoToken). Cookies or a PoToken fix this.",
+              failures: { bot: 6, unavailable: 2 },
+              attempts: ["android_vr@1.65.10: LOGIN_REQUIRED Sign in to confirm you're not a bot [bot]", "ios@21.26.4: LOGIN_REQUIRED [bot]", "mirror https://inv.nadeko.net: HTTP 502"],
+            });
+          }
           if (SHORTS.some((v) => v.videoId === id)) {
             return ok({
               ok: true, client: "android_vr",
@@ -263,6 +272,26 @@ const check = (n, c, e) => checks.push({ n, pass: !!c, e });
   w.dispatchEvent(new w.KeyboardEvent("keydown", { key: "m", bubbles: true }));
   await wait(120);
   check("keyboard m mutes", q(w, "video").muted === true);
+
+  /* ══ 1b. playback diagnosis panel (bot-check) ════════════════════════════ */
+  const domG = makeDom({ gatedPlayer: true, prefs: { sv_cfg: JSON.stringify({ engineUrl: "https://w.dev", autoplay: true, showRelated: true }) } });
+  const wg = domG.window;
+  wg.console.error = () => {};
+  const scg = wg.document.createElement("script");
+  scg.textContent = app;
+  wg.document.body.appendChild(scg);
+  await wait(800);
+  click(wg, all(wg, ".vc")[1]);          // the gated one
+  await wait(700);
+  check("gated video shows a real reason", /bot-check/i.test(wg.document.body.textContent), wg.document.body.textContent.slice(0, 120));
+  check("gated video explains how to fix it", /YT_COOKIES|PO_TOKEN/.test(wg.document.body.textContent));
+  check("diagnosis panel offers actions", all(wg, ".pl-actions .cp-pill").length >= 3, all(wg, ".pl-actions .cp-pill").map((b) => b.textContent).join(" | "));
+  check("diagnosis panel has a Download MP4 escape hatch", all(wg, ".pl-actions a").some((a) => /mp4/.test(a.getAttribute("href") || "")));
+  check("attempts are hidden until asked", !q(wg, ".pl-why-body"));
+  click(wg, q(wg, ".pl-why-btn"));
+  await wait(200);
+  check("'why' expands the attempt log", !!q(wg, ".pl-why-body") && all(wg, ".pl-why-body li").length === 3, all(wg, ".pl-why-body li").length);
+  check("'why' groups the failure reasons", /bot ×6/.test(q(wg, ".pl-why-body").textContent), q(wg, ".pl-why-body").textContent.slice(0, 80));
 
   /* ══ 2. subscriptions page renders RSS ═══════════════════════════════════ */
   const subsNav = all(w, ".s-item").find((b) => /Subscriptions/.test(b.textContent));

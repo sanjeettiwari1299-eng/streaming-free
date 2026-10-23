@@ -21,7 +21,7 @@
  */
 
 // bump this when the worker changes, so /api/health tells you which code is live
-const BUILD = "7.4.0";
+const BUILD = "7.6.0";
 
 const INNERTUBE_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8";
 const UA = {
@@ -481,6 +481,7 @@ const VIDEO_KEYS = [
   "videoWithContextRenderer",
   // 2025/26 shape: search, channel Videos tab and home now mostly use lockups
   "lockupViewModel",
+  "shortsLockupViewModel",
 ];
 
 const ID_RE11 = /^[A-Za-z0-9_-]{11}$/;
@@ -564,12 +565,22 @@ function normLockup(m) {
   const strings = deepStrings(meta);
   const rows = collect(meta, ["metadataParts"]).flat().map((p) => textOf(p.text)).filter(Boolean);
 
+  const authorId = browseIdIn(meta) || cmd.browseEndpoint?.browseId || "";
+  const author = rows.find((t) => !VIEWS_RE.test(t) && !AGO_RE.test(t) && !DUR_RE.test(t)) || "";
+  const looksLikeTitle = (t) =>
+    t && t.length > 3 && t !== author && !VIEWS_RE.test(t) && !AGO_RE.test(t) && !DUR_RE.test(t) &&
+    !/^\d+(st|nd|rd|th)?$/.test(t);
+  // title first from the metadata block, then anywhere in the node (shapes move it around)
   const title =
     textOf(meta.title) ||
-    strings.find((t) => t.length > 3 && !VIEWS_RE.test(t) && !AGO_RE.test(t) && !DUR_RE.test(t)) ||
-    "";
-  const authorId = browseIdIn(meta) || cmd.browseEndpoint?.browseId || "";
-  const author = rows.find((t) => t !== title && !VIEWS_RE.test(t) && !AGO_RE.test(t) && !DUR_RE.test(t)) || "";
+    strings.find(looksLikeTitle) ||
+    deepStrings(m).find(looksLikeTitle) ||
+    textOf(m.accessibilityText) ||
+    textOf(m.rendererContext?.accessibilityContext) ||
+    // last resort: the longest string in the node is almost always the title
+    (deepStrings(m)
+      .filter((t) => t.length > 8 && t !== author && !VIEWS_RE.test(t) && !AGO_RE.test(t))
+      .sort((a, b) => b.length - a.length)[0] || "");
   const viewsText = rows.find((t) => VIEWS_RE.test(t)) || strings.find((t) => VIEWS_RE.test(t)) || "";
   const agoText = rows.find((t) => AGO_RE.test(t)) || strings.find((t) => AGO_RE.test(t)) || "";
   // duration usually lives in a thumbnail overlay badge, i.e. outside the metadata block
@@ -652,7 +663,7 @@ function normalizeList(data, limit = 30) {
   const collectKey = (key) => {
     let found = 0;
     for (const r of collect(data, [key])) {
-      push(key === "lockupViewModel" ? normLockup(r) : normVideo(r));
+      push(key === "lockupViewModel" ? normLockup(r) : key === "shortsLockupViewModel" ? shortFromLockup(r) : normVideo(r));
       found += 1;
       if (found >= 80 || out.length >= limit * 2) break;
     }
@@ -834,6 +845,103 @@ async function playableUrl(f) {
 
 // ── routes ────────────────────────────────────────────────────────────────────
 // One player request for one client. Returns null when this client can't serve it.
+// ── why did it fail? (drives the UI panel + the escalation order) ────────────
+const REASONS = {
+  bot: {
+    label: "YouTube bot-check",
+    needAuth: true,
+    hint: "YouTube is asking this IP to prove it is not a bot (PoToken). Cookies or a PoToken fix this.",
+  },
+  login: {
+    label: "Login / members-only",
+    needAuth: true,
+    hint: "Private, members-only or age-restricted video. Optional cookies (YT_COOKIES) unlock these.",
+  },
+  age: {
+    label: "Age restricted",
+    needAuth: true,
+    hint: "Age-restricted video — needs cookies from a signed-in account.",
+  },
+  region: {
+    label: "Region locked",
+    needAuth: true,
+    hint: "Not available from this worker's region (or needs login).",
+  },
+  live: {
+    label: "Live stream",
+    needAuth: false,
+    hint: "Live HLS streams are not muxed MP4 — open it on YouTube while it is live.",
+  },
+  unavailable: {
+    label: "Unavailable",
+    needAuth: false,
+    hint: "Removed, private, or the client is no longer supported by YouTube.",
+  },
+  unknown: { label: "No stream", needAuth: false, hint: "" },
+};
+
+function classifyFailure(status, reason) {
+  const st = String(status || "").toUpperCase();
+  const r = String(reason || "").toLowerCase();
+  if (/not a bot|sign in to confirm|bot.?check|po_?token/.test(r)) return "bot";
+  if (/age|confirm your age/.test(r)) return "age";
+  if (/country|region|not available in your/.test(r)) return "region";
+  if (/members|join this channel|private video|login_required/.test(r)) return "login";
+  if (st === "AGE_VERIFICATION_REQUIRED") return "age";
+  if (st === "LOGIN_REQUIRED") return "login";
+  if (/live event|is live|premieres in/.test(r)) return "live";
+  if (/removed|deleted|no longer available|not available|no longer supported|unavailable/.test(r)) return "unavailable";
+  return "unknown";
+}
+
+// ── PoToken: static secret, or an external provider (bgutil-compatible) ─────
+const POTOKEN_CACHE = { key: "", token: "", visitorData: "", ts: 0 };
+const POTOKEN_TTL = 30 * 60 * 1000;
+
+async function getPoToken(env, visitorData) {
+  const fixed = String((env && env.PO_TOKEN) || "").trim();
+  // tolerate both "TOKEN" and "VISITOR_DATA:TOKEN"
+  if (fixed) {
+    const parts = fixed.split(":");
+    return parts.length > 1 && /^[A-Za-z0-9_-]{8,}$/.test(parts[0])
+      ? { poToken: parts.pop(), visitorData: parts.join(":"), source: "secret" }
+      : { poToken: fixed, visitorData, source: "secret" };
+  }
+  const provider = String((env && env.POTOKEN_URL) || "").trim().replace(/\/+$/, "");
+  if (!provider) return { poToken: "", visitorData, source: "" };
+
+  const key = provider + "|" + (visitorData || "");
+  if (POTOKEN_CACHE.key === key && Date.now() - POTOKEN_CACHE.ts < POTOKEN_TTL) {
+    return { poToken: POTOKEN_CACHE.token, visitorData: POTOKEN_CACHE.visitorData, source: "provider(cached)" };
+  }
+  try {
+    const url = `${provider}${provider.includes("?") ? "&" : "?"}visitor_data=${encodeURIComponent(visitorData || "")}`;
+    const r = await fetchRetry(url, { headers: { accept: "application/json", "user-agent": WEB_UA } }, { retries: 0, timeout: 6000 });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const d = await r.json();
+    const token = d.poToken || d.po_token || d.potoken || "";
+    const vd = d.visitorData || d.visitor_data || visitorData;
+    if (token) {
+      POTOKEN_CACHE.key = key;
+      POTOKEN_CACHE.token = token;
+      POTOKEN_CACHE.visitorData = vd;
+      POTOKEN_CACHE.ts = Date.now();
+      return { poToken: token, visitorData: vd, source: "provider" };
+    }
+    return { poToken: "", visitorData, source: "provider(empty)" };
+  } catch (e) {
+    return { poToken: "", visitorData, source: "provider error: " + e.message };
+  }
+}
+
+// built-in last-resort extractors (Invidious-compatible API). Set MIRRORS=off to disable.
+const DEFAULT_MIRRORS = [
+  "https://inv.nadeko.net",
+  "https://invidious.nerdvpn.de",
+  "https://iv.melmac.space",
+  "https://invidious.f5.si",
+];
+
 async function tryClient(client, videoId, opts, attempts, tag) {
   const label = `${client.id}@${client.versionRoll || client.ctx.clientVersion}${tag ? "(" + tag + ")" : ""}`;
   let data;
@@ -845,6 +953,7 @@ async function tryClient(client, videoId, opts, attempts, tag) {
       { ...opts, retries: 0, timeout: 7000 }
     );
   } catch (e) {
+    if (opts.onFail) opts.onFail("unknown", client);
     attempts.push(`${label}: ${e.message}`);
     noteFail(client);
     return null;
@@ -852,7 +961,10 @@ async function tryClient(client, videoId, opts, attempts, tag) {
   const status = data?.playabilityStatus?.status || "UNKNOWN";
   const sd = data?.streamingData;
   if (status !== "OK" || !sd) {
-    attempts.push(`${label}: ${status} ${data?.playabilityStatus?.reason || ""}`.trim());
+    const reason = data?.playabilityStatus?.reason || "";
+    const kind = classifyFailure(status, reason);
+    if (opts.onFail) opts.onFail(kind, client);
+    attempts.push(`${label}: ${status} ${reason}`.trim() + (kind !== "unknown" ? ` [${kind}]` : ""));
     noteFail(client);
     return null;
   }
@@ -922,10 +1034,12 @@ async function tryClient(client, videoId, opts, attempts, tag) {
 // Only Invidious with local=true is usable here: the instance proxies the bytes,
 // so the URL is not tied to our IP. Piped direct URLs would 403.
 function emergencyMirrors(env) {
-  return String((env && env.EMERGENCY_MIRRORS) || "")
+  const custom = String((env && env.EMERGENCY_MIRRORS) || "")
     .split(",")
     .map((x) => x.trim().replace(/\/+$/, ""))
     .filter(Boolean);
+  const off = String((env && env.MIRRORS) || "").toLowerCase() === "off";
+  return [...new Set([...custom, ...(off ? [] : DEFAULT_MIRRORS)])];
 }
 
 async function mirrorStream(videoId, mirrors, attempts = []) {
@@ -983,78 +1097,126 @@ async function mirrorStream(videoId, mirrors, attempts = []) {
 async function player(videoId, opts = {}) {
   const env = opts.env || {};
   const attempts = [];
-  const deadline = Date.now() + 25000;
-  const poToken = (env && env.PO_TOKEN) || "";
+  const failures = [];
+  const started = Date.now();
+  const deadline = started + 26000;
 
   let { versions, source, visitorData } = await discoverVersions(env);
   let ladder = buildClients(versions, opts.region || "IN");
 
+  // PoToken (static secret or external provider) + the visitorData it belongs to
+  const pt = await getPoToken(env, visitorData);
+  if (pt.poToken) visitorData = pt.visitorData || visitorData;
+
+  const noteFailKind = (kind) => {
+    failures.push(kind);
+  };
+
   const runPass = async (clients, extraOpts, tag, useBreakers = true) => {
+    let needAuthEarly = false;
     for (const client of clients) {
       if (Date.now() > deadline) {
         attempts.push(`${tag || "pass"} stopped: time budget reached`);
-        return null;
+        break;
       }
       if (useBreakers && breakerCooling(client)) {
         attempts.push(`${client.id}@${client.ctx.clientVersion}: skipped (cooling down)`);
         continue;
       }
-      const res = await tryClient(client, videoId, { ...extraOpts, poToken }, attempts, tag);
-      if (res) return res;
-    }
-    return null;
-  };
-
-  // pass 1 — anonymous
-  let hit = await runPass(ladder, { visitorData }, "");
-  if (hit) return { ...hit, versions, versionSource: source, pass: 1 };
-
-  // pass 2 — self-heal: refresh versions + visitorData, retry anonymously
-  const fresh = await discoverVersions(env, true);
-  versions = fresh.versions;
-  source = fresh.source;
-  visitorData = fresh.visitorData || visitorData;
-  ladder = buildClients(versions, opts.region || "IN");
-  hit = await runPass(ladder, { visitorData }, "retry", false);
-  if (hit) return { ...hit, versions, versionSource: source, pass: 2, healed: true };
-
-  // pass 3 — cookies (only with a valid SV_KEY), SAPISIDHASH for web-family clients
-  const cookieHeader = opts.cookieHeader || "";
-  if (cookieHeader) {
-    const auth = await sapisidHash(cookieHeader);
-    const authClients = ladder.filter((c) =>
-      ["android", "web", "ios", "tv_embedded", "web_embedded"].includes(c.id)
-    );
-    for (const client of authClients) {
-      if (Date.now() > deadline) break;
-      const needsHash = client.id === "web" || client.id === "web_embedded";
       const res = await tryClient(
         client,
         videoId,
-        { visitorData, cookies: cookieHeader, authorization: needsHash ? auth : "" },
+        {
+          ...extraOpts,
+          poToken: pt.poToken,
+          onFail: (kind) => {
+            noteFailKind(kind);
+            // a bot-check is not client-specific: stop burning the ladder, escalate instead
+            if (kind === "bot" && !extraOpts.cookies) needAuthEarly = true;
+          },
+        },
         attempts,
-        "auth"
+        tag
       );
-      if (res) return { ...res, authed: true, versions, versionSource: source, pass: 3 };
+      if (res) return { res, needAuthEarly };
+      if (needAuthEarly) {
+        attempts.push(`${tag || "pass"}: bot-check detected → escalating to authenticated pass`);
+        break;
+      }
     }
+    return { res: null, needAuthEarly };
+  };
+
+  const finish = (hit, pass, extra) => ({
+    ...hit,
+    versions,
+    versionSource: source,
+    pass,
+    ms: Date.now() - started,
+    poToken: !!pt.poToken,
+    poTokenSource: pt.source,
+    ...extra,
+  });
+
+  // pass 1 — fast anonymous subset (android_vr / ios / tv_embedded / android)
+  const fast = ladder.filter((c) => ["android_vr", "ios", "tv_embedded", "android"].includes(c.id));
+  let out = await runPass(fast.length ? fast : ladder.slice(0, 4), { visitorData }, "");
+  if (out.res) return finish(out.res, 1);
+  const sawBotCheck = out.needAuthEarly || failures.includes("bot");
+
+  // pass 2 — cookies (bot-checks and login-required videos land here)
+  const cookieHeader = opts.cookieHeader || "";
+  if (cookieHeader) {
+    const auth = await sapisidHash(cookieHeader);
+    const authClients = ladder.filter((c) => ["android_vr", "android", "ios", "web", "mweb", "tv_embedded", "web_embedded"].includes(c.id));
+    out = await runPass(
+      authClients,
+      { visitorData, cookies: cookieHeader, authorization: auth },
+      "auth",
+      false
+    );
+    if (out.res) return finish(out.res, 2, { authed: true, healed: false });
   }
 
-  // pass 4 — emergency mirrors (disabled unless configured)
+  // pass 3 — self-heal: re-discover versions, full ladder, breakers bypassed
+  const fresh = await discoverVersions(env, true);
+  versions = fresh.versions;
+  source = fresh.source;
+  visitorData = pt.poToken ? pt.visitorData || fresh.visitorData || visitorData : fresh.visitorData || visitorData;
+  ladder = buildClients(versions, opts.region || "IN");
+  out = await runPass(ladder, { visitorData }, cookieHeader ? "auth+" : "retry", false);
+  if (out.res) return finish(out.res, 3, { healed: true, authed: !!cookieHeader });
+
+  // pass 4 — independent extractors (Invidious-compatible), proxied through /api/media
   const mirrors = emergencyMirrors(env);
   if (mirrors.length) {
     const m = await mirrorStream(videoId, mirrors, attempts);
-    if (m) return { ...m, versions, versionSource: source, pass: 4 };
+    if (m) return finish(m, 4, { authed: false, healed: false });
   }
+
+  // ── nothing worked: explain exactly why ───────────────────────────────────
+  const counts = {};
+  for (const k of failures) counts[k] = (counts[k] || 0) + 1;
+  const top = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
+  const kind = top ? top[0] : "unknown";
+  const info = REASONS[kind] || REASONS.unknown;
 
   return {
     ok: false,
-    error: cookieHeader
-      ? "no playable stream (anonymous + authenticated + mirrors all failed)"
-      : "no playable stream from any client",
+    error: info.label + ": koi playable stream nahi mila",
+    reason: kind,
+    reasonLabel: info.label,
+    hint: info.hint,
+    needAuth: !!info.needAuth && !cookieHeader,
+    botCheck: kind === "bot",
+    cookiesUsed: !!cookieHeader,
+    poTokenUsed: !!pt.poToken,
+    poTokenSource: pt.source,
     attempts,
+    failures: counts,
+    ms: Date.now() - started,
     versions,
     versionSource: source,
-    cookiesUsed: !!cookieHeader,
     breakers: breakerSnapshot(),
   };
 }
@@ -1645,6 +1807,49 @@ async function resolveChannel(input) {
   return { channelId, name: title.replace(/\s*-\s*YouTube$/, ""), avatar, source: target };
 }
 
+// canary: run playback over a few live videos and report the pass rate
+async function canary(u, env) {
+  const n = Math.max(1, Math.min(5, Number(u.searchParams.get("n") || 3)));
+  const region = (u.searchParams.get("region") || "IN").toUpperCase();
+  const cookieHeader = cookieAuth(env, u);
+  let ids = [];
+  try {
+    const t = await trending(region, env, u);
+    ids = (t.items || []).map((v) => v.videoId).filter(Boolean).slice(0, n);
+  } catch (e) {
+    return { ok: false, error: "could not list trending: " + e.message };
+  }
+  if (!ids.length) return { ok: false, error: "trending returned no ids" };
+
+  const results = [];
+  for (const id of ids) {
+    const t0 = Date.now();
+    try {
+      const r = await player(id, { env, cookieHeader, region });
+      results.push({
+        id,
+        ok: !!r.ok,
+        ms: Date.now() - t0,
+        pass: r.pass || 0,
+        client: r.client || null,
+        reason: r.reason || null,
+        formats: (r.formats || []).map((f) => f.quality),
+      });
+    } catch (e) {
+      results.push({ id, ok: false, ms: Date.now() - t0, error: e.message });
+    }
+  }
+  const passed = results.filter((r) => r.ok).length;
+  return {
+    ok: passed > 0,
+    checked: results.length,
+    passed,
+    rate: Math.round((passed / results.length) * 100) + "%",
+    cookiesUsed: !!cookieHeader,
+    results,
+  };
+}
+
 // renderer histogram — tells us what shape YouTube is serving right now
 function rendererHistogram(data, limit = 24) {
   const counts = {};
@@ -1717,6 +1922,7 @@ const ROUTE_LIST = [
   "/api/health",
   "/api/debug",
   "/api/probe?q=lofi",
+  "/api/canary?n=3",
   "/api/selftest?id=",
   "/api/player?id=",
   "/api/search?q=",
@@ -1835,7 +2041,16 @@ const ROUTES = [
           breakers: breakerSnapshot(),
           emergencyMirrors: emergencyMirrors(env).length,
           poToken: !!(env && env.PO_TOKEN),
-          passes: ["anonymous", "self-heal(versions+visitor)", "cookies(SV_KEY)", "emergency mirrors"],
+          poTokenProvider: !!(env && env.POTOKEN_URL),
+          mirrorsDisabled: String((env && env.MIRRORS) || "").toLowerCase() === "off",
+          passes: [
+            "fast anonymous (android_vr/ios/tv_embedded/android)",
+            "cookies on bot-check/login (YT_COOKIES, SV_KEY-gated)",
+            "self-heal: fresh versions + full ladder, breakers bypassed",
+            "independent extractors (Invidious API, proxied)",
+          ],
+          escalateOnBotCheck: true,
+          canary: "/api/canary?n=3",
         },
       };
     },
@@ -1870,6 +2085,12 @@ const ROUTES = [
         video: id,
         ms: Date.now() - t0,
         pass: res.pass || 0,
+        reason: res.reason || null,
+        reasonLabel: res.reasonLabel || null,
+        hint: res.hint || null,
+        needAuth: !!res.needAuth,
+        botCheck: !!res.botCheck,
+        poTokenUsed: !!res.poTokenUsed,
         client: res.client || null,
         clientVersion: res.clientVersion || null,
         healed: !!res.healed,
@@ -1887,6 +2108,7 @@ const ROUTES = [
   ["/api/shorts", async (u, env) => shorts((u.searchParams.get("region") || "IN").toUpperCase(), env, u)],
   ["/api/rss", async (u, env) => rss(env, u.searchParams.get("channels") || "", u)],
   ["/api/probe", async (u, env) => probe(u, env)],
+  ["/api/canary", async (u, env) => canary(u, env)],
   ["/api/channel", async (u) => resolveChannel(u.searchParams.get("q") || u.searchParams.get("id") || "")],
 ];
 
@@ -1976,6 +2198,11 @@ export {
   rss,
   resolveChannel,
   shorts,
+  canary,
+  REASONS,
+  classifyFailure,
+  getPoToken,
+  DEFAULT_MIRRORS,
   probe,
   rendererHistogram,
   normLockup,

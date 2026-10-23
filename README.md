@@ -81,6 +81,57 @@ https://<worker>/mp4/dQw4w9WgXcQ.mp4?itag=18      → pick a specific quality
 
 ---
 
+## Jab video na chale — the escalation ladder
+
+Real YouTube does not just hand over streams: it fingerprints the client and, on a growing share of videos
+(new uploads, Shorts, anything it finds suspicious), answers `LOGIN_REQUIRED — Sign in to confirm you're not a
+bot`. No client list can talk its way past that; something has to *prove* the request is legitimate. So playback
+escalates instead of dying:
+
+| Pass | What it does | Why it exists |
+| --- | --- | --- |
+| 1 · fast anonymous | `android_vr`, `ios`, `tv_embedded`, `android` only | most videos, in ~200ms |
+| 2 · cookies | same ladder + `YT_COOKIES` (web family also gets `SAPISIDHASH`) | the single biggest fix for bot-checks, members-only and age-restricted videos |
+| 3 · self-heal | re-discover every client version, full ladder, breakers bypassed | YouTube rotated a client version or an earlier endpoint tripped a breaker |
+| 4 · independent extractors | Invidious-compatible mirrors, stream still proxied through `/api/media` | last resort, survives an InnerTube-side change |
+
+A **bot-check short-circuits the ladder**: the first `LOGIN_REQUIRED … not a bot` reply stops the anonymous pass
+instead of burning 16 attempts, and jumps straight to pass 2. That is why failures come back in ~1–2s with a
+reason instead of a 25s timeout.
+
+### PoToken
+
+`PO_TOKEN` (a static token) or `POTOKEN_URL` (a [bgutil](https://github.com/Brainicism/bgutil-ytdlp-pot-provider)
+-compatible provider) are attached as `serviceIntegrityDimensions.poToken` on **every** player call, paired with
+the `visitorData` the token was minted for (the provider's own `visitorData` wins), cached 30 min. A static
+secret accepts both `TOKEN` and `VISITOR_DATA:TOKEN`.
+
+Honest limit: Cloudflare Workers forbid `eval`, so BotGuard cannot be solved *inside* the worker. Either supply a
+token (provider / secret — this is what people run alongside yt-dlp) or use cookies.
+
+### Every failure explains itself
+
+`/api/player` returns a classified diagnosis instead of a bare error:
+
+```json
+{ "ok": false, "reason": "bot", "reasonLabel": "YouTube bot-check", "needAuth": true,
+  "hint": "YouTube is asking this IP to prove it is not a bot (PoToken)…",
+  "failures": { "bot": 6, "unavailable": 2 }, "attempts": ["android_vr@1.65.10: LOGIN_REQUIRED … [bot]"] }
+```
+
+The watch page turns that into a panel: the reason, what fixes it, **Retry**, **Fresh URL**, **Download MP4**
+(`/mp4/<id>.mp4`, works even when the player refuses) and **Open on YouTube** — plus a **Why?** disclosure with
+the grouped failure counts and the last 14 attempts.
+
+### Canary
+
+`GET /api/canary?n=3` runs playback over three of today's trending videos and returns `passed`, `rate` and a
+per-video reason. One click tells you whether the whole setup is healthy or which layer broke.
+
+`MIRRORS=off` disables the built-in extractor list; `EMERGENCY_MIRRORS=https://a,https://b` adds your own.
+
+---
+
 ## Subscriptions = channel feeds (no account, no login)
 
 Subscribe to a channel once and its uploads show up in your Subscriptions page. No Google account, no OAuth,
@@ -327,6 +378,8 @@ tests/           regression suites (worker: node tests/smoke.mjs etc; UI: see be
 node tests/smoke.mjs      # worker core: decipher, list calls, breakers, media, routes
 node tests/rsstest.mjs    # feeds: parsing, merge/dedupe/sort, resolveChannel, /api/rss + /api/channel
 node tests/mptest.mjs     # /mp4 endpoint: Range/206, HEAD, content-type, ?itag, ?dl
+node tests/brahmatest.mjs # 39 checks: failure classification, bot-check escalation, cookies pass,
+                          # PoToken (secret + provider + cache), mirrors, canary, diagnosis output
 node tests/shortstest.mjs # Shorts: both renderer shapes, dedupe, view parsing, 3-step ladder, route
 
 npm i jsdom react react-dom @babel/core @babel/preset-react
