@@ -159,19 +159,28 @@ const check = (n, c, e) => checks.push({ n, pass: !!c, e });
   check("affinity feed surfaced", reasons.some((r) => /Because you watch|More from/.test(r)), reasons.join(" | "));
   check("up next excludes the current video", all(w, ".vc .vc-title").every((t) => t.textContent !== "Resolved Title"));
 
+  /* ══ YouTube-style player chrome ════════════════════════════════════════ */
   const gear = all(w, ".cp-btn").find((b) => b.getAttribute("title") === "Settings");
   click(w, gear);
-  await wait(120);
+  await wait(140);
+  const mainRows = all(w, ".cp-mi").map((b) => b.textContent);
+  check("settings opens a YouTube-style menu", !!q(w, ".cp-menu") && /Playback speed/.test(mainRows.join(" ")), mainRows.join(" | "));
+  check("menu rows: speed / quality / zoom / pitch", ["Playback speed", "Quality", "Zoom", "Preserve pitch"].every((l) => mainRows.some((r) => r.includes(l))), mainRows.join(" | "));
+  check("menu shows current quality", /720p/.test(q(w, ".cp-menu").textContent), q(w, ".cp-menu").textContent.slice(0, 90));
+
+  click(w, all(w, ".cp-mi").find((b) => /Playback speed/.test(b.textContent)));
+  await wait(140);
+  check("speed submenu has a back button", !!q(w, ".cp-back"));
   check("speed menu offers 10 steps", all(w, ".cp-speed").length === 10, all(w, ".cp-speed").length);
   check("3× speed option exists", all(w, ".cp-speed").some((b) => b.textContent === "3×"));
 
   click(w, all(w, ".cp-speed").find((b) => b.textContent === "2.5×"));
   await wait(150);
   check("playbackRate applied", q(w, "video").playbackRate === 2.5, q(w, "video").playbackRate);
-  check("speed badge shown", /2\.5×/.test((q(w, ".cp-rate-badge") || {}).textContent || ""), (q(w, ".cp-rate-badge") || {}).textContent);
+  check("speed badge shown", all(w, ".cp-badge").some((b) => /2\.5×/.test(b.textContent)), all(w, ".cp-badge").map((b) => b.textContent).join(","));
   check("rate persisted", JSON.parse(w.localStorage.getItem("sv_cfg") || "{}").rate === 2.5, w.localStorage.getItem("sv_cfg"));
 
-  const pitchBtn = all(w, ".cp-mi").find((b) => /Preserve pitch|Varispeed/.test(b.textContent));
+  const pitchBtn = all(w, ".cp-mi").find((b) => /Preserve pitch/.test(b.textContent));
   check("pitch control present", !!pitchBtn);
   check("pitch preserved by default", q(w, "video").preservesPitch !== false);
   click(w, pitchBtn);
@@ -179,13 +188,34 @@ const check = (n, c, e) => checks.push({ n, pass: !!c, e });
   check("varispeed disables pitch preserve", q(w, "video").preservesPitch === false);
   check("pitch persisted", JSON.parse(w.localStorage.getItem("sv_cfg") || "{}").pitch === false);
 
-  click(w, all(w, ".cp-mi").find((b) => b.textContent === "Fill (crop)"));
+  click(w, q(w, ".cp-back"));          // → main
   await wait(120);
-  check("fill mode crops to the frame", q(w, "video").style.objectFit === "cover");
-  check("fill badge shown", /Fill/.test((q(w, ".cp-zoom-badge") || {}).textContent || ""));
-  click(w, all(w, ".cp-mi").find((b) => b.textContent === "Fit to screen"));
-  await wait(120);
+  click(w, all(w, ".cp-mi").find((b) => /Quality/.test(b.textContent)));
+  await wait(140);
+  const qualityRows = all(w, ".cp-mi").map((b) => b.textContent);
+  check("quality submenu lists streams + Auto", qualityRows.some((r) => /Auto/.test(r)) && qualityRows.some((r) => /720p/.test(r)), qualityRows.join(" | "));
+  check("current quality is checked", all(w, ".cp-mi.sel").length >= 1);
+  click(w, all(w, ".cp-mi").find((b) => /720p/.test(b.textContent)));
+  await wait(500);
+  check("picking a quality returns to the main menu", !!q(w, ".cp-menu") && !q(w, ".cp-back"));
+  check("quality switch keeps the stream", /u=hi/.test(q(w, "video").getAttribute("src") || ""), q(w, "video").getAttribute("src"));
+
+  click(w, all(w, ".cp-mi").find((b) => /^Zoom/.test(b.textContent)));
+  await wait(140);
+  check("zoom submenu offers fill width", all(w, ".cp-mi").some((b) => /Fill width/.test(b.textContent)), all(w, ".cp-mi").map((b) => b.textContent).join(" | "));
+  click(w, all(w, ".cp-mi").find((b) => /Fill width/.test(b.textContent)));
+  await wait(160);
+  check("fill width crops to the frame", q(w, "video").style.objectFit === "cover", q(w, "video").style.objectFit);
+  check("fill badge shown", all(w, ".cp-badge").some((b) => /Fill/.test(b.textContent)), all(w, ".cp-badge").map((b) => b.textContent).join(","));
+
+  click(w, all(w, ".cp-mi").find((b) => /^Zoom/.test(b.textContent)));
+  await wait(140);
+  click(w, all(w, ".cp-mi").find((b) => /Fit to screen/.test(b.textContent)));
+  await wait(160);
   check("fit mode restores contain", q(w, "video").style.objectFit === "contain");
+  click(w, gear);                       // close the menu
+  await wait(120);
+  check("gear closes the menu", !q(w, ".cp-menu"));
 
   const zoomBtn = all(w, ".cp-btn").find((b) => /^Zoom:/.test(b.getAttribute("title") || ""));
   click(w, zoomBtn);
@@ -196,6 +226,36 @@ const check = (n, c, e) => checks.push({ n, pass: !!c, e });
   await wait(120);
   check("zoom presets scale the frame", /scale\(1\.5\)/.test(q(w, "video").style.transform || ""), q(w, "video").style.transform);
   check("zoom persisted", JSON.parse(w.localStorage.getItem("sv_cfg") || "{}").zoom === "1.5", w.localStorage.getItem("sv_cfg"));
+
+  /* skip buttons + double tap */
+  const video = q(w, "video");
+  Object.defineProperty(video, "duration", { configurable: true, get: () => 240 });
+  video.currentTime = 60;
+  const back10 = all(w, ".cp-btn").find((b) => /Back 10s/.test(b.getAttribute("title") || ""));
+  const fwd10 = all(w, ".cp-btn").find((b) => /Forward 10s/.test(b.getAttribute("title") || ""));
+  check("skip buttons exist in the control row", !!back10 && !!fwd10);
+  click(w, fwd10);
+  await wait(200);
+  check("forward 10s seeks", Math.round(video.currentTime) === 70, video.currentTime);
+  check("skip animation appears", !!q(w, ".cp-skip-fx") && /10 seconds/.test(q(w, ".cp-skip-txt").textContent), (q(w, ".cp-skip-txt") || {}).textContent);
+  click(w, back10);
+  await wait(200);
+  check("back 10s seeks", Math.round(video.currentTime) === 60, video.currentTime);
+
+  const stage = q(w, ".cp-stage");
+  stage.getBoundingClientRect = () => ({ left: 0, top: 0, width: 1000, height: 560, right: 1000, bottom: 560 });
+  const dbl = (x) => {
+    stage.dispatchEvent(new w.MouseEvent("click", { bubbles: true, clientX: x }));
+    stage.dispatchEvent(new w.MouseEvent("click", { bubbles: true, clientX: x }));
+  };
+  dbl(80);   // left third → -10s
+  await wait(250);
+  check("double-tap left skips back", Math.round(video.currentTime) === 50, video.currentTime);
+  dbl(920);  // right third → +10s
+  await wait(250);
+  check("double-tap right skips forward", Math.round(video.currentTime) === 60, video.currentTime);
+  check("double-tap shows the YouTube ripple", !!q(w, ".cp-skip-fx") && /10 seconds/.test(w.document.body.textContent));
+
 
   w.dispatchEvent(new w.KeyboardEvent("keydown", { key: ">", bubbles: true }));
   await wait(120);
@@ -241,7 +301,7 @@ const check = (n, c, e) => checks.push({ n, pass: !!c, e });
   await wait(400);
   check("settings lists both subs", all(w, ".sub-row").length === 2, all(w, ".sub-row").length);
   check("settings has speed chips to 3×", all(w, ".set-chip").some((b) => b.textContent === "3×"), all(w, ".set-chip").map((b) => b.textContent).slice(0, 6).join(","));
-  check("settings has zoom chips", all(w, ".set-chip").some((b) => /Fill \(crop\)/.test(b.textContent)));
+  check("settings has zoom chips", all(w, ".set-chip").some((b) => /Fill width/.test(b.textContent)), all(w, ".set-chip").map((b) => b.textContent).join(","));
   check("settings lists shortcuts", all(w, ".key-row").length >= 8, all(w, ".key-row").length);
   click(w, all(w, ".set-chip").find((b) => /Zoom 150%/.test(b.textContent)));
   await wait(150);

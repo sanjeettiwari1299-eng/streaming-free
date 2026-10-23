@@ -300,53 +300,138 @@ img{max-width:100%;display:block}
   .skel-grid{padding:4px 12px}
 }
 
-/* ══ CUSTOM PLAYER ══════════════════════════════════════════════════════════ */
-.cp{position:relative;width:100%;height:100%;background:#000;overflow:hidden;user-select:none;outline:none}
-.cp.hide-cursor{cursor:none}
+/* ══ CUSTOM PLAYER (YouTube-accurate) ═══════════════════════════════════════ */
+.cp{position:relative;width:100%;height:100%;background:#000;overflow:hidden;user-select:none;outline:none;
+  --cp-btn:48px; --cp-ico:26px}
+.cp.cp-hide-cursor{cursor:none}
 .cp video{width:100%;height:100%;display:block;object-fit:contain;background:#000}
-.cp-top{position:absolute;top:0;left:0;right:0;padding:14px 16px 26px;background:linear-gradient(rgba(0,0,0,.65),transparent);z-index:3;opacity:1;transition:opacity .22s;pointer-events:none}
+.cp-stage{position:absolute;inset:0;z-index:2;background:transparent}
+
+/* top gradient */
+.cp-top{position:absolute;top:0;left:0;right:0;z-index:5;display:flex;align-items:flex-start;gap:12px;
+  padding:14px 16px 34px;background:linear-gradient(rgba(0,0,0,.72),transparent);
+  opacity:1;transition:opacity .2s;pointer-events:none}
 .cp-top.hidden{opacity:0}
-.cp-title{color:#fff;font-size:15px;font-weight:500;text-shadow:0 1px 3px rgba(0,0,0,.7);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.cp-ui{position:absolute;left:0;right:0;bottom:0;padding:24px 12px 6px;background:linear-gradient(transparent,rgba(0,0,0,.55) 35%,rgba(0,0,0,.82));z-index:4;opacity:1;transition:opacity .22s}
+.cp-title{flex:1;min-width:0;color:#fff;font-size:18px;font-weight:500;line-height:1.35;
+  text-shadow:0 1px 3px rgba(0,0,0,.8);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cp-top-actions{display:flex;align-items:center;gap:4px;pointer-events:auto}
+.cp-top-btn{width:40px;height:40px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+  color:#fff;background:rgba(0,0,0,.28);transition:background .12s,transform .12s}
+.cp-top-btn:hover{background:rgba(0,0,0,.6);transform:scale(1.05)}
+.cp-top-btn svg{fill:#fff}
+
+/* bottom gradient */
+.cp-ui{position:absolute;left:0;right:0;bottom:0;z-index:6;padding:28px 12px 8px;
+  background:linear-gradient(transparent,rgba(0,0,0,.5) 30%,rgba(0,0,0,.86));
+  opacity:1;transition:opacity .2s}
 .cp-ui.hidden{opacity:0;pointer-events:none}
-.cp-bar{position:relative;height:16px;display:flex;align-items:center;cursor:pointer;touch-action:none}
-.cp-bar-track{position:relative;height:3px;width:100%;background:rgba(255,255,255,.28);border-radius:2px;transition:height .1s}
-.cp-bar:hover .cp-bar-track{height:5px}
-.cp-buf{position:absolute;left:0;top:0;bottom:0;background:rgba(255,255,255,.42);border-radius:2px}
+
+/* progress */
+.cp-bar{position:relative;height:18px;display:flex;align-items:center;cursor:pointer;touch-action:none}
+.cp-bar-track{position:relative;height:4px;width:100%;background:rgba(255,255,255,.3);border-radius:2px;transition:height .1s}
+.cp-bar:hover .cp-bar-track{height:6px}
+.cp-buf{position:absolute;left:0;top:0;bottom:0;background:rgba(255,255,255,.45);border-radius:2px}
 .cp-played{position:absolute;left:0;top:0;bottom:0;background:#f00;border-radius:2px;transition:width .08s linear}
-.cp-knob{position:absolute;top:50%;width:13px;height:13px;border-radius:50%;background:#f00;transform:translate(-50%,-50%) scale(0);transition:transform .1s;box-shadow:0 0 4px rgba(0,0,0,.6)}
+.cp-knob{position:absolute;top:50%;width:14px;height:14px;border-radius:50%;background:#f00;
+  transform:translate(-50%,-50%) scale(0);transition:transform .1s;box-shadow:0 0 6px rgba(0,0,0,.6)}
 .cp-bar:hover .cp-knob{transform:translate(-50%,-50%) scale(1)}
-.cp-tip{position:absolute;bottom:22px;transform:translateX(-50%);background:rgba(0,0,0,.92);color:#fff;font-size:12px;padding:2px 6px;border-radius:3px;pointer-events:none;white-space:nowrap}
-.cp-row{display:flex;align-items:center;gap:4px;height:44px}
-.cp-btn{width:40px;height:40px;border-radius:50%;display:flex;align-items:center;justify-content:center;color:#fff;opacity:.95;transition:background .12s}
-.cp-btn:hover{background:rgba(255,255,255,.16);opacity:1}
+.cp-tip{position:absolute;bottom:24px;transform:translateX(-50%);background:rgba(0,0,0,.92);color:#fff;
+  font-size:12px;font-weight:500;padding:3px 7px;border-radius:4px;pointer-events:none;white-space:nowrap}
+
+/* control row — YouTube metrics */
+.cp-row{display:flex;align-items:center;gap:2px;height:var(--cp-btn);margin-top:2px}
+.cp-btn{width:var(--cp-btn);height:var(--cp-btn);border-radius:50%;display:flex;align-items:center;
+  justify-content:center;color:#fff;opacity:.98;transition:background .12s,transform .1s}
+.cp-btn:hover{background:rgba(255,255,255,.16)}
+.cp-btn:active{transform:scale(.94)}
 .cp-btn svg{fill:#fff}
-.cp-time{font-size:12.5px;color:#eee;font-variant-numeric:tabular-nums;margin:0 8px;white-space:nowrap}
+.cp-ico{fill:currentColor}
+.cp-btn.on{background:rgba(255,255,255,.18)}
+.cp-btn-main svg{margin-left:1px}
+.cp-time{font-size:13px;color:#fff;font-variant-numeric:tabular-nums;margin:0 10px;white-space:nowrap;text-shadow:0 1px 2px rgba(0,0,0,.6)}
+.cp-time-sep{opacity:.55;margin:0 2px}
+.cp-badge{font-size:12px;font-weight:600;color:#fff;background:rgba(255,255,255,.2);border-radius:4px;padding:3px 7px;margin-left:4px}
 .cp-spacer{flex:1}
 .cp-vol-wrap{display:flex;align-items:center}
 .cp-vol{width:0;overflow:hidden;transition:width .18s ease;display:flex;align-items:center}
-.cp-vol-wrap:hover .cp-vol,.cp-vol.open{width:76px}
-.cp-vol input{width:70px;accent-color:#fff;cursor:pointer}
-.cp-big{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;z-index:2;pointer-events:none}
-.cp-bigplay{pointer-events:auto;width:76px;height:76px;border-radius:50%;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;transition:background .15s,transform .15s}
+.cp-vol-wrap:hover .cp-vol,.cp-vol.open{width:84px}
+.cp-vol input{width:78px;accent-color:#fff;cursor:pointer}
+
+/* centre play + loading */
+.cp-big{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;z-index:4;pointer-events:none}
+.cp-bigplay{pointer-events:auto;width:82px;height:82px;border-radius:50%;background:rgba(0,0,0,.55);
+  display:flex;align-items:center;justify-content:center;transition:background .15s,transform .15s}
 .cp-bigplay:hover{background:#f00;transform:scale(1.06)}
-.cp-bigplay svg{fill:#fff;margin-left:4px}
-.cp-big-icon{width:80px;height:80px;border-radius:50%;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;animation:cpPop .45s ease forwards}
+.cp-bigplay svg{fill:#fff;margin-left:5px}
+.cp-big-icon{width:84px;height:84px;border-radius:50%;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;animation:cpPop .45s ease forwards}
 .cp-big-icon svg{fill:#fff}
-@keyframes cpPop{0%{transform:scale(.65);opacity:.2}60%{transform:scale(1.05);opacity:1}100%{transform:scale(1);opacity:0}}
-.cp-spin{width:52px;height:52px;border:4px solid rgba(255,255,255,.22);border-top-color:#f00;border-radius:50%;animation:cpSpn .8s linear infinite}
+@keyframes cpPop{from{transform:scale(.7);opacity:0}to{transform:scale(1);opacity:1}}
+.cp-spin{width:56px;height:56px;border:4px solid rgba(255,255,255,.22);border-top-color:#f00;border-radius:50%;animation:cpSpn .8s linear infinite}
 @keyframes cpSpn{to{transform:rotate(360deg)}}
-.cp-loadtxt{position:absolute;left:0;right:0;bottom:78px;text-align:center;color:#bbb;font-size:12.5px;z-index:2}
-.cp-menu{position:absolute;right:10px;bottom:58px;background:rgba(28,28,28,.98);border-radius:12px;padding:6px 0;min-width:210px;z-index:6;box-shadow:0 8px 28px rgba(0,0,0,.7);max-height:70%;overflow-y:auto}
-.cp-mi{display:flex;align-items:center;gap:10px;width:100%;padding:9px 14px;font-size:13.5px;color:#eee;text-align:left;white-space:nowrap}
+.cp-loadtxt{position:absolute;left:0;right:0;bottom:92px;text-align:center;color:#ccc;font-size:13px;z-index:4}
+
+/* double-tap skip animation (YouTube style) */
+.cp-skip-fx{position:absolute;top:0;bottom:0;width:38%;z-index:3;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;gap:8px;pointer-events:none;
+  background:radial-gradient(circle at center,rgba(255,255,255,.18),transparent 70%);
+  animation:cpSkipFade .7s ease forwards}
+.cp-skip-fx.left{left:0;border-radius:0 50% 50% 0}
+.cp-skip-fx.right{right:0;border-radius:50% 0 0 50%}
+.cp-skip-ring{width:64px;height:64px;border-radius:50%;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;
+  color:#fff;animation:cpSkipSpin .7s ease}
+.cp-skip-ring svg{fill:#fff}
+.cp-skip-txt{color:#fff;font-size:12.5px;font-weight:500;text-shadow:0 1px 3px rgba(0,0,0,.8)}
+@keyframes cpSkipSpin{from{transform:scale(.85)}50%{transform:scale(1.08)}to{transform:scale(1)}}
+@keyframes cpSkipFade{0%{opacity:0}18%{opacity:1}72%{opacity:1}100%{opacity:0}}
+
+/* settings panel */
+.cp-menu{position:absolute;right:12px;bottom:60px;min-width:320px;max-width:min(340px,92vw);
+  background:rgba(28,28,28,.97);backdrop-filter:blur(8px);border-radius:12px;padding:8px 0;
+  z-index:8;box-shadow:0 12px 40px rgba(0,0,0,.75);max-height:min(72vh,520px);overflow-y:auto}
+.cp-menu-title{font-size:15px;font-weight:500;color:#fff;padding:8px 18px 10px}
+.cp-menu-head{display:flex;align-items:center;gap:8px;padding:6px 10px 10px;font-size:15px;font-weight:500;color:#fff}
+.cp-back{width:34px;height:34px;border-radius:50%;color:#fff;font-size:17px;display:flex;align-items:center;justify-content:center}
+.cp-back:hover{background:rgba(255,255,255,.12)}
+.cp-mi{display:flex;align-items:center;gap:12px;width:100%;padding:10px 18px;min-height:44px;font-size:14.5px;
+  color:#eee;text-align:left}
 .cp-mi:hover{background:rgba(255,255,255,.1)}
-.cp-mi.sel{color:#3ea6ff;font-weight:500}
-.cp-mi svg{fill:currentColor}
-.cp-mi-h{font-size:11px;color:#9a9a9a;padding:8px 14px 3px;text-transform:uppercase;letter-spacing:.6px}
-.cp-err{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;background:#0b0b0b;color:#ddd;text-align:center;padding:24px;z-index:7}
-.cp-pill{padding:0 16px;height:34px;border-radius:17px;background:#fff;color:#0f0f0f;font-size:13px;font-weight:500;display:inline-flex;align-items:center;gap:6px}
+.cp-mi.sel{color:#3ea6ff}
+.cp-mi svg{fill:currentColor;flex-shrink:0}
+.cp-mi-lbl{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px;line-height:1.25}
+.cp-mi-sub{font-size:11.5px;color:#9a9a9a;font-weight:400}
+.cp-mi.sel .cp-mi-sub{color:#7fb9e8}
+.cp-mi-val{margin-left:auto;color:#aaa;font-size:13px;white-space:nowrap}
+.cp-check-space{width:18px;flex-shrink:0}
+.cp-menu-foot{font-size:11px;color:#8a8a8a;padding:10px 18px 6px;border-top:1px solid rgba(255,255,255,.08);margin-top:6px}
+.cp-speed-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;padding:2px 14px 10px}
+.cp-speed{font-size:12.5px;padding:9px 0;border-radius:8px;background:rgba(255,255,255,.09);color:#eee;text-align:center;font-variant-numeric:tabular-nums}
+.cp-speed:hover{background:rgba(255,255,255,.18)}
+.cp-speed.sel{background:#3ea6ff;color:#062033;font-weight:700}
+.cp-switch{position:relative;width:36px;height:20px;border-radius:10px;background:rgba(255,255,255,.24);flex-shrink:0;transition:background .15s}
+.cp-switch[data-on="1"]{background:#3ea6ff}
+.cp-switch-dot{position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;transition:transform .15s}
+.cp-switch[data-on="1"] .cp-switch-dot{transform:translateX(16px)}
+
+/* error */
+.cp-err{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;
+  background:#0b0b0b;color:#ddd;text-align:center;padding:24px;z-index:7}
+.cp-pill{padding:0 16px;height:36px;border-radius:18px;background:#fff;color:#0f0f0f;font-size:13px;font-weight:500;
+  display:inline-flex;align-items:center;gap:6px}
 .cp-pill.ghost{background:rgba(255,255,255,.14);color:#fff}
 .cp-pill.ghost:hover{background:rgba(255,255,255,.24)}
+
+/* fullscreen + theater tuning: bigger hit targets like YouTube */
+.cp:fullscreen{--cp-btn:52px}
+.cp:fullscreen .cp-row{height:52px}
+.cp:fullscreen .cp-title{font-size:20px}
+@media (max-width:720px){
+  .cp{--cp-btn:42px}
+  .cp-row{height:42px;gap:0}
+  .cp-time{font-size:12px;margin:0 6px}
+  .cp-menu{right:8px;bottom:52px;min-width:0;width:calc(100% - 16px)}
+  .cp-menu-title,.cp-mi{font-size:14px}
+  .cp-top-btn{width:34px;height:34px}
+}
 
 /* ══ WATCH PAGE EXTRAS ═════════════════════════════════════════════════════ */
 .watch.theater .watch-side{display:none}
@@ -574,9 +659,9 @@ const DEFAULT_CFG = {
 
 // player: 3× top speed, and the fit/zoom presets YouTube offers
 const SPEEDS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3];
-const ZOOMS = [
+const ZOOM_LIST = [
   { k: "fit", l: "Fit to screen" },
-  { k: "fill", l: "Fill (crop)" },
+  { k: "fill", l: "Fill width" },
   { k: "1.25", l: "Zoom 125%" },
   { k: "1.5", l: "Zoom 150%" },
   { k: "2", l: "Zoom 200%" },
@@ -928,10 +1013,31 @@ function Skels({ n = 12 }) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
-   CUSTOM PLAYER
+   CUSTOM PLAYER — YouTube-accurate chrome
+   48px controls · double-tap skip · nested settings (speed / quality / zoom)
    ════════════════════════════════════════════════════════════════════════════ */
+const SkipIco = ({ dir, size = 24 }) => (
+  <svg viewBox="0 0 24 24" width={size} height={size} aria-hidden="true" className="cp-ico">
+    <path
+      fill="currentColor"
+      d={dir < 0
+        ? "M12 5V1L7 6l5 5V7a6 6 0 1 1-6 6H4a8 8 0 1 0 8-8z"
+        : "M12 5V1l5 5-5 5V7a6 6 0 1 0 6 6h2a8 8 0 1 1-8-8z"}
+    />
+  </svg>
+);
+
+const ZOOM_MODES = [
+  { k: "fit", l: "Fit to screen", d: "Poora video, letterbox ke saath" },
+  { k: "fill", l: "Fill width", d: "Frame bhar do — kinare crop honge" },
+  { k: "1.25", l: "Zoom 125%" },
+  { k: "1.5", l: "Zoom 150%" },
+  { k: "2", l: "Zoom 200%" },
+];
+
 function CPlayer({ video, formats, st, onNext, poster, onRefresh }) {
   const wrapRef = useRef(null), vidRef = useRef(null), hideT = useRef(null);
+  const tapT = useRef(null), tapAt = useRef(0);
   const [qi, setQi] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [time, setTime] = useState(0), [dur, setDur] = useState(0), [buf, setBuf] = useState(0);
@@ -942,9 +1048,11 @@ function CPlayer({ video, formats, st, onNext, poster, onRefresh }) {
   const [zoom, setZoom] = useState(st.cfg.zoom || "fit");
   const [pitch, setPitch] = useState(st.cfg.pitch !== false);
   const [waiting, setWaiting] = useState(true), [err, setErr] = useState(""), [flash, setFlash] = useState(null);
+  const [skipFx, setSkipFx] = useState(null);
   const pendingSeek = useRef(null);
   const refreshTries = useRef(0);
   const firstRender = useRef(true);
+  const barRef = useRef(null);
 
   const list = formats && formats.length ? formats : [];
   const cur = list[Math.min(qi, list.length - 1)];
@@ -964,7 +1072,6 @@ function CPlayer({ video, formats, st, onNext, poster, onRefresh }) {
     el.volume = muted ? 0 : vol;
     el.muted = muted;
     try { el.playbackRate = rate; } catch {}
-    // pitch: keep voices natural at any speed (default) or do tape-style varispeed
     try {
       el.preservesPitch = pitch;
       el.mozPreservesPitch = pitch;
@@ -982,16 +1089,16 @@ function CPlayer({ video, formats, st, onNext, poster, onRefresh }) {
   const bump = useCallback(() => {
     setUi(true);
     clearTimeout(hideT.current);
-    hideT.current = setTimeout(() => setUi(false), 2800);
+    hideT.current = setTimeout(() => setUi(false), 3200);
   }, []);
-  useEffect(() => { bump(); return () => clearTimeout(hideT.current); }, [bump]);
+  useEffect(() => { bump(); return () => { clearTimeout(hideT.current); clearTimeout(tapT.current); }; }, [bump]);
 
   const toggle = useCallback(() => {
     const el = vidRef.current;
     if (!el) return;
-    if (el.paused || el.ended) { el.play().catch(() => {}); setFlash("play"); }
+    if (el.paused || el.ended) { const p = el.play(); if (p && p.catch) p.catch(() => {}); setFlash("play"); }
     else { el.pause(); setFlash("pause"); }
-    setTimeout(() => setFlash(null), 430);
+    setTimeout(() => setFlash(null), 420);
     bump();
   }, [bump]);
 
@@ -1003,14 +1110,31 @@ function CPlayer({ video, formats, st, onNext, poster, onRefresh }) {
     setTime(el.currentTime);
     bump();
   }, [dur, bump]);
-  const skip = useCallback((s) => seekTo((vidRef.current?.currentTime || 0) + s), [seekTo]);
+
+  const showSkip = useCallback((dir, secs = 10) => {
+    setSkipFx({ dir, secs, id: Date.now() });
+    clearTimeout(showSkip._t);
+    showSkip._t = setTimeout(() => setSkipFx(null), 700);
+  }, []);
+
+  const skip = useCallback((s) => {
+    const el = vidRef.current;
+    seekTo((el?.currentTime || 0) + s);
+    showSkip(s < 0 ? -1 : 1, Math.abs(s));
+  }, [seekTo, showSkip]);
+
   const setV = (v) => { const nv = Math.max(0, Math.min(1, Number(v))); setVol(nv); setMuted(nv === 0); };
-  const toggleFull = () => {
+
+  const toggleFull = useCallback(() => {
     const w = wrapRef.current;
     if (!w) return;
     if (document.fullscreenElement) document.exitFullscreen?.();
-    else w.requestFullscreen?.().catch(() => {});
-  };
+    else {
+      const p = w.requestFullscreen?.();
+      if (p && p.catch) p.catch(() => {});
+    }
+  }, []);
+
   const toggleTheater = () => { const t = !theater; setTheater(t); st.updCfg({ theater: t }); };
 
   const bumpRate = useCallback((dir) => {
@@ -1021,19 +1145,30 @@ function CPlayer({ video, formats, st, onNext, poster, onRefresh }) {
     });
     bump();
   }, [bump]);
+
   const cycleZoom = useCallback(() => {
     setZoom((z) => {
-      const i = ZOOMS.findIndex((x) => x.k === z);
-      return ZOOMS[(i + 1) % ZOOMS.length].k;
+      const i = ZOOM_MODES.findIndex((x) => x.k === z);
+      return ZOOM_MODES[(i + 1) % ZOOM_MODES.length].k;
     });
     bump();
   }, [bump]);
-  const zoomLabel = (ZOOMS.find((z) => z.k === zoom) || ZOOMS[0]).l;
+
+  const zoomLabel = (ZOOM_MODES.find((z) => z.k === zoom) || ZOOM_MODES[0]).l;
   const zoomStyle =
     zoom === "fit" ? { objectFit: "contain" }
       : zoom === "fill" ? { objectFit: "cover" }
         : { objectFit: "cover", transform: `scale(${Number(zoom) || 1})`, transformOrigin: "center center" };
 
+  const shareVideo = async () => {
+    const url = YTW(video.videoId);
+    try {
+      if (navigator.share) await navigator.share({ title: video.title, url });
+      else { await navigator.clipboard.writeText(url); alert("Link copied"); }
+    } catch {}
+  };
+
+  /* ── keyboard ──────────────────────────────────────────────────────────── */
   useEffect(() => {
     const onKey = (e) => {
       const tag = (e.target.tagName || "").toLowerCase();
@@ -1051,6 +1186,7 @@ function CPlayer({ video, formats, st, onNext, poster, onRefresh }) {
       else if (k === "m") setMuted((m) => !m);
       else if (k === "f") toggleFull();
       else if (k === "t") toggleTheater();
+      else if (k === "escape" && menu) setMenu(null);
       else if (k === ">" || k === ".") bumpRate(1);
       else if (k === "<" || k === ",") bumpRate(-1);
       else if (k === "z") cycleZoom();
@@ -1060,11 +1196,30 @@ function CPlayer({ video, formats, st, onNext, poster, onRefresh }) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [toggle, skip, vol, onNext, bump, seekTo, bumpRate, cycleZoom]);
+  }, [toggle, skip, vol, onNext, bump, seekTo, bumpRate, cycleZoom, toggleFull, menu]);
+
+  /* ── stage taps: 1 tap = play/pause, double tap = ±10s, centre = fullscreen ─ */
+  const stageTap = (e) => {
+    if (menu) { setMenu(null); return; }
+    const stage = e.currentTarget;
+    const r = stage.getBoundingClientRect ? stage.getBoundingClientRect() : { left: 0, width: 1 };
+    const rel = ((e.clientX || 0) - r.left) / (r.width || 1);
+    const now = Date.now();
+    if (now - tapAt.current < 300) {
+      clearTimeout(tapT.current);
+      tapAt.current = 0;
+      if (rel < 0.35) skip(-10);
+      else if (rel > 0.65) skip(10);
+      else toggleFull();
+      return;
+    }
+    tapAt.current = now;
+    clearTimeout(tapT.current);
+    tapT.current = setTimeout(() => { toggle(); }, 250);
+  };
 
   const pct = dur > 0 ? (time / dur) * 100 : 0;
   const bufPct = dur > 0 ? (buf / dur) * 100 : 0;
-  const barRef = useRef(null);
   const posFromEvent = (e) => {
     const b = barRef.current;
     if (!b) return 0;
@@ -1079,14 +1234,15 @@ function CPlayer({ video, formats, st, onNext, poster, onRefresh }) {
     if (c.code === 3) return "Stream decode error";
     return "Playback error (" + c.code + ")";
   };
+  const hideUI = !ui && playing && !menu;
 
   return (
-    <div className={"cp" + (ui ? "" : " hide-cursor")} ref={wrapRef} tabIndex={0} onMouseMove={bump} onMouseLeave={() => setUi(false)}
-      onClick={(e) => { if (e.target === vidRef.current) toggle(); }} onDoubleClick={toggleFull}>
+    <div className={"cp" + (ui ? "" : " cp-hide-cursor")} ref={wrapRef} tabIndex={0}
+      onMouseMove={bump} onMouseLeave={() => { setUi(false); setMenu(null); }}>
+
       <video
         ref={vidRef} src={src} poster={poster} playsInline preload="metadata" controls={false}
         style={zoomStyle}
-        onClick={toggle}
         onPlay={() => { setPlaying(true); refreshTries.current = 0; }}
         onPause={() => setPlaying(false)}
         onTimeUpdate={(e) => setTime(e.currentTarget.currentTime)}
@@ -1096,7 +1252,7 @@ function CPlayer({ video, formats, st, onNext, poster, onRefresh }) {
           setTime(e.currentTarget.currentTime || 0);
           setWaiting(false);
           if (pendingSeek.current != null) { e.currentTarget.currentTime = pendingSeek.current; pendingSeek.current = null; }
-          if (st.cfg.autoplay) e.currentTarget.play().catch(() => {});
+          if (st.cfg.autoplay) { const p = e.currentTarget.play(); if (p && p.catch) p.catch(() => {}); }
         }}
         onProgress={(e) => { const b = e.currentTarget.buffered; if (b.length) setBuf(b.end(b.length - 1)); }}
         onWaiting={() => setWaiting(true)}
@@ -1116,18 +1272,46 @@ function CPlayer({ video, formats, st, onNext, poster, onRefresh }) {
         }}
       />
 
-      <div className={"cp-top" + (ui || !playing ? "" : " hidden")}>
+      {/* tap layer: single / double tap behaviour */}
+      <div className="cp-stage" onClick={stageTap} />
+
+      {/* double-tap ripple */}
+      {skipFx && (
+        <div className={"cp-skip-fx " + (skipFx.dir < 0 ? "left" : "right")} key={skipFx.id}>
+          <div className="cp-skip-ring">
+            <SkipIco dir={skipFx.dir} size={34} />
+          </div>
+          <div className="cp-skip-txt">{skipFx.secs} seconds</div>
+        </div>
+      )}
+
+      {/* top gradient: title + actions */}
+      <div className={"cp-top" + (hideUI ? " hidden" : "")}>
         <div className="cp-title">{video.title}</div>
-        {rate !== 1 && <span className="cp-rate-badge">{rate}×</span>}
-        {zoom !== "fit" && <span className="cp-rate-badge cp-zoom-badge">{zoom === "fill" ? "Fill" : zoom + "×"}</span>}
+        <div className="cp-top-actions">
+          <button className="cp-top-btn" title="Save to Watch later" onClick={(e) => { e.stopPropagation(); st.togWL(video); }}>
+            <Icon d={I.save} size={22} />
+          </button>
+          <button className="cp-top-btn" title="Share" onClick={(e) => { e.stopPropagation(); shareVideo(); }}>
+            <Icon d={I.share} size={22} />
+          </button>
+          <a className="cp-top-btn" href={YTW(video.videoId)} target="_blank" rel="noreferrer" title="Open on YouTube">
+            <Icon d={I.more} size={22} />
+          </a>
+        </div>
       </div>
+
       {waiting && !err && <div className="cp-big"><div className="cp-spin" /></div>}
+
       {!playing && !waiting && !err && (
         <div className="cp-big">
-          <button className="cp-bigplay" onClick={(e) => { e.stopPropagation(); toggle(); }} aria-label="Play"><Icon d={I.play} size={40} /></button>
+          <button className="cp-bigplay" onClick={(e) => { e.stopPropagation(); toggle(); }} aria-label="Play">
+            <Icon d={I.play} size={40} />
+          </button>
         </div>
       )}
       {flash && <div className="cp-big"><div className="cp-big-icon"><Icon d={flash === "play" ? I.play : I.pause} /></div></div>}
+
       {err && (
         <div className="cp-err" onClick={(e) => e.stopPropagation()}>
           <div style={{ fontSize: 34 }}>⚠️</div>
@@ -1141,8 +1325,10 @@ function CPlayer({ video, formats, st, onNext, poster, onRefresh }) {
         </div>
       )}
 
-      <div className={"cp-ui" + (ui || !playing ? "" : " hidden")} onClick={(e) => e.stopPropagation()}>
-        <div className="cp-bar" ref={barRef} onMouseMove={(e) => setHoverX(posFromEvent(e))} onMouseLeave={() => setHoverX(null)}
+      {/* ── bottom chrome ─────────────────────────────────────────────────── */}
+      <div className={"cp-ui" + (hideUI ? " hidden" : "")} onClick={(e) => e.stopPropagation()}>
+        <div className="cp-bar" ref={barRef}
+          onMouseMove={(e) => setHoverX(posFromEvent(e))} onMouseLeave={() => setHoverX(null)}
           onPointerDown={(e) => { try { e.currentTarget.setPointerCapture?.(e.pointerId); } catch {} setDrag(true); seekTo(posFromEvent(e) * dur); }}
           onPointerMove={(e) => { if (drag) seekTo(posFromEvent(e) * dur); }}
           onPointerUp={(e) => { setDrag(false); seekTo(posFromEvent(e) * dur); }}>
@@ -1153,48 +1339,117 @@ function CPlayer({ video, formats, st, onNext, poster, onRefresh }) {
           </div>
           {hoverX != null && <div className="cp-tip" style={{ left: hoverX * 100 + "%" }}>{fd(hoverX * dur)}</div>}
         </div>
+
         <div className="cp-row">
-          <button className="cp-btn" onClick={toggle} title={playing ? "Pause (k)" : "Play (k)"}><Icon d={playing ? I.pause : I.play} /></button>
-          {onNext && <button className="cp-btn" onClick={onNext} title="Next (n)"><Icon d={I.next} /></button>}
+          <button className="cp-btn" onClick={() => skip(-10)} title="Back 10s (j)"><SkipIco dir={-1} /></button>
+          <button className="cp-btn cp-btn-main" onClick={toggle} title={playing ? "Pause (k)" : "Play (k)"}>
+            <Icon d={playing ? I.pause : I.play} size={26} />
+          </button>
+          <button className="cp-btn" onClick={() => skip(10)} title="Forward 10s (l)"><SkipIco dir={1} /></button>
+          {onNext && <button className="cp-btn" onClick={onNext} title="Next (n)"><Icon d={I.next} size={24} /></button>}
+
           <div className="cp-vol-wrap">
-            <button className="cp-btn" onClick={() => setMuted(!muted)} title="Mute (m)"><Icon d={muted || vol === 0 ? I.mute : I.vol} /></button>
+            <button className="cp-btn" onClick={() => setMuted(!muted)} title="Mute (m)"><Icon d={muted || vol === 0 ? I.mute : I.vol} size={24} /></button>
             <div className="cp-vol"><input type="range" min="0" max="1" step="0.02" value={muted ? 0 : vol} onChange={(e) => setV(e.target.value)} aria-label="Volume" /></div>
           </div>
-          <span className="cp-time">{fd(time)} / {fd(dur)}</span>
+
+          <span className="cp-time">{fd(time)} <span className="cp-time-sep">/</span> {fd(dur)}</span>
+
+          {rate !== 1 && <span className="cp-badge">{rate}×</span>}
+          {zoom !== "fit" && <span className="cp-badge">{zoom === "fill" ? "Fill" : zoom + "×"}</span>}
+
           <div className="cp-spacer" />
-          <button className="cp-btn" onClick={cycleZoom} title={"Zoom: " + zoomLabel + " (z)"}><Icon d={I.zoom} /></button>
-          <button className="cp-btn" onClick={() => setMenu(menu === "settings" ? null : "settings")} title="Settings"><Icon d={I.gear} /></button>
-          <button className="cp-btn" onClick={toggleTheater} title="Theater (t)"><Icon d={I.theater} /></button>
-          <button className="cp-btn" onClick={toggleFull} title="Fullscreen (f)"><Icon d={full ? I.fsExit : I.fs} /></button>
+
+          <button className={"cp-btn" + (menu ? " on" : "")} onClick={() => setMenu(menu ? null : "main")} title="Settings">
+            <Icon d={I.gear} size={24} />
+          </button>
+          <button className="cp-btn" onClick={cycleZoom} title={"Zoom: " + zoomLabel + " (z)"}><Icon d={I.zoom} size={23} /></button>
+          <button className="cp-btn" onClick={toggleTheater} title="Theater (t)"><Icon d={I.theater} size={24} /></button>
+          <button className="cp-btn" onClick={toggleFull} title="Fullscreen (f)"><Icon d={full ? I.fsExit : I.fs} size={24} /></button>
         </div>
-        {menu === "settings" && (
+
+        {/* ── settings panel (YouTube-style, nested) ──────────────────────── */}
+        {menu && (
           <div className="cp-menu" onClick={(e) => e.stopPropagation()}>
-            <div className="cp-mi-h">Quality {cur ? `· ${cur.quality}` : ""}</div>
-            {list.map((f, i) => (
-              <button key={f.itag || i} className={"cp-mi" + (i === qi ? " sel" : "")} onClick={() => { setQi(i); setMenu(null); }}>
-                {i === qi ? <Icon d={I.check} size={16} /> : <span style={{ width: 16 }} />}{f.quality}
-              </button>
-            ))}
-            <div className="cp-mi-h" style={{ marginTop: 6 }}>Playback speed · {rate === 1 ? "Normal" : rate + "×"}</div>
-            <div className="cp-speed-grid">
-              {SPEEDS.map((r) => (
-                <button key={r} className={"cp-speed" + (r === rate ? " sel" : "")} onClick={() => setRate(r)}>
-                  {r === 1 ? "1×" : r + "×"}
+            {menu === "main" && (
+              <>
+                <div className="cp-menu-title">Settings</div>
+                <button className="cp-mi" onClick={() => setMenu("speed")}>
+                  <span className="cp-mi-lbl">Playback speed</span>
+                  <span className="cp-mi-val">{rate === 1 ? "Normal" : rate + "×"}</span>
                 </button>
-              ))}
-            </div>
-            <div className="cp-mi-h" style={{ marginTop: 6 }}>Audio pitch</div>
-            <button className="cp-mi" onClick={() => setPitch((v) => !v)}>
-              <span className="cp-switch" data-on={pitch ? "1" : "0"}><span className="cp-switch-dot" /></span>
-              {pitch ? "Preserve pitch (natural voice)" : "Varispeed (pitch follows speed)"}
-            </button>
-            <div className="cp-mi-h" style={{ marginTop: 6 }}>Zoom / fit · {zoomLabel}</div>
-            {ZOOMS.map((z) => (
-              <button key={z.k} className={"cp-mi" + (z.k === zoom ? " sel" : "")} onClick={() => setZoom(z.k)}>
-                {z.k === zoom ? <Icon d={I.check} size={16} /> : <span style={{ width: 16 }} />}{z.l}
-              </button>
-            ))}
-            <div className="cp-mi-h" style={{ marginTop: 6, fontSize: 11, fontWeight: 400 }}>&lt; &gt; speed · z zoom · j/l ±10s</div>
+                <button className="cp-mi" onClick={() => setMenu("quality")}>
+                  <span className="cp-mi-lbl">Quality</span>
+                  <span className="cp-mi-val">{cur ? cur.quality : "Auto"}</span>
+                </button>
+                <button className="cp-mi" onClick={() => setMenu("zoom")}>
+                  <span className="cp-mi-lbl">Zoom</span>
+                  <span className="cp-mi-val">{zoomLabel}</span>
+                </button>
+                <button className="cp-mi" onClick={() => setPitch((v) => !v)}>
+                  <span className="cp-mi-lbl">Preserve pitch</span>
+                  <span className="cp-switch" data-on={pitch ? "1" : "0"}><span className="cp-switch-dot" /></span>
+                </button>
+                <div className="cp-menu-foot">&lt; &gt; speed · z zoom · j/l ±10s</div>
+              </>
+            )}
+
+            {menu === "speed" && (
+              <>
+                <div className="cp-menu-head">
+                  <button className="cp-back" onClick={() => setMenu("main")} aria-label="Back">←</button>
+                  <span>Playback speed</span>
+                </div>
+                <div className="cp-speed-grid">
+                  {SPEEDS.map((r) => (
+                    <button key={r} className={"cp-speed" + (r === rate ? " sel" : "")} onClick={() => setRate(r)}>
+                      {r === 1 ? "Normal" : r + "×"}
+                    </button>
+                  ))}
+                </div>
+                <button className="cp-mi" onClick={() => setPitch((v) => !v)}>
+                  <span className="cp-mi-lbl">Preserve pitch</span>
+                  <span className="cp-switch" data-on={pitch ? "1" : "0"}><span className="cp-switch-dot" /></span>
+                </button>
+                <div className="cp-menu-foot">{pitch ? "Awaaz natural rahegi har speed par" : "Varispeed — pitch bhi badhega"}</div>
+              </>
+            )}
+
+            {menu === "quality" && (
+              <>
+                <div className="cp-menu-head">
+                  <button className="cp-back" onClick={() => setMenu("main")} aria-label="Back">←</button>
+                  <span>Quality</span>
+                </div>
+                <button className={"cp-mi" + (qi === 0 ? " sel" : "")} onClick={() => { setQi(0); setMenu("main"); }}>
+                  {qi === 0 ? <Icon d={I.check} size={18} /> : <span className="cp-check-space" />}
+                  <span className="cp-mi-lbl">Auto <span className="cp-mi-sub">{cur ? cur.quality : ""}</span></span>
+                </button>
+                {list.map((f, i) => (
+                  <button key={f.itag || i} className={"cp-mi" + (i === qi ? " sel" : "")} onClick={() => { setQi(i); setMenu("main"); }}>
+                    {i === qi ? <Icon d={I.check} size={18} /> : <span className="cp-check-space" />}
+                    <span className="cp-mi-lbl">{f.quality}{f.itag ? <span className="cp-mi-sub">itag {f.itag}</span> : null}</span>
+                  </button>
+                ))}
+                <div className="cp-menu-foot">{list.length} muxed stream{list.length === 1 ? "" : "s"} available</div>
+              </>
+            )}
+
+            {menu === "zoom" && (
+              <>
+                <div className="cp-menu-head">
+                  <button className="cp-back" onClick={() => setMenu("main")} aria-label="Back">←</button>
+                  <span>Zoom</span>
+                </div>
+                {ZOOM_MODES.map((z) => (
+                  <button key={z.k} className={"cp-mi" + (z.k === zoom ? " sel" : "")} onClick={() => { setZoom(z.k); setMenu("main"); }}>
+                    {z.k === zoom ? <Icon d={I.check} size={18} /> : <span className="cp-check-space" />}
+                    <span className="cp-mi-lbl">{z.l}{z.d ? <span className="cp-mi-sub">{z.d}</span> : null}</span>
+                  </button>
+                ))}
+                <div className="cp-menu-foot">z key se cycle karein</div>
+              </>
+            )}
           </div>
         )}
       </div>
@@ -2282,7 +2537,7 @@ function SetPage({ st, engine, onCheck, onAddSub }) {
 
         <div className="set-sub-h">Default zoom</div>
         <div className="set-chip-row">
-          {ZOOMS.map((z) => (
+          {ZOOM_LIST.map((z) => (
             <button key={z.k} className={"set-chip" + ((st.cfg.zoom || "fit") === z.k ? " on" : "")} onClick={() => upd({ zoom: z.k })}>{z.l}</button>
           ))}
         </div>

@@ -256,25 +256,32 @@ which cookies do not fully solve.
 
 ---
 
-## The player (hand-built)
+## The player (hand-built, YouTube-accurate)
 
-- Big centre play, auto-hiding gradient controls, buffered + played bars, scrub tooltip on hover, drag-to-seek.
-- Volume slider, mute, current/total time, quality menu, theater mode, fullscreen.
-- **Speed 0.25×–3×** in ten steps, with an on-screen `2×` badge whenever you are not at normal speed.
-- **Pitch control** — *Preserve pitch* (default, voices stay natural at any speed) or *Varispeed*
-  (tape-style, pitch follows speed), toggled in the player or in Settings.
-- **Zoom / fit** — *Fit to screen* (contain), *Fill (crop)* (cover), or 125% / 150% / 200% zoom, from the
-  player's zoom button (`z`), the settings menu, or as a default in Settings. Badge shows the current mode.
+Chrome is modelled on the real YouTube player:
+
+- **48px controls** (52px in fullscreen, 42px on phones), 18px scrub bar that thickens to 6px on hover,
+  red played bar, buffered bar, drag-to-seek, hover time tooltip.
+- **Skip** — dedicated `↺10` / `10↻` buttons in the row, **double-tap the left/right third of the video**
+  for ±10s with YouTube's ripple + "10 seconds" overlay, `j`/`l` for ±10s, `←`/`→` for ±5s.
+  Double-tap the middle = fullscreen.
+- **Settings** — a nested panel exactly like YouTube's: *Playback speed* (0.25×–3×, 10 steps),
+  *Quality* (Auto + every muxed stream with its itag), *Zoom* (Fit to screen / Fill width / 125% / 150% / 200%),
+  and *Preserve pitch*. Rows show the current value on the right, submenus have a back arrow, checks mark the
+  active choice.
+- **Pitch** — *Preserve pitch* (default, voices stay natural at any speed) or *Varispeed* (`preservesPitch`,
+  `mozPreservesPitch`, `webkitPreservesPitch`).
+- **Zoom** — Fit to screen (contain), Fill width (cover), or 125/150/200% zoom; the `z` key cycles, the zoom
+  button in the row cycles too, and a badge shows the active mode next to the speed badge.
+- Top gradient carries the title plus **Save to Watch later / Share / Open on YouTube**; the bottom row has
+  play, skip, next, volume (hover slider), time, then settings / zoom / theater / fullscreen.
 - Keyboard: `space`/`k` play-pause · `j`/`l` ±10s · `←`/`→` ±5s · `↑`/`↓` volume · `<`/`>` speed step ·
-  `z` zoom · `m` mute · `f` fullscreen · `t` theater · `n` next · `0`–`9` jump to %
-- Double-click = fullscreen, click = play/pause, "tap to play" overlay when a browser blocks autoplay.
-- Quality switching keeps your position; autoplay pushes the next Up-next video on end.
-- Errors are specific (unsupported format / network / decode) with Retry + "Open on YouTube".
+  `z` zoom · `m` mute · `f` fullscreen · `t` theater · `n` next · `0`–`9` jump to % · `esc` closes the menu.
+- Quality switching keeps your position; autoplay pushes the next recommendation on end; specific errors with
+  Retry / "Open on YouTube".
 
-UI is a YouTube-style shell: collapsible sidebar, chips, hover cards with duration badges, watch page with
-like/share/save pills, channel row, expandable description, and the Up next rail with an autoplay toggle.
-
----
+Everything persists (`sv_cfg`): volume, mute, speed, zoom, pitch. Settings also has default speed/zoom chips,
+a pitch toggle and the full shortcut grid.
 
 ## Local preview (no worker needed)
 
