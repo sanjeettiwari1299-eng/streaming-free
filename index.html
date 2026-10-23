@@ -686,8 +686,58 @@ const ZOOM_LIST = [
   { k: "2", l: "Zoom 200%" },
 ];
 
-const ls = (k, d) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } };
-const ss = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
+/* ════════════════════════════════════════════════════════════════════════════
+   STORAGE — cloud-first. NOTHING goes into localStorage.
+   All lists (history, subscriptions, likes, watch later, playlists, settings)
+   live in the worker's Layerbase libSQL database. The browser keeps only:
+     · sv_p  — the profile key cookie (22 chars, 10 years, no expiry)
+     · sv_cfg — a bootstrap copy of the engine URL, because a database cannot
+                tell you its own address before you have connected to it
+   Every list is capped server-side: "aage ka yaad, peeche ka bhool".
+   ════════════════════════════════════════════════════════════════════════════ */
+const CAPS = { history: 300, subs: 150, likes: 500, watchlater: 300, playlists: 50, cfg: 1 };
+const KEY_RE = /^[A-Za-z0-9_-]{16,64}$/;
+
+const cook = (k, d) => {
+  try {
+    const m = document.cookie.match(new RegExp("(?:^|; )" + k + "=([^;]*)"));
+    if (!m) return d;
+    const raw = decodeURIComponent(m[1]);
+    return raw ? JSON.parse(raw) : d;
+  } catch { return d; }
+};
+const cookSet = (k, v, days) => {
+  try {
+    document.cookie = k + "=" + encodeURIComponent(JSON.stringify(v)) + "; path=/; max-age=" + Math.round(days * 86400) + "; SameSite=Lax";
+    return true;
+  } catch { return false; }
+};
+const randKey = () => {
+  const b = new Uint8Array(18);
+  try { crypto.getRandomValues(b); } catch { for (let i = 0; i < b.length; i++) b[i] = Math.floor(Math.random() * 256); }
+  let str = "";
+  for (let i = 0; i < b.length; i++) str += String.fromCharCode(b[i]);
+  return btoa(str).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+};
+const hashKey = () => { try { const m = String(location.hash || "").match(/[#&]p=([A-Za-z0-9_-]{16,64})/); return m ? m[1] : ""; } catch { return ""; } };
+let PROFILE = "";
+function profileKey() {
+  if (PROFILE) return PROFILE;
+  const fromHash = hashKey();
+  const stored = cook("sv_p", "");
+  const keep = KEY_RE.test(fromHash) ? fromHash : KEY_RE.test(String(stored || "")) ? String(stored) : "";
+  PROFILE = keep || randKey();
+  if (!keep || fromHash) cookSet("sv_p", PROFILE, 3650);   // only write when new or switched by a link
+  return PROFILE;
+}
+const profileLink = () => {
+  try { const u = new URL(location.href); u.hash = "p=" + profileKey(); return u.toString(); } catch { return "#p=" + profileKey(); }
+};
+const bootCfg = () => ({ ...DEFAULT_CFG, ...(cook("sv_cfg", {}) || {}) });
+const ensureSlot = (map, kind) => {
+  if (!map.has(kind)) map.set(kind, { kind, upsert: new Map(), del: new Set(), clear: false });
+  return map.get(kind);
+};
 
 const YTT = (id, q) => `https://i.ytimg.com/vi/${id}/${q || "mqdefault"}.jpg`;
 const YTW = (id) => `https://www.youtube.com/watch?v=${id}`;
@@ -739,13 +789,18 @@ const uid = () => Math.random().toString(36).slice(2, 10);
 const baseOf = (cfg) => String((cfg && cfg.engineUrl) || "").replace(/\/+$/, "");
 const mediaUrl = (cfg, u) => (!u ? "" : /^https?:/i.test(u) ? u : baseOf(cfg) + u);
 
-async function ep(cfg, path, timeout = 25000) {
+async function ep(cfg, path, timeout = 25000, opts = {}) {
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), timeout);
   try {
     const key = String((cfg && cfg.accessKey) || "").trim();
     const withKey = key ? path + (path.includes("?") ? "&" : "?") + "key=" + encodeURIComponent(key) : path;
-    const r = await fetch(baseOf(cfg) + withKey, { signal: ac.signal, headers: { Accept: "application/json" } });
+    const init = { method: opts.method || "GET", signal: ac.signal, headers: { Accept: "application/json" } };
+    if (opts.body !== undefined) {
+      init.body = JSON.stringify(opts.body);
+      init.headers["content-type"] = "application/json";
+    }
+    const r = await fetch(baseOf(cfg) + withKey, init);
     const text = await r.text();
     let data = null;
     try { data = text ? JSON.parse(text) : null; } catch { throw new Error("engine returned non-JSON (worker URL check karein)"); }
@@ -763,6 +818,12 @@ const apiShorts = (cfg, region) => ep(cfg, "/api/shorts?region=" + encodeURIComp
 const apiPlayer = (cfg, id) => ep(cfg, "/api/player?id=" + encodeURIComponent(id), 30000);
 const apiRss = (cfg, ids) => ep(cfg, "/api/rss?channels=" + encodeURIComponent(ids.join(",")), 30000);
 const apiChannel = (cfg, q) => ep(cfg, "/api/channel?q=" + encodeURIComponent(q), 20000);
+
+/* cloud store — the app's only memory */
+const apiSyncGet = (cfg, p) => ep(cfg, "/api/sync?p=" + encodeURIComponent(p), 16000);
+const apiSyncPush = (cfg, p, ops) => ep(cfg, "/api/sync?p=" + encodeURIComponent(p), 16000, { method: "POST", body: { ops } });
+const apiSyncImport = (cfg, p, store) => ep(cfg, "/api/sync/import?p=" + encodeURIComponent(p), 20000, { method: "POST", body: { store } });
+const apiSyncClear = (cfg, p, kind) => ep(cfg, "/api/sync?p=" + encodeURIComponent(p) + "&kind=" + encodeURIComponent(kind), 16000, { method: "DELETE" });
 
 
 /* ════════════════════════════════════════════════════════════════════════════
@@ -908,39 +969,235 @@ const Icon = ({ d, size }) => (
    STORE
    ════════════════════════════════════════════════════════════════════════════ */
 function useStore() {
-  const [hist, setHist] = useState(() => ls("sv_h", []));
-  const [favs, setFavs] = useState(() => ls("sv_f", []));
-  const [wl, setWl] = useState(() => ls("sv_w", []));
-  const [pls, setPls] = useState(() => ls("sv_p", []));
-  const [subs, setSubs] = useState(() => ls("sv_subs", []));
-  const [cfg, setCfg] = useState(() => ({ ...DEFAULT_CFG, ...ls("sv_cfg", {}) }));
+  const [hist, setHist] = useState([]);
+  const [favs, setFavs] = useState([]);
+  const [wl, setWl] = useState([]);
+  const [pls, setPls] = useState([]);
+  const [subs, setSubs] = useState([]);
+  const [cfg, setCfg] = useState(bootCfg);
+  const [sync, setSync] = useState({ state: "boot", at: 0, error: "", caps: CAPS, key: "" });
 
-  const addHist = useCallback((v) => {
-    setHist((h) => { const n = [v, ...h.filter((x) => x.videoId !== v.videoId)].slice(0, 300); ss("sv_h", n); return n; });
+  const R = useRef({});                       // latest state, for toggle decisions
+  R.current = { hist, favs, wl, pls, subs, cfg };
+  const cfgRef = useRef(cfg); cfgRef.current = cfg;
+  const q = useRef({ map: new Map(), timer: null, busy: false, dead: 0 });
+  const alive = useRef(true);
+  useEffect(() => () => { alive.current = false; }, []);
+
+  /* ── write queue: every change is batched into one POST ───────────────────
+     On failure the batch goes back into the queue and retries with backoff, so
+     nothing is silently lost while the tab is open. */
+  const flush = useCallback(async function run() {
+    const qq = q.current;
+    if (qq.timer) { clearTimeout(qq.timer); qq.timer = null; }
+    if (qq.busy || !qq.map.size) return;
+    const relative = !baseOf(cfgRef.current);   // same-origin: app served by the worker itself
+    const ops = [];
+    for (const slot of qq.map.values()) {
+      if (slot.kind === "cfg") ops.push({ kind: "cfg", upsert: [{ id: "cfg", pos: 1, data: R.current.cfg }] });
+      else ops.push({ kind: slot.kind, upsert: [...slot.upsert.values()], del: [...slot.del], clear: !!slot.clear });
+    }
+    qq.map.clear();
+    qq.busy = true;
+    try {
+      const r = await apiSyncPush(cfgRef.current, profileKey(), ops);
+      if (!r || r.ok === false) throw new Error((r && r.error) || "cloud store write failed");
+      qq.dead = 0;
+      if (alive.current) setSync((s) => ({ ...s, state: "ok", at: Date.now(), error: "", written: (s.written || 0) + (r.written || 0) }));
+    } catch (e) {
+      const back = q.current.map;
+      for (const op of ops) {
+        const slot = ensureSlot(back, op.kind);
+        if (op.clear) { slot.clear = true; continue; }
+        for (const it of op.upsert || []) if (!slot.del.has(it.id)) slot.upsert.set(it.id, it);
+        for (const id of op.del || []) { slot.del.add(id); slot.upsert.delete(id); }
+      }
+      qq.dead = (qq.dead || 0) + 1;
+      // no engine configured = the page is probably static hosting: keep working
+      // in memory, and say so instead of showing a permanent error
+      if (alive.current) setSync((s) => relative ? { ...s, state: "local", error: "" } : { ...s, state: "error", error: e.message });
+      if (!relative && qq.dead <= 6) qq.timer = setTimeout(run, Math.min(60000, qq.dead * 5000));
+    } finally { qq.busy = false; }
   }, []);
-  const clrHist = () => { setHist([]); ss("sv_h", []); };
-  const rmHist = (id) => setHist((h) => { const n = h.filter((v) => v.videoId !== id); ss("sv_h", n); return n; });
-  const togFav = (v) => setFavs((f) => { const n = f.some((x) => x.videoId === v.videoId) ? f.filter((x) => x.videoId !== v.videoId) : [v, ...f]; ss("sv_f", n); return n; });
-  const isFav = (id) => favs.some((v) => v.videoId === id);
-  const togWL = (v) => setWl((w) => { const n = w.some((x) => x.videoId === v.videoId) ? w.filter((x) => x.videoId !== v.videoId) : [v, ...w]; ss("sv_w", n); return n; });
-  const isWL = (id) => wl.some((v) => v.videoId === id);
-  const mkPL = (nm) => setPls((p) => { const n = [...p, { id: uid(), name: nm, videos: [] }]; ss("sv_p", n); return n; });
-  const rmPL = (id) => setPls((p) => { const n = p.filter((x) => x.id !== id); ss("sv_p", n); return n; });
 
-  /* ── subscriptions (channel metadata cached locally, videos from RSS) ── */
-  const addSub = (ch) => setSubs((s) => {
-    if (!ch || !ch.channelId || s.some((x) => x.channelId === ch.channelId)) return s;
-    const n = [...s, { channelId: ch.channelId, name: ch.name || ch.channelId, avatar: ch.avatar || "", addedAt: Date.now() }];
-    ss("sv_subs", n); return n;
-  });
-  const removeSub = (id) => setSubs((s) => { const n = s.filter((x) => x.channelId !== id); ss("sv_subs", n); return n; });
-  const isSub = (id) => !!id && subs.some((x) => x.channelId === id);
-  const setSubsRaw = (list) => { ss("sv_subs", list); setSubs(list); };
+  const schedule = useCallback(() => {
+    const qq = q.current;
+    if (qq.timer) clearTimeout(qq.timer);
+    qq.timer = setTimeout(flush, 400);
+  }, [flush]);
 
-  const updCfg = useCallback((patch) => setCfg((c) => { const n = { ...c, ...patch }; ss("sv_cfg", n); return n; }), []);
+  const put = useCallback((kind, items) => {
+    if (!items || !items.length) return;
+    const slot = ensureSlot(q.current.map, kind);
+    slot.clear = false;
+    for (const it of items) {
+      if (!it || !it.id) continue;
+      slot.upsert.set(it.id, it);
+      slot.del.delete(it.id);
+    }
+    schedule();
+  }, [schedule]);
+
+  const drop = useCallback((kind, ids) => {
+    if (!ids || !ids.length) return;
+    const slot = ensureSlot(q.current.map, kind);
+    slot.clear = false;
+    for (const id of ids) { slot.del.add(id); slot.upsert.delete(id); }
+    schedule();
+  }, [schedule]);
+
+  const wipe = useCallback((kind) => {
+    const slot = ensureSlot(q.current.map, kind);
+    slot.upsert.clear(); slot.del.clear(); slot.clear = true;
+    schedule();
+  }, [schedule]);
+
+  /* ── first paint: one GET pulls the whole profile ─────────────────────── */
+  const load = useCallback(async (c) => {
+    profileKey();
+    const relative = !baseOf(c);
+    setSync((s) => ({ ...s, state: "loading", key: profileKey() }));
+    try {
+      const r = await apiSyncGet(c, profileKey());
+      if (!r || r.ok === false) throw new Error((r && r.error) || "cloud store read failed");
+      const s0 = r.store || {};
+      setHist((s0.history || []).slice(0, CAPS.history));
+      setFavs((s0.likes || []).slice(0, CAPS.likes));
+      setWl((s0.watchlater || []).slice(0, CAPS.watchlater));
+      setPls((s0.playlists || []).slice(0, CAPS.playlists));
+      setSubs((s0.subs || []).slice(0, CAPS.subs));
+      if (s0.cfg && typeof s0.cfg === "object") {
+        const { engineUrl: _e, accessKey: _a, ...rest } = s0.cfg;   // bootstrap stays per-device
+        setCfg((c0) => ({ ...c0, ...rest }));
+      }
+      setSync({ state: "ok", at: Date.now(), error: "", caps: r.caps || CAPS, key: profileKey(), backend: r.backend || "layerbase", stale: !!r.stale, warning: r.warning || "" });
+    } catch (e) {
+      setSync((s) => relative
+        ? { ...s, state: "local", error: "", key: profileKey() }
+        : { ...s, state: "error", error: e.message, key: profileKey() });
+    }
+  }, []);
+
+  const loadedSig = useRef("");
+  useEffect(() => {
+    const sig = (baseOf(cfg) || "(same-origin)") + "|" + String(cfg.accessKey || "");
+    if (sig === loadedSig.current) return;
+    loadedSig.current = sig;
+    load(cfg);
+  }, [cfg.engineUrl, cfg.accessKey, load]);
+
+  /* flush whenever the tab goes away, so a quick close does not lose a click */
+  useEffect(() => {
+    const onHide = () => { flush(); };
+    window.addEventListener("pagehide", onHide);
+    document.addEventListener("visibilitychange", onHide);
+    return () => {
+      window.removeEventListener("pagehide", onHide);
+      document.removeEventListener("visibilitychange", onHide);
+    };
+  }, [flush]);
+
+  /* ── history ─────────────────────────────────────────────────────────── */
+  const addHist = useCallback((v) => {
+    if (!v || !v.videoId) return;
+    const item = { ...v, watchedAt: Date.now() };
+    setHist((h) => [item, ...h.filter((x) => x.videoId !== v.videoId)].slice(0, CAPS.history));
+    put("history", [{ id: v.videoId, pos: Date.now(), data: item }]);
+  }, [put]);
+  const clrHist = useCallback(() => { setHist([]); wipe("history"); }, [wipe]);
+  const rmHist = useCallback((id) => { setHist((h) => h.filter((v) => v.videoId !== id)); drop("history", [id]); }, [drop]);
+
+  /* ── likes ───────────────────────────────────────────────────────────── */
+  const togFav = useCallback((v) => {
+    if (!v || !v.videoId) return;
+    const has = (R.current.favs || []).some((x) => x.videoId === v.videoId);
+    if (has) {
+      setFavs((f) => f.filter((x) => x.videoId !== v.videoId));
+      drop("likes", [v.videoId]);
+    } else {
+      setFavs((f) => [v, ...f.filter((x) => x.videoId !== v.videoId)].slice(0, CAPS.likes));
+      put("likes", [{ id: v.videoId, pos: Date.now(), data: v }]);
+    }
+  }, [drop, put]);
+  const isFav = (id) => (R.current.favs || []).some((v) => v.videoId === id);
+
+  /* ── watch later ─────────────────────────────────────────────────────── */
+  const togWL = useCallback((v) => {
+    if (!v || !v.videoId) return;
+    const has = (R.current.wl || []).some((x) => x.videoId === v.videoId);
+    if (has) {
+      setWl((w) => w.filter((x) => x.videoId !== v.videoId));
+      drop("watchlater", [v.videoId]);
+    } else {
+      setWl((w) => [v, ...w.filter((x) => x.videoId !== v.videoId)].slice(0, CAPS.watchlater));
+      put("watchlater", [{ id: v.videoId, pos: Date.now(), data: v }]);
+    }
+  }, [drop, put]);
+  const isWL = (id) => (R.current.wl || []).some((v) => v.videoId === id);
+
+  /* ── playlists ───────────────────────────────────────────────────────── */
+  const mkPL = useCallback((nm) => {
+    const pl = { id: uid(), name: nm, videos: [], createdAt: Date.now() };
+    setPls((p) => [...p, pl].slice(-CAPS.playlists));
+    put("playlists", [{ id: pl.id, pos: pl.createdAt, data: pl }]);
+  }, [put]);
+  const rmPL = useCallback((id) => { setPls((p) => p.filter((x) => x.id !== id)); drop("playlists", [id]); }, [drop]);
+
+  /* ── subscriptions (metadata in the DB, videos still from feeds) ──────── */
+  const addSub = useCallback((ch) => {
+    if (!ch || !ch.channelId) return;
+    if ((R.current.subs || []).some((x) => x.channelId === ch.channelId)) return;
+    const item = { channelId: ch.channelId, name: ch.name || ch.channelId, avatar: ch.avatar || "", addedAt: Date.now() };
+    setSubs((s) => [...s, item].slice(-CAPS.subs));
+    put("subs", [{ id: item.channelId, pos: item.addedAt, data: item }]);
+  }, [put]);
+  const removeSub = useCallback((id) => { setSubs((s) => s.filter((x) => x.channelId !== id)); drop("subs", [id]); }, [drop]);
+  const isSub = (id) => !!id && (R.current.subs || []).some((x) => x.channelId === id);
+  const setSubsRaw = useCallback((list) => {
+    const clean = (Array.isArray(list) ? list : [])
+      .filter((x) => x && x.channelId)
+      .slice(-CAPS.subs)
+      .map((x) => ({ ...x, addedAt: x.addedAt || Date.now() }));
+    setSubs(clean);
+    put("subs", clean.map((x, i) => ({ id: x.channelId, pos: (x.addedAt || Date.now()) + i, data: x })));
+  }, [put]);
+
+  /* ── settings: cookie bootstrap + cloud row ──────────────────────────── */
+  const updCfg = useCallback((patch) => {
+    setCfg((c) => {
+      const n = { ...c, ...patch };
+      cookSet("sv_cfg", n, 3650);
+      return n;
+    });
+    put("cfg", [{ id: "cfg", pos: 1, data: null }]);
+  }, [put]);
+
+  /* ── maintenance helpers used by Settings ────────────────────────────── */
+  const reload = useCallback(() => load(cfgRef.current), [load]);
+  const snapshot = useCallback(() => ({
+    app: "streamvoid", version: 1, key: profileKey(), exportedAt: new Date().toISOString(), caps: CAPS,
+    store: { history: R.current.hist, likes: R.current.favs, watchlater: R.current.wl, playlists: R.current.pls, subs: R.current.subs, cfg: R.current.cfg },
+  }), []);
+  const restore = useCallback(async (data) => {
+    const store = (data && data.store) || data || {};
+    const r = await apiSyncImport(cfgRef.current, profileKey(), store);
+    if (r && r.ok === false) throw new Error(r.error || "import failed");
+    await load(cfgRef.current);
+    return r;
+  }, [load]);
+  const wipeAll = useCallback(async () => {
+    setHist([]); setFavs([]); setWl([]); setPls([]); setSubs([]);
+    q.current.map.clear();
+    for (const k of ["history", "likes", "watchlater", "playlists", "subs"]) {
+      try { await apiSyncClear(cfgRef.current, profileKey(), k); } catch { /* best effort */ }
+    }
+    setSync((s) => ({ ...s, state: baseOf(cfgRef.current) ? "ok" : "local", at: Date.now() }));
+  }, []);
+
   return {
     hist, addHist, clrHist, rmHist, favs, togFav, isFav, wl, togWL, isWL, pls, mkPL, rmPL,
     subs, addSub, removeSub, isSub, setSubsRaw, cfg, updCfg,
+    sync, reload, snapshot, restore, wipeAll, profileKey, profileLink, caps: CAPS,
   };
 }
 
@@ -2528,6 +2785,119 @@ function SubManager({ st, onAddSub }) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
+   CLOUD STORE PANEL — profile key, sync state, caps, export/import
+   ════════════════════════════════════════════════════════════════════════════ */
+function CloudStore({ st }) {
+  const [copied, setCopied] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
+  const sync = st.sync || { state: "boot", caps: CAPS };
+  const key = st.profileKey ? st.profileKey() : "";
+  const masked = key ? key.slice(0, 6) + "…" + key.slice(-4) : "—";
+
+  const copy = async (text, what) => {
+    try { await navigator.clipboard.writeText(text); setCopied(what); setTimeout(() => setCopied(""), 2000); }
+    catch { setCopied("copy fail"); }
+  };
+  const exportJson = () => {
+    try {
+      const dump = st.snapshot();
+      const blob = new Blob([JSON.stringify(dump, null, 2)], { type: "application/json" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "streamvoid-profile-" + new Date().toISOString().slice(0, 10) + ".json";
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+      setNote("Backup download ho gaya ✓");
+    } catch (e) { setNote("Export fail: " + e.message); }
+  };
+  const importJson = async (file) => {
+    if (!file) return;
+    setBusy(true); setNote("");
+    try {
+      const data = JSON.parse(await file.text());
+      const r = await st.restore(data);
+      setNote("Restore ✓ " + (r && r.imported ? r.imported + " items" : ""));
+    } catch (e) { setNote("Import fail: " + e.message); }
+    finally { setBusy(false); }
+  };
+  const clearAll = async () => {
+    if (!window.confirm("Cloud store se history, likes, watch later, playlists aur subscriptions — sab clear karein?")) return;
+    setBusy(true);
+    try { await st.wipeAll(); setNote("Cloud store clear ✓"); }
+    catch (e) { setNote("Clear fail: " + e.message); }
+    finally { setBusy(false); }
+  };
+
+  const stateText =
+    sync.state === "ok" ? "Synced" :
+    sync.state === "loading" ? "Loading…" :
+    sync.state === "local" ? "Worker URL chahiye" :
+    sync.state === "boot" ? "Starting…" : "Cloud off";
+  const dot = sync.state === "ok" ? "ok" : sync.state === "loading" || sync.state === "boot" ? "wait" : "bad";
+
+  return (
+    <div className="set-blk">
+      <div className="set-blk-title">☁️ Cloud store <span className="badge-mini">layerbase libSQL</span></div>
+      <div className="set-blk-desc">
+        History, likes, watch later, playlists, subscriptions aur settings — sab tumhare <b>Layerbase</b> database me.
+        <b> localStorage me kuch nahi</b> likha jata. Har list par cap hai, cap cross hote hi sabse purana item hat jata hai —
+        koi TTL nahi, time se kuch expire nahi hota.
+      </div>
+
+      <div className="engine-status">
+        <span className={"dot " + dot} />
+        {stateText}
+        {sync.state === "ok" && <span style={{ color: "var(--t3)", marginLeft: 6 }}>· {sync.backend}{sync.stale ? " (stale snapshot)" : ""}</span>}
+        {sync.at > 0 && sync.state === "ok" && <span style={{ color: "var(--t3)", marginLeft: 6 }}>· {new Date(sync.at).toLocaleTimeString()}</span>}
+        <button className="setup-link" style={{ marginLeft: 8 }} onClick={() => { st.reload(); }}>↻ Sync now</button>
+      </div>
+      {sync.state === "error" && (
+        <div style={{ color: "#ff8a80", fontSize: 12.5, marginTop: 6 }}>
+          {sync.error}
+          <div style={{ color: "var(--t3)", marginTop: 3 }}>
+            Worker secrets me <code>LIBSQL_URL</code> + <code>LIBSQL_TOKEN</code> daalein (Layerbase → database → Connect).
+            Tab tak app memory + cookie bootstrap par chalegi.
+          </div>
+        </div>
+      )}
+      {sync.stale && <div style={{ color: "#ffd479", fontSize: 12.5, marginTop: 6 }}>Edge snapshot se load hua — {sync.warning || "Layerbase abhi jaga nahi"}.</div>}
+
+      <div className="set-sub-h">Caps (server-side, client badha nahi sakta)</div>
+      <div className="set-chip-row">
+        {[["history", "history"], ["subs", "subscriptions"], ["likes", "likes"], ["watchlater", "watch later"], ["playlists", "playlists"]].map(([k, l]) => (
+          <span key={k} className="set-chip" style={{ cursor: "default" }}>{l} · {CAPS[k]}</span>
+        ))}
+        <span className="set-chip" style={{ cursor: "default" }}>expiry · none</span>
+      </div>
+
+      <div className="set-sub-h">Profile key</div>
+      <div className="set-api-row">
+        <input readOnly value={masked} title="full key copy karein" />
+        <button className="set-api-btn" onClick={() => copy(key, "key")}>Copy key</button>
+        <button className="set-api-btn" onClick={() => copy(profileLink(), "link")}>Copy device link</button>
+      </div>
+      <div style={{ color: "var(--t3)", fontSize: 12, marginTop: -2 }}>
+        Koi login nahi — yeh key hi tumhara account hai. Bookmark ya “Copy device link” se doosre device par wahi data.
+        {copied && <span style={{ color: "#7ee787", marginLeft: 6 }}>{copied} ✓</span>}
+      </div>
+
+      <div className="set-sub-h">Backup</div>
+      <div className="set-chip-row">
+        <button className="set-chip" disabled={busy} onClick={exportJson}>⬇ Export JSON</button>
+        <label className="set-chip" style={{ cursor: "pointer", display: "inline-flex", alignItems: "center" }}>
+          ⬆ Restore JSON
+          <input type="file" accept=".json,application/json" style={{ display: "none" }}
+            onChange={(e) => { const f = e.target.files && e.target.files[0]; if (f) importJson(f); e.target.value = ""; }} />
+        </label>
+        <button className="set-chip" disabled={busy} onClick={clearAll}>🗑 Clear cloud store</button>
+      </div>
+      {note && <div style={{ color: "var(--t2)", fontSize: 12, marginTop: 6 }}>{note}</div>}
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
    SETTINGS
    ════════════════════════════════════════════════════════════════════════════ */
 function SetPage({ st, engine, onCheck, onAddSub }) {
@@ -2577,6 +2947,8 @@ function SetPage({ st, engine, onCheck, onAddSub }) {
         </div>
       </div>
 
+      <CloudStore st={st} />
+
       <div className="set-blk"><SubManager st={st} onAddSub={onAddSub} /></div>
 
       <div className="set-blk">
@@ -2624,14 +2996,14 @@ function SetPage({ st, engine, onCheck, onAddSub }) {
 
       <div className="set-blk">
         <div className="set-blk-title">🔒 Privacy</div>
-        {[["Custom player", "YouTube iframe/embed load nahi hota — sirf <video>."], ["No API key, no login", "Channel feeds + InnerTube, sab bina account."], ["Data local", "Subscriptions, history, likes browser me."]].map(([t, d]) => (
+        {[["Custom player", "YouTube iframe/embed load nahi hota — sirf <video>."], ["No API key, no login", "Channel feeds + InnerTube, sab bina account."], ["Zero localStorage", "Kuch bhi browser ke localStorage me nahi — sab Layerbase DB me."], ["Your data, your key", "Profile key cookie me; koi tracking, koi third-party analytics."]].map(([t, d]) => (
           <div key={t} className="priv-item"><span className="priv-ico">✓</span><div><div className="priv-name">{t}</div><div className="priv-sub">{d}</div></div></div>
         ))}
         <button className="danger-btn" onClick={() => window.confirm("Watch history clear karein?") && st.clrHist()}>Clear watch history</button>
       </div>
 
       <div style={{ textAlign: "center", padding: "16px 0", fontSize: 13, color: "var(--t3)" }}>
-        StreamVoid v7.3 · channel-feed subscriptions · Shorts · recommendations · custom player · Made for India 🇮🇳
+        StreamVoid v7.7 · Layerbase cloud store · capped lists, no TTL · channel-feed subscriptions · custom player · Made for India 🇮🇳
       </div>
     </div>
   );

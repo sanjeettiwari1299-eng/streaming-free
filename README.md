@@ -1,7 +1,7 @@
 # StreamVoid — serverless YouTube front-end + custom player
 
 `index.html` (whole app, one file) + `worker.js` (Cloudflare Worker, free tier).
-**No API key. No Google login. No Piped/Invidious. No server/VPS. No YouTube iframe.**
+**No API key. No Google login. No Piped/Invidious. No server/VPS. No YouTube iframe. No localStorage.**
 Search · Trending · **Shorts** · **RSS subscriptions** · watch page · hand-built player.
 
 ---
@@ -29,6 +29,15 @@ Playback stays 100% custom: a plain `<video>` element with our own YouTube-style
    `https://<your-worker>.workers.dev/api/health` → `{"ok":true,...}`
 4. Open StreamVoid → **Settings → YouTube engine** → paste the worker URL → **Save & test**.
    The dot turns green and full search/trending/playback goes live.
+5. **Cloud store (the app's memory):** <https://layerbase.com> → *Create libSQL* (free, no card) →
+   copy the HTTPS URL + token → Cloudflare Worker → **Settings → Variables** →
+
+   | Secret | Value |
+   | --- | --- |
+   | `LIBSQL_URL` | `https://<db>.cloud.layerbase.dev` (the `libsql://` form also works) |
+   | `LIBSQL_TOKEN` | the bearer token from the dashboard |
+
+   Then open **Settings → Cloud store** in the app: the dot turns green and everything syncs.
 
 `index.html` can be hosted anywhere static (GitHub Pages, Netlify, S3, or just opened locally).
 
@@ -132,6 +141,96 @@ per-video reason. One click tells you whether the whole setup is healthy or whic
 
 ---
 
+## Memory lives in Layerbase, not the browser
+
+`localStorage` is never written — not for settings, not for history, not for a single byte. The database is the
+app's memory, so the same profile opens on any device and clearing site data cannot wipe your subscriptions.
+
+Why **Layerbase libSQL** and not Cloudflare KV/D1:
+
+| | Free tier | Why it decides it |
+| --- | --- | --- |
+| **Layerbase libSQL** | 2 DBs, 5 GB, **no row meters**, no expiry | one HTTPS endpoint a Worker can call; a writing-heavy history never becomes a quota graph |
+| KV | 1 GB, **1,000 writes/day** | one write per watched video = quota gone in an afternoon |
+| D1 | 5 GB, 100k rows written/day | fine, but row metering + a Cloudflare-only binding |
+
+The worker talks to libSQL over **HTTPS (Hrana v2 pipeline)** with `fetch` — no `@libsql/client`, no npm, the
+worker stays one pasteable file.
+
+### One table, one trim
+
+```sql
+CREATE TABLE sv_store (
+  uid TEXT NOT NULL, kind TEXT NOT NULL, id TEXT NOT NULL,
+  pos INTEGER NOT NULL, data TEXT NOT NULL,
+  PRIMARY KEY (uid, kind, id)
+);
+```
+
+Every write is `upsert → trim`, in the same pipeline:
+
+```sql
+DELETE FROM sv_store WHERE uid = ? AND kind = ? AND id NOT IN (
+  SELECT id FROM sv_store WHERE uid = ? AND kind = ? ORDER BY pos DESC LIMIT ?
+);
+```
+
+So the list can never creep: **aage ka yaad, peeche ka bhool**.
+
+| list | cap | what happens at the cap |
+| --- | --- | --- |
+| history | 300 | 301st video pushes the oldest out |
+| subscriptions | 150 | oldest channel drops |
+| likes | 500 | oldest like drops |
+| watch later | 300 | oldest drops |
+| playlists | 50 | oldest playlist drops |
+| settings | 1 | replaced in place |
+
+**No TTL anywhere.** Nothing expires by time — only the cap removes rows, and only the oldest ones. The client
+cannot raise a cap: the trim runs server-side on every write.
+
+### The profile key (still no login)
+
+The first visit mints a random 22-character key and stores it in a cookie (`sv_p`, 10 years, `SameSite=Lax`).
+That key *is* the account:
+
+- **Copy device link** in Settings → `app.html#p=<key>` → open it anywhere for the same profile.
+- **Export / Restore JSON** in Settings → your own backup, independent of any provider.
+- Lose the key and the data is still in the DB, but nothing points at it — export a backup if it matters.
+
+Only the engine URL + access key are kept in a second cookie (`sv_cfg`), because a database cannot tell you its
+own address before you connect to it. That is the *only* thing the browser remembers.
+
+### When Layerbase is unreachable
+
+A free libSQL database hibernates after 15 minutes idle and **wakes in ~1–5s on the next request** — a read is
+the wake-up, so the app's first `GET /api/sync` usually absorbs it. If it is archived (14 idle days), the
+dashboard's one-click Restore brings it back; data is never deleted.
+
+Meanwhile the worker never leaves you with a blank app:
+
+1. **Edge snapshot** — every successful read is cached (`caches.default`, 1 year), so an outage still opens the
+   last known profile, flagged `stale`.
+2. **In-memory** — new clicks keep working and are re-queued with backoff; nothing is dropped while the tab is open.
+3. **Honest UI** — Settings → Cloud store shows `Synced / Loading / Cloud off` plus the exact error.
+
+Optional: add a **Cron Trigger** (`0 */6 * * *`) to the worker — `scheduled()` writes one heartbeat row, which
+keeps the free DB out of the 14-day archive. Not required, just one less click.
+
+### Routes
+
+| Route | Purpose |
+| --- | --- |
+| `GET /api/sync?p=KEY` | whole profile in one round-trip (used at boot) |
+| `POST /api/sync?p=KEY` | `{ops:[{kind, upsert:[{id,pos,data}], del:[id], clear}]}` → write + trim |
+| `DELETE /api/sync?p=KEY&kind=` | empty one list |
+| `POST /api/sync/import?p=KEY` | one-shot bulk restore (the Settings *Restore JSON* button) |
+
+`/api/health` reports `store: {backend, configured, caps, ttl:"none"}` so you can tell at a glance whether the
+worker can actually reach Layerbase.
+
+---
+
 ## Subscriptions = channel feeds (no account, no login)
 
 Subscribe to a channel once and its uploads show up in your Subscriptions page. No Google account, no OAuth,
@@ -173,7 +272,8 @@ In the app:
   subscribes). OPML stays as the standard interchange format — note that reading the exported feeds in a
   third-party RSS reader depends on YouTube's endpoint coming back, which is why this app fetches through the
   worker instead.
-- Subscriptions live in `localStorage` (`sv_subs`) — nothing about you leaves the browser.
+- Subscriptions live in your own Layerbase database (capped at 150), keyed by your profile key — no account,
+  no third-party service beyond the DB you created yourself.
 
 Refreshing is on demand (pull-to-refresh / the refresh button): 1 request per channel, so a 20-channel
 check costs 20 of your 100k daily worker requests. There is no background polling to burn quota.
@@ -362,12 +462,17 @@ click through the whole UI and player. It is a preview tool only — production 
 - Shorts: `/api/shorts` returns one page (up to 40). There is no endless scroll yet — hit Refresh for more,
   and YouTube's `FEshorts` tab is region/algorithm dependent, which is why the two fallbacks exist.
 - Cloudflare free tier: 100k requests/day. Media proxying costs bandwidth — fine for personal use.
+- Cloud store: the profile key lives in a cookie, so clearing cookies on every device loses the pointer to your
+  data (the rows stay in Layerbase). Export a JSON backup if that matters. Browser "block all cookies" means a
+  fresh profile every visit.
+- Layerbase free tier sleeps after 15 min idle (first request after that takes ~1–5s) and is archived after 14
+  idle days; the worker serves the last edge snapshot in the meantime and the dashboard Restore takes seconds.
 
 ## Files
 
 ```
 index.html       entire app (React 18 UMD + Babel in-browser, no build step)
-worker.js        Cloudflare Worker: InnerTube API + sig decipher + media proxy + RSS
+worker.js        Cloudflare Worker: InnerTube API + sig decipher + media proxy + RSS + Layerbase store
 dev-server.mjs   local preview with mock API + sample MP4s
 tests/           regression suites (worker: node tests/smoke.mjs etc; UI: see below)
 ```
@@ -378,6 +483,8 @@ tests/           regression suites (worker: node tests/smoke.mjs etc; UI: see be
 node tests/smoke.mjs      # worker core: decipher, list calls, breakers, media, routes
 node tests/rsstest.mjs    # feeds: parsing, merge/dedupe/sort, resolveChannel, /api/rss + /api/channel
 node tests/mptest.mjs     # /mp4 endpoint: Range/206, HEAD, content-type, ?itag, ?dl
+node tests/synctest.mjs   # 63 checks: Layerbase libSQL pipeline against a real SQLite, every cap, trim,
+                          # edge-snapshot fallback, import/export, profile isolation, cron heartbeat
 node tests/brahmatest.mjs # 39 checks: failure classification, bot-check escalation, cookies pass,
                           # PoToken (secret + provider + cache), mirrors, canary, diagnosis output
 node tests/shortstest.mjs # Shorts: both renderer shapes, dedupe, view parsing, 3-step ladder, route
@@ -386,4 +493,6 @@ npm i jsdom react react-dom @babel/core @babel/preset-react
 node tests/ui.test.cjs    # compiles the JSX out of index.html and drives it in jsdom
 ```
 
-The first three need no dependencies — they import `worker.js` directly and stub `fetch`/`caches`.
+All worker suites import `worker.js` directly and stub `fetch`/`caches` — no npm install needed.
+`synctest.mjs` runs the real SQL on Node's built-in `node:sqlite`, so **Node 22.5+** is required for it.
+The UI suite is the only one that needs the npm packages above.

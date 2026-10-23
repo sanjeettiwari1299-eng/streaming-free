@@ -56,7 +56,18 @@ function makeDom(opts = {}) {
     runScripts: "dangerously",
     pretendToBeVisual: true,
     beforeParse(w) {
-      if (opts.prefs) for (const [k, v] of Object.entries(opts.prefs)) w.localStorage.setItem(k, v);
+      /* bootstrap config is a cookie now; localStorage must stay completely unused */
+      if (opts.prefs) {
+        for (const [k, v] of Object.entries(opts.prefs)) {
+          w.document.cookie = k + "=" + encodeURIComponent(v) + "; path=/; max-age=31536000; SameSite=Lax";
+        }
+      }
+      w.__lsWrites = 0;
+      for (const m of ["setItem", "removeItem", "clear"]) {
+        const orig = w.localStorage[m].bind(w.localStorage);
+        w.localStorage[m] = (...a) => { w.__lsWrites++; return orig(...a); };
+      }
+      w.__remote = opts.remote || { history: [], likes: [], watchlater: [], playlists: [], subs: [], cfg: {} };
       w.AbortController = AbortController;
       w.scrollTo = () => {};
       w.alert = (m) => { w.__alerts = (w.__alerts || []).concat(String(m)); };
@@ -75,11 +86,51 @@ function makeDom(opts = {}) {
       w.document.exitFullscreen = function () { w.document.__fs = null; w.document.dispatchEvent(new w.Event("fullscreenchange")); return Promise.resolve(); };
       Object.defineProperty(w.document, "fullscreenElement", { configurable: true, get() { return w.document.__fs || null; } });
       w.__calls = [];
-      w.fetch = async (url) => {
+      w.__sync = [];
+      const CAPS = { history: 300, subs: 150, likes: 500, watchlater: 300, playlists: 50 };
+      const applyOps = (ops) => {
+        for (const op of ops || []) {
+          const kind = op.kind;
+          if (kind === "cfg") {
+            const dat = (op.upsert || [])[0] && (op.upsert || [])[0].data;
+            if (dat) w.__remote.cfg = { ...(w.__remote.cfg || {}), ...dat };
+            continue;
+          }
+          if (!CAPS[kind]) continue;
+          if (op.clear) { w.__remote[kind] = []; continue; }
+          let list = w.__remote[kind] || [];
+          for (const it of op.upsert || []) {
+            const id = it.id || (it.data && (it.data.videoId || it.data.channelId)) || "";
+            list = [it.data, ...list.filter((x) => (x.videoId || x.channelId || x.id) !== id)];
+          }
+          for (const id of op.del || []) list = list.filter((x) => (x.videoId || x.channelId || x.id) !== id);
+          w.__remote[kind] = list.slice(0, CAPS[kind]);
+        }
+      };
+      w.fetch = async (url, init = {}) => {
         const u = String(url);
         w.__calls.push(u);
         if (opts.offline) throw new Error("network down");
         const ok = (d) => ({ ok: true, status: 200, json: async () => d, text: async () => JSON.stringify(d) });
+        if (/\/api\/sync/.test(u)) {
+          if (opts.syncFail) return { ok: false, status: 503, json: async () => ({ ok: false, error: "layerbase 503" }), text: async () => JSON.stringify({ ok: false, error: "layerbase 503" }) };
+          if (init.method === "GET") return ok({ ok: true, backend: "layerbase-libsql", store: w.__remote, caps: { ...CAPS, cfg: 1 } });
+          const body = init.body ? JSON.parse(init.body) : {};
+          w.__sync.push({ method: init.method || "GET", url: u, body });
+          if (/\/api\/sync\/import/.test(u)) {
+            const st = body.store || {};
+            for (const k of Object.keys(CAPS)) if (Array.isArray(st[k])) w.__remote[k] = st[k].slice(0, CAPS[k]);
+            if (st.cfg) w.__remote.cfg = { ...(w.__remote.cfg || {}), ...st.cfg };
+            return ok({ ok: true, imported: Object.keys(CAPS).reduce((n, k) => n + ((st[k] || []).length), 0) });
+          }
+          if ((init.method || "GET") === "DELETE") {
+            const kind = decodeURIComponent(u.split("kind=")[1] || "");
+            if (CAPS[kind]) w.__remote[kind] = [];
+            return ok({ ok: true, written: 0 });
+          }
+          applyOps(body.ops);
+          return ok({ ok: true, written: (body.ops || []).reduce((n, o) => n + ((o.upsert || []).length), 0) });
+        }
         if (/\/api\/health/.test(u)) return ok({ ok: true, service: "streamvoid-worker" });
         if (/\/api\/trending/.test(u)) return ok({ items: TRENDING });
         if (/\/api\/rss/.test(u)) {
@@ -130,6 +181,11 @@ const click = (w, el) => el.dispatchEvent(new w.MouseEvent("click", { bubbles: t
 
 const checks = [];
 const check = (n, c, e) => checks.push({ n, pass: !!c, e });
+const cookie = (w, k) => {
+  const m = w.document.cookie.match(new RegExp("(?:^|; )" + k + "=([^;]*)"));
+  if (!m) return null;
+  try { return JSON.parse(decodeURIComponent(m[1])); } catch { return null; }
+};
 
 (async () => {
   /* ══ 1. home + watch (v5 shell) ═══════════════════════════════════════════ */
@@ -155,9 +211,10 @@ const check = (n, c, e) => checks.push({ n, pass: !!c, e });
 
   /* subscribe from watch page (channel already known) */
   click(w, all(w, ".sub-btn")[0]);
-  await wait(200);
+  await wait(700);
   check("subscribe toggles to Subscribed", /Subscribed/.test(all(w, ".sub-btn")[0].textContent));
-  check("sub persisted", JSON.parse(w.localStorage.getItem("sv_subs") || "[]").length === 1);
+  check("sub persisted to cloud store", (w.__remote.subs || []).length === 1, JSON.stringify(w.__remote.subs));
+  check("sub write sent as a POST", (w.__sync || []).some((o) => (o.body.ops || []).some((op) => op.kind === "subs" && (op.upsert || []).some((u) => u.id === UC1))), JSON.stringify(w.__sync || []).slice(0, 160));
   check("sidebar lists channel", /Resolved Chan/.test(q(w, ".sidebar").textContent));
 
   /* ══ 2. player: 3× speed, pitch, zoom ═══════════════════════════════════ */
@@ -187,7 +244,7 @@ const check = (n, c, e) => checks.push({ n, pass: !!c, e });
   await wait(150);
   check("playbackRate applied", q(w, "video").playbackRate === 2.5, q(w, "video").playbackRate);
   check("speed badge shown", all(w, ".cp-badge").some((b) => /2\.5×/.test(b.textContent)), all(w, ".cp-badge").map((b) => b.textContent).join(","));
-  check("rate persisted", JSON.parse(w.localStorage.getItem("sv_cfg") || "{}").rate === 2.5, w.localStorage.getItem("sv_cfg"));
+  check("rate persisted", (cookie(w, "sv_cfg") || {}).rate === 2.5, JSON.stringify(cookie(w, "sv_cfg")));
 
   const pitchBtn = all(w, ".cp-mi").find((b) => /Preserve pitch/.test(b.textContent));
   check("pitch control present", !!pitchBtn);
@@ -195,7 +252,7 @@ const check = (n, c, e) => checks.push({ n, pass: !!c, e });
   click(w, pitchBtn);
   await wait(120);
   check("varispeed disables pitch preserve", q(w, "video").preservesPitch === false);
-  check("pitch persisted", JSON.parse(w.localStorage.getItem("sv_cfg") || "{}").pitch === false);
+  check("pitch persisted", (cookie(w, "sv_cfg") || {}).pitch === false);
 
   click(w, q(w, ".cp-back"));          // → main
   await wait(120);
@@ -234,7 +291,7 @@ const check = (n, c, e) => checks.push({ n, pass: !!c, e });
   click(w, zoomBtn);
   await wait(120);
   check("zoom presets scale the frame", /scale\(1\.5\)/.test(q(w, "video").style.transform || ""), q(w, "video").style.transform);
-  check("zoom persisted", JSON.parse(w.localStorage.getItem("sv_cfg") || "{}").zoom === "1.5", w.localStorage.getItem("sv_cfg"));
+  check("zoom persisted", (cookie(w, "sv_cfg") || {}).zoom === "1.5", JSON.stringify(cookie(w, "sv_cfg")));
 
   /* skip buttons + double tap */
   const video = q(w, "video");
@@ -315,7 +372,7 @@ const check = (n, c, e) => checks.push({ n, pass: !!c, e });
   click(w, all(w, ".modal .btn-pri")[0]);
   await wait(600);
   check("modal closed after subscribe", !q(w, ".modal"));
-  check("two subs now", JSON.parse(w.localStorage.getItem("sv_subs") || "[]").length === 2);
+  check("two subs now", (w.__remote.subs || []).length === 2, JSON.stringify(w.__remote.subs));
   check("rss refetched with both channels", w.__calls.filter((u) => /\/api\/rss/.test(u)).some((u) => /UCbbbb/.test(u)));
 
   /* ══ 4. channel page ════════════════════════════════════════════════════ */
@@ -334,7 +391,7 @@ const check = (n, c, e) => checks.push({ n, pass: !!c, e });
   check("settings lists shortcuts", all(w, ".key-row").length >= 8, all(w, ".key-row").length);
   click(w, all(w, ".set-chip").find((b) => /Zoom 150%/.test(b.textContent)));
   await wait(150);
-  check("default zoom chip persists", JSON.parse(w.localStorage.getItem("sv_cfg") || "{}").zoom === "1.5", w.localStorage.getItem("sv_cfg"));
+  check("default zoom chip persists", (cookie(w, "sv_cfg") || {}).zoom === "1.5", JSON.stringify(cookie(w, "sv_cfg")));
   let blobText = "";
   const realBlob = w.Blob;
   w.Blob = function (parts, opts) { blobText = parts.join(""); return new realBlob(parts, opts); };
@@ -346,7 +403,8 @@ const check = (n, c, e) => checks.push({ n, pass: !!c, e });
   /* remove a sub */
   click(w, all(w, ".sub-chip").find((b) => b.textContent.trim() === "Remove"));
   await wait(300);
-  check("remove sub works", JSON.parse(w.localStorage.getItem("sv_subs") || "[]").length === 1);
+  await wait(500);
+  check("remove sub works", (w.__remote.subs || []).length === 1, JSON.stringify(w.__remote.subs));
 
   check("no JS errors (main flow)", errs.filter((e) => !/Not implemented|scrollTo/.test(e)).length === 0, errs.slice(0, 2).join(" | "));
 
@@ -370,12 +428,14 @@ const check = (n, c, e) => checks.push({ n, pass: !!c, e });
   const activeSub = q(w, '.short-card[data-idx="1"] .short-sub');
   click(w, activeSub);
   await wait(200);
-  check("subscribe from a short", JSON.parse(w.localStorage.getItem("sv_subs") || "[]").some((x) => x.channelId === "UCshorts000000000000000"), w.localStorage.getItem("sv_subs"));
+  await wait(600);
+  check("subscribe from a short", (w.__remote.subs || []).some((x) => x.channelId === "UCshorts000000000000000"), JSON.stringify(w.__remote.subs));
   check("short sub button flips", /Subscribed/.test(q(w, '.short-card[data-idx="1"] .short-sub').textContent));
 
   click(w, q(w, '.short-card[data-idx="1"] .short-btn'));
   await wait(200);
-  check("like a short", (JSON.parse(w.localStorage.getItem("sv_f") || "[]")).some((x) => x.videoId === "sh100000002"));
+  await wait(600);
+  check("like a short", (w.__remote.likes || []).some((x) => x.videoId === "sh100000002"), JSON.stringify(w.__remote.likes));
 
   w.dispatchEvent(new w.KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
   await wait(800);
@@ -423,6 +483,69 @@ const check = (n, c, e) => checks.push({ n, pass: !!c, e });
   await wait(700);
   check("offline setup gate", !!q(w3, ".setup-card"));
   check("setup mentions worker", /Cloudflare Worker/.test(w3.document.body.textContent));
+
+  /* ══ 10. cloud store: cookie profile, caps, cloud-first boot ═════════════ */
+  check("localStorage was never written", w.__lsWrites === 0, w.__lsWrites + " writes");
+  const pk = cookie(w, "sv_p");
+  check("profile key cookie exists", typeof pk === "string" && /^[A-Za-z0-9_-]{16,64}$/.test(pk), String(pk));
+  check("bootstrap config also lives in a cookie", !!cookie(w, "sv_cfg"), w.document.cookie.slice(0, 80));
+  check("boot pulled the profile from the store", w.__calls.some((u) => /\/api\/sync\?p=/.test(u)), w.__calls.filter((u) => /sync/.test(u)).slice(0, 3).join(" "));
+  check("writes carry the same profile key", (w.__sync || []).every((o) => o.url.includes("p=" + pk)), (w.__sync || []).map((o) => o.url).slice(0, 2).join(" "));
+
+  // cloud-first boot: a profile that already has subs + history renders from the DB, not from the browser
+  const seeded = makeDom({
+    prefs: { sv_cfg: JSON.stringify({ engineUrl: "https://w.dev", autoplay: true, showRelated: true }) },
+    remote: {
+      history: [{ videoId: "tr000000001", title: "Trending One", author: "Chan A", authorId: UC1, lengthSeconds: 200 }],
+      likes: [],
+      watchlater: [],
+      playlists: [],
+      subs: [{ channelId: UC1, name: "Lofi Chill", avatar: "", addedAt: Date.now() }],
+      cfg: { autoplay: true, showRelated: true, zoom: "fill" },
+    },
+  });
+  const ws = seeded.window;
+  ws.console.error = () => {};
+  const scs = ws.document.createElement("script");
+  scs.textContent = app;
+  ws.document.body.appendChild(scs);
+  await wait(900);
+  check("cloud subs render on first paint", /Lofi Chill/.test(q(ws, ".sidebar").textContent), q(ws, ".sidebar").textContent.slice(0, 120));
+  check("cloud history is counted in the sidebar", /History[\s\S]{0,40}?1<\/span>|<span class="s-cnt">1<\/span>/.test(q(ws, ".sidebar").innerHTML), "no count badge");
+  check("cloud settings are applied", q(ws, ".vc") !== null);
+  check("no localStorage on a warm profile either", ws.__lsWrites === 0, ws.__lsWrites + " writes");
+
+  // caps: a profile with 400 history rows is cut to 300 on load, oldest dropped
+  const big = Array.from({ length: 400 }, (_, i) => ({ videoId: "h" + String(i).padStart(9, "0"), title: "H" + i, author: "A" }));
+  const domCap = makeDom({
+    prefs: { sv_cfg: JSON.stringify({ engineUrl: "https://w.dev" }) },
+    remote: { history: big, likes: [], watchlater: [], playlists: [], subs: [], cfg: {} },
+  });
+  const wc = domCap.window;
+  wc.console.error = () => {};
+  const scc = wc.document.createElement("script");
+  scc.textContent = app;
+  wc.document.body.appendChild(scc);
+  await wait(900);
+  const histBadge = all(wc, ".s-item").find((b) => /History/.test(b.textContent));
+  check("history is capped at 300 on load", /300/.test(histBadge.textContent), histBadge.textContent);
+
+  // cloud store down: the app still works, and it says so
+  const domDead = makeDom({ syncFail: true, prefs: { sv_cfg: JSON.stringify({ engineUrl: "https://w.dev" }) } });
+  const wd = domDead.window;
+  wd.console.error = () => {};
+  const scd = wd.document.createElement("script");
+  scd.textContent = app;
+  wd.document.body.appendChild(scd);
+  await wait(900);
+  check("store outage does not break the app", all(wd, ".vc").length === 2, all(wd, ".vc").length);
+  click(wd, all(wd, ".s-item").find((b) => /Settings/.test(b.textContent)));
+  await wait(400);
+  check("settings explains the outage", /Cloud off/.test(wd.document.body.textContent), wd.document.body.textContent.slice(0, 120));
+  check("settings shows the worker secrets to fix it", /LIBSQL_URL/.test(wd.document.body.textContent));
+  check("settings lists the cloud caps", /history · 300/.test(wd.document.body.textContent) && /expiry · none/.test(wd.document.body.textContent), wd.document.body.textContent.slice(0, 80));
+  check("settings shows a profile key", /Profile key/.test(wd.document.body.textContent));
+  check("settings offers export + restore", /Export JSON/.test(wd.document.body.textContent) && /Restore JSON/.test(wd.document.body.textContent));
 
   const failed = checks.filter((c) => !c.pass);
   checks.forEach((c) => console.log((c.pass ? "PASS  " : "FAIL  ") + c.n + (c.pass || !c.e ? "" : "  -> " + c.e)));
