@@ -21,7 +21,7 @@
  */
 
 // bump this when the worker changes, so /api/health tells you which code is live
-const BUILD = "7.7.0";
+const BUILD = "7.8.0";
 
 const INNERTUBE_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8";
 const UA = {
@@ -1075,7 +1075,7 @@ async function mirrorStream(videoId, mirrors, attempts = []) {
           quality: f.resolution || f.quality || "auto",
           height: parseInt(f.resolution || 0) || 0,
           mime: f.type || "video/mp4",
-          url: `/api/media?u=${encodeURIComponent(local(f.url))}&itag=${encodeURIComponent(f.itag)}`,
+          url: `/api/media?u=${encodeURIComponent(local(f.url))}&v=${encodeURIComponent(videoId)}&itag=${encodeURIComponent(f.itag)}`,
           kind: "muxed",
         })),
         attempts: [...attempts, `mirror ${base}: ok`],
@@ -1469,17 +1469,33 @@ function mirrorHosts(env) {
 
 // Re-resolve a stream URL when the signed one expired / got rejected mid-playback.
 async function refreshedUrl(videoId, itag, env) {
+  const pickOf = (formats) => {
+    const exact = (formats || []).find((f) => String(f.itag) === String(itag));
+    return exact || (formats || [])[0] || null;
+  };
   try {
     const fresh = await player(videoId, { env });
-    if (!fresh || !fresh.ok) return "";
-    const exact = fresh.formats.find((f) => String(f.itag) === String(itag));
-    const pick = exact || fresh.formats[0];
-    if (!pick) return "";
-    const raw = decodeURIComponent(pick.url.split("u=")[1].split("&")[0]);
-    return raw;
+    if (fresh && fresh.ok) {
+      const pick = pickOf(fresh.formats);
+      if (pick && pick.url) {
+        const raw = decodeURIComponent(pick.url.split("u=")[1].split("&")[0]);
+        if (raw) return raw;
+      }
+    }
   } catch {
-    return "";
+    /* fall through to the extractors */
   }
+  // last resort: a mirror can still hand out a working URL when InnerTube is blocked
+  try {
+    const m = await mirrorStream(videoId, emergencyMirrors(env), []);
+    if (m && m.ok) {
+      const pick = pickOf(m.formats);
+      if (pick && pick.url) return decodeURIComponent(pick.url.split("u=")[1].split("&")[0]) || pick.url;
+    }
+  } catch {
+    /* nothing left */
+  }
+  return "";
 }
 
 // ── direct .mp4 endpoint ──────────────────────────────────────────────────────
@@ -1540,31 +1556,89 @@ async function media(url, request, env = {}) {
     return h;
   };
 
+  const reqParams = new URL(request.url).searchParams;
+  // /api/media carries v= + itag=; the pretty routes carry them in the path/query
+  const pathId = (() => {
+    try {
+      const m = new URL(request.url).pathname.match(/^\/(?:api\/)?(?:file|mp4)\/([A-Za-z0-9_-]{6,15})\.mp4$/);
+      return m ? m[1] : "";
+    } catch {
+      return "";
+    }
+  })();
+  const videoId = reqParams.get("v") || reqParams.get("id") || pathId || "";
+  const itag = reqParams.get("itag") || "";
+  const grab = () => fetchRetry(target.toString(), { headers: buildHeaders(), redirect: "follow" }, { retries: 1, timeout: 25000 });
+  const swap = async () => {
+    if (!videoId) return false;
+    const next = await refreshedUrl(videoId, itag, env);
+    if (!next || next === target.toString()) return false;
+    try { target = new URL(next); } catch { return false; }
+    return true;
+  };
+
+  // an expired signature can be spotted before spending the request
+  const dead = (() => {
+    const e = Number(target.searchParams.get("expire") || 0);
+    return e > 0 && e * 1000 < Date.now() + 60000;
+  })();
+  let refreshed = dead && (await swap());
+
   let upstream = null;
   let lastStatus = 0;
   try {
-    upstream = await fetchRetry(target.toString(), { headers: buildHeaders(), redirect: "follow" }, { retries: 1, timeout: 25000 });
+    upstream = await grab();
     lastStatus = upstream.status;
   } catch (e) {
-    return err("upstream fetch failed: " + e.message, 502);
-  }
-
-  // expired / rejected signature → ask YouTube for a fresh URL, retry once
-  let refreshed = false;
-  if (upstream.status === 403 || upstream.status === 410 || upstream.status === 404) {
-    const reqParams = new URL(request.url).searchParams;
-    const videoId = reqParams.get("v") || "";
-    const itag = reqParams.get("itag") || "";
-    if (videoId) {
-      const next = await refreshedUrl(videoId, itag, env);
-      if (next && next !== target.toString()) {
+    // network hiccup: one more try after a short pause, then a fresh signature
+    try {
+      await sleep(300);
+      upstream = await grab();
+      lastStatus = upstream.status;
+    } catch {
+      if (await swap()) {
         try {
-          upstream = await fetchRetry(next, { headers: buildHeaders(), redirect: "follow" }, { retries: 1, timeout: 25000 });
+          upstream = await grab();
           lastStatus = upstream.status;
           refreshed = true;
         } catch {
-          /* keep original response below */
+          return err("upstream fetch failed: " + e.message, 502);
         }
+      } else {
+        return err("upstream fetch failed: " + e.message, 502);
+      }
+    }
+  }
+
+  // rejected / expired / gone → ask for a fresh URL and try again
+  if ([401, 403, 404, 410].includes(upstream.status)) {
+    if (!refreshed && (await swap())) {
+      try {
+        upstream = await grab();
+        lastStatus = upstream.status;
+        refreshed = true;
+      } catch {
+        /* keep the original response below */
+      }
+    }
+  }
+
+  // upstream broke (5xx / 429): back off once, then try a fresh signature
+  if (upstream.status >= 500 || upstream.status === 429) {
+    try {
+      await sleep(250);
+      upstream = await grab();
+      lastStatus = upstream.status;
+    } catch {
+      /* ignore */
+    }
+    if (upstream.status >= 500 && (await swap())) {
+      try {
+        upstream = await grab();
+        lastStatus = upstream.status;
+        refreshed = true;
+      } catch {
+        /* ignore */
       }
     }
   }
@@ -1578,6 +1652,7 @@ async function media(url, request, env = {}) {
   out.set("access-control-expose-headers", "content-length, content-range, accept-ranges");
   out.set("cache-control", "no-store");
   if (refreshed) out.set("x-sv-refreshed", "1");
+  out.set("x-sv-keepalive", "1");
 
   if (request.method === "HEAD") {
     try {
@@ -1935,6 +2010,7 @@ const ROUTE_LIST = [
   "/api/sync?p=KEY  (GET/POST/DELETE)",
   "/api/media?u=",
   "/mp4/{id}.mp4",
+  "/api/stream?id=&itag=",
 ];
 
 function landingPage(env) {
@@ -2333,6 +2409,12 @@ const ROUTES = [
           escalateOnBotCheck: true,
           canary: "/api/canary?n=3",
         },
+        keepPlaying: {
+          mediaSelfHeal: "expired/gone signature is re-resolved before and after the fetch",
+          upstreamRetries: "network error → retry, 5xx → backoff + fresh signature",
+          mirrorRefresh: "if InnerTube cannot re-resolve, mirrors hand out a fresh URL",
+          stableUrl: "/api/stream?id=&itag= — no signature, resolves on every request",
+        },
         store: {
           backend: "layerbase-libsql",
           configured: storeConfigured(env),
@@ -2471,6 +2553,13 @@ export default {
       // pretty direct-file endpoints: /mp4/<id>.mp4 and /api/file/<id>.mp4
       const mp4 = path.match(/^\/(?:api\/)?(?:file|mp4)\/([A-Za-z0-9_-]{6,15})\.mp4$/);
       if (mp4) return directMp4(mp4[1], request, env);
+      // stable stream URL: never carries a signature, re-resolves on every request.
+      // <video src="/api/stream?id=…&itag=18"> keeps working even after a URL expires.
+      if (path === "/api/stream") {
+        const id = url.searchParams.get("id") || "";
+        if (!id) return err("id required (or use /mp4/<id>.mp4)", 400);
+        return directMp4(id, request, env);
+      }
       for (const [route, handler] of ROUTES) {
         if (path === route) return json(await handler(url, env));
       }
@@ -2518,6 +2607,7 @@ export {
   mirrorStream,
   refreshedUrl,
   directMp4,
+  media,
   parseFeed,
   rss,
   resolveChannel,

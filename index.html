@@ -576,6 +576,13 @@ img{max-width:100%;display:block}
 .shorts-nav-btn{width:40px;height:34px;border-radius:10px;background:var(--bg3);color:var(--t1);font-size:12px}
 .shorts-nav-btn:disabled{opacity:.35;cursor:default}
 
+/* ── "never stops" recovery pill ── */
+.cp-recover{position:absolute;top:64px;left:50%;transform:translateX(-50%);z-index:7;display:flex;align-items:center;gap:8px;
+  padding:7px 14px;border-radius:999px;background:rgba(15,15,15,.86);border:1px solid #3a3a3a;color:#e8e8e8;font-size:12.5px;
+  backdrop-filter:blur(6px);pointer-events:none;animation:cp-fade .18s ease}
+.cp-recover-dot{width:8px;height:8px;border-radius:50%;background:#3ea6ff;animation:cp-pulse 1s infinite ease-in-out}
+@keyframes cp-pulse{0%,100%{opacity:.35;transform:scale(.85)}50%{opacity:1;transform:scale(1.1)}}
+
 /* ── ShortsFire (second site, embedded inside Shorts) ── */
 .sf-seg{display:flex;gap:4px;background:var(--bg3);padding:3px;border-radius:999px;margin-left:12px}
 .sf-seg-btn{padding:5px 12px;border-radius:999px;font-size:12.5px;font-weight:500;color:var(--t2);white-space:nowrap}
@@ -688,6 +695,8 @@ const DEFAULT_CFG = {
   pitch: true,
   region: "IN",
   shortsfireUrl: "https://yt.sanjeettiwari205.workers.dev/",
+  endless: true,          // video khatam → next → trending → wahi video loop
+  autoRecover: true,      // stall/error par khud theek karo, user ko tang na karo
 };
 
 // player: 3× top speed, and the fit/zoom presets YouTube offers
@@ -1325,10 +1334,14 @@ const ZOOM_MODES = [
   { k: "2", l: "Zoom 200%" },
 ];
 
+/* Recovery memory lives outside the component: a refresh re-mounts the player,
+   and the ladder must continue where it left off (stage, quality, position). */
+const REC = { id: "", stage: 0, stable: false, qi: 0, at: 0 };
+
 function CPlayer({ video, formats, st, onNext, poster, onRefresh }) {
   const wrapRef = useRef(null), vidRef = useRef(null), hideT = useRef(null);
   const tapT = useRef(null), tapAt = useRef(0);
-  const [qi, setQi] = useState(0);
+  const [qi, setQi] = useState(REC.id && video && REC.id === video.videoId ? REC.qi || 0 : 0);
   const [playing, setPlaying] = useState(false);
   const [time, setTime] = useState(0), [dur, setDur] = useState(0), [buf, setBuf] = useState(0);
   const [vol, setVol] = useState(st.cfg.volume ?? 1), [muted, setMuted] = useState(!!st.cfg.muted);
@@ -1339,14 +1352,22 @@ function CPlayer({ video, formats, st, onNext, poster, onRefresh }) {
   const [pitch, setPitch] = useState(st.cfg.pitch !== false);
   const [waiting, setWaiting] = useState(true), [err, setErr] = useState(""), [flash, setFlash] = useState(null);
   const [skipFx, setSkipFx] = useState(null);
-  const pendingSeek = useRef(null);
+  const [recovering, setRecovering] = useState("");   // visible "self-healing" state
+  const [stable, setStable] = useState(REC.id && video && REC.id === video.videoId ? !!REC.stable : false);
+  const rec = useRef({ stage: REC.id && video && REC.id === video.videoId ? REC.stage || 0 : 0 });
+  const tick = useRef({ t: 0, at: Date.now() });
+  const lastEsc = useRef(0);
+  const pendingSeek = useRef(REC.id && video && REC.id === video.videoId && REC.at > 0 ? REC.at : null);
   const refreshTries = useRef(0);
   const firstRender = useRef(true);
   const barRef = useRef(null);
 
   const list = formats && formats.length ? formats : [];
   const cur = list[Math.min(qi, list.length - 1)];
-  const src = cur ? mediaUrl(st.cfg, cur.url) : "";
+  const stableSrc = stable && video && video.videoId && baseOf(st.cfg)
+    ? `${baseOf(st.cfg)}/mp4/${video.videoId}.mp4${cur ? "?itag=" + cur.itag : ""}`
+    : "";
+  const src = stableSrc || (cur ? mediaUrl(st.cfg, cur.url) : "");
 
   useEffect(() => {
     if (firstRender.current) { firstRender.current = false; return; }
@@ -1355,6 +1376,17 @@ function CPlayer({ video, formats, st, onNext, poster, onRefresh }) {
     pendingSeek.current = el.currentTime || 0;
     setWaiting(true);
   }, [qi]);
+
+  useEffect(() => { REC.qi = qi; }, [qi]);
+
+  // a new video starts a new ladder; a re-mount (refresh) continues the old one
+  useEffect(() => {
+    const id = (video && video.videoId) || "";
+    if (REC.id === id) return;
+    REC.id = id; REC.stage = 0; REC.stable = false; REC.qi = 0; REC.at = 0;
+    rec.current.stage = 0;
+    setStable(false);
+  }, [video && video.videoId]);
 
   useEffect(() => {
     const el = vidRef.current;
@@ -1524,6 +1556,105 @@ function CPlayer({ video, formats, st, onNext, poster, onRefresh }) {
     if (c.code === 3) return "Stream decode error";
     return "Playback error (" + c.code + ")";
   };
+
+  /* ── the "never stops" ladder ──────────────────────────────────────────────
+     A stall or a dead signature walks through four self-heals before the UI is
+     allowed to show an error. Position is carried across every step.
+       0 → nudge the element (reload same URL, keep position)
+       1 → drop to the next (lower) quality
+       2 → ask the page to re-resolve the whole video (fresh signed URLs)
+       3 → switch to /mp4/<id>.mp4?itag= — no signature, resolves per request
+       4 → only now: show the error panel                                  */
+  const escalate = useCallback((why) => {
+    if (st.cfg.autoRecover === false) { setErr(fmtErr(vidRef.current)); setWaiting(false); return; }
+    const el = vidRef.current;
+    const at = (el && el.currentTime) || 0;
+    const stage = rec.current.stage;
+    rec.current.stage = stage + 1;
+    REC.stage = rec.current.stage;
+    REC.at = at;
+    pendingSeek.current = at;
+    if (stage === 0) {
+      setRecovering("Reconnecting…");
+      try { if (el) el.load(); } catch {}
+      return;
+    }
+    if (stage === 1 && list.length > 1 && qi < list.length - 1) {
+      setRecovering("Lower quality…");
+      setQi((i) => Math.min(i + 1, list.length - 1));
+      return;
+    }
+    if (stage === 2 && onRefresh) {
+      setRecovering("Fresh stream…");
+      refreshTries.current += 1;
+      onRefresh();
+      return;
+    }
+    if (stage === 3 && video && video.videoId && baseOf(st.cfg)) {
+      setRecovering("Stable stream…");
+      REC.stable = true;
+      setStable(true);
+      return;
+    }
+    setRecovering("");
+    setErr(fmtErr(vidRef.current) || "Stream ruk gaya");
+    setWaiting(false);
+  }, [list.length, qi, onRefresh, video, st.cfg]);
+
+  // stall watchdog: no progress while playing for ~9s = escalate (once per stall)
+  useEffect(() => {
+    const iv = setInterval(() => {
+      const el = vidRef.current;
+      if (!el) return;
+      const now = Date.now();
+      if (el.paused || el.ended) { tick.current = { t: el.currentTime || 0, at: now }; return; }
+      if ((el.currentTime || 0) > tick.current.t + 0.3) {
+        tick.current = { t: el.currentTime, at: now };
+        if (rec.current.stage) { rec.current.stage = 0; setRecovering(""); }
+        return;
+      }
+      if (now - tick.current.at > 9000 && now - lastEsc.current > 14000) {
+        lastEsc.current = now;
+        tick.current.at = now;
+        escalate("stall");
+      }
+    }, 2000);
+    return () => clearInterval(iv);
+  }, [escalate]);
+
+  // back online / back on the tab → pick the stream back up by itself
+  useEffect(() => {
+    const resume = () => {
+      const el = vidRef.current;
+      if (!el) return;
+      if (err) { rec.current.stage = Math.min(rec.current.stage, 1); escalate("reconnect"); return; }
+      if (el.paused && !el.ended && st.cfg.autoplay) { const pr = el.play(); if (pr && pr.catch) pr.catch(() => {}); }
+    };
+    const onVis = () => { if (!document.hidden) resume(); };
+    window.addEventListener("online", resume);
+    document.addEventListener("visibilitychange", onVis);
+    return () => { window.removeEventListener("online", resume); document.removeEventListener("visibilitychange", onVis); };
+  }, [err, escalate, st.cfg.autoplay]);
+
+  // a stalled element that never fires 'playing' still gets caught
+  useEffect(() => {
+    const el = vidRef.current;
+    if (!el) return;
+    const onStall = () => {
+      tick.current = { t: el.currentTime || 0, at: Date.now() };
+      const t = setTimeout(() => {
+        if (!vidRef.current) return;
+        if (el.paused || el.ended) return;
+        if ((el.currentTime || 0) <= tick.current.t + 0.3) escalate("stalled");
+      }, 9000);
+      return t;
+    };
+    let timer = null;
+    const h = () => { clearTimeout(timer); timer = onStall(); };
+    el.addEventListener("stalled", h);
+    el.addEventListener("waiting", h);
+    return () => { clearTimeout(timer); el.removeEventListener("stalled", h); el.removeEventListener("waiting", h); };
+  }, [escalate, src]);
   const hideUI = !ui && playing && !menu;
 
   return (
@@ -1541,24 +1672,32 @@ function CPlayer({ video, formats, st, onNext, poster, onRefresh }) {
           setDur(e.currentTarget.duration || 0);
           setTime(e.currentTarget.currentTime || 0);
           setWaiting(false);
-          if (pendingSeek.current != null) { e.currentTarget.currentTime = pendingSeek.current; pendingSeek.current = null; }
+          if (pendingSeek.current != null) { try { e.currentTarget.currentTime = pendingSeek.current; } catch {} pendingSeek.current = null; }
           if (st.cfg.autoplay) { const p = e.currentTarget.play(); if (p && p.catch) p.catch(() => {}); }
         }}
         onProgress={(e) => { const b = e.currentTarget.buffered; if (b.length) setBuf(b.end(b.length - 1)); }}
         onWaiting={() => setWaiting(true)}
-        onPlaying={() => { setWaiting(false); setErr(""); }}
+        onPlaying={() => {
+          setWaiting(false); setErr(""); setRecovering("");
+          rec.current.stage = 0; REC.stage = 0; REC.at = 0;
+          tick.current = { t: vidRef.current?.currentTime || 0, at: Date.now() };
+        }}
         onCanPlay={() => setWaiting(false)}
-        onEnded={() => { setPlaying(false); if (st.cfg.autoplay && onNext) onNext(); }}
-        onError={(e) => {
-          if (onRefresh && refreshTries.current < 2) {
-            refreshTries.current += 1;
-            pendingSeek.current = vidRef.current?.currentTime || 0;
-            setWaiting(true); setErr("");
-            onRefresh();
-            return;
+        onEnded={() => {
+          setPlaying(false);
+          if (!st.cfg.autoplay) return;
+          if (onNext) { onNext(); return; }
+          // nothing left to play → loop this one instead of stopping dead
+          if (st.cfg.endless !== false) {
+            const el = vidRef.current;
+            if (el) { try { el.currentTime = 0; const pr = el.play(); if (pr && pr.catch) pr.catch(() => {}); } catch {} }
           }
-          setErr(fmtErr(e.currentTarget));
-          setWaiting(false);
+        }}
+        onError={() => {
+          // a dead stream is a ladder, not an error: nudge → quality → refresh → stable URL
+          pendingSeek.current = vidRef.current?.currentTime || pendingSeek.current || 0;
+          setWaiting(true); setErr("");
+          escalate("error");
         }}
       />
 
@@ -1592,6 +1731,13 @@ function CPlayer({ video, formats, st, onNext, poster, onRefresh }) {
       </div>
 
       {waiting && !err && <div className="cp-big"><div className="cp-spin" /></div>}
+
+      {recovering && (
+        <div className="cp-recover" role="status">
+          <span className="cp-recover-dot" />
+          <span>{recovering} <span style={{ opacity: 0.6 }}>auto-fix</span></span>
+        </div>
+      )}
 
       {!playing && !waiting && !err && (
         <div className="cp-big">
@@ -2489,6 +2635,25 @@ function SearchPage({ query, onPlay, st, engine, onChannel }) {
 /* ════════════════════════════════════════════════════════════════════════════
    WATCH
    ════════════════════════════════════════════════════════════════════════════ */
+/* Resolved streams are reused for a few minutes: going back to a video, or the
+   next video looping around, starts instantly instead of re-resolving (and a
+   fresh resolve is exactly the moment a bot-check can bite). */
+const STREAM_TTL = 6 * 60 * 1000;
+const STREAM_CACHE = new Map();
+const streamKey = (cfg, id) => baseOf(cfg) + "|" + id;
+const streamCached = (cfg, id) => {
+  const hit = STREAM_CACHE.get(streamKey(cfg, id));
+  if (!hit) return null;
+  if (Date.now() - hit.at > STREAM_TTL) { STREAM_CACHE.delete(streamKey(cfg, id)); return null; }
+  return hit.data;
+};
+const streamRemember = (cfg, data) => {
+  const id = data && data.video && data.video.videoId;
+  if (!id || !data.ok) return;
+  if (STREAM_CACHE.size > 40) STREAM_CACHE.delete(STREAM_CACHE.keys().next().value);
+  STREAM_CACHE.set(streamKey(cfg, id), { at: Date.now(), data });
+};
+
 function WatchPage({ video, onPlay, st, engine, onChannel, onAddSub }) {
   const [stream, setStream] = useState(null);
   const [status, setStatus] = useState("loading");
@@ -2498,11 +2663,16 @@ function WatchPage({ video, onPlay, st, engine, onChannel, onAddSub }) {
   const [attempt, setAttempt] = useState(0);
   const [diag, setDiag] = useState(null);   // worker's {reason, reasonLabel, hint, needAuth, attempts}
   const [showWhy, setShowWhy] = useState(false);
+  const [fallback, setFallback] = useState([]);   // endless play: recommendations dead → trending
 
   useEffect(() => {
     let dead = false;
     setStatus("loading"); setErr(""); setStream(null); setDiag(null); setShowWhy(false);
     if (engine !== "ok") { setStatus("error"); setErr("engine-offline"); return; }
+    // a cached stream is exactly what just died — a manual/ladder retry must bypass it
+    if (attempt > 0) STREAM_CACHE.delete(streamKey(st.cfg, video.videoId));
+    const warm = attempt > 0 ? null : streamCached(st.cfg, video.videoId);
+    if (warm) { setStream(warm); setStatus("ready"); return () => { dead = true; }; }
     apiPlayer(st.cfg, video.videoId)
       .then((d) => {
         if (dead) return;
@@ -2512,6 +2682,7 @@ function WatchPage({ video, onPlay, st, engine, onChannel, onAddSub }) {
           setErr((d && (d.error || (d.attempts || []).slice(-3).join(" · "))) || "koi playable stream nahi mila");
           return;
         }
+        streamRemember(st.cfg, d);
         setStream(d); setStatus("ready");
       })
       .catch((e) => { if (!dead) { setStatus("error"); setErr(e.message); } });
@@ -2524,6 +2695,17 @@ function WatchPage({ video, onPlay, st, engine, onChannel, onAddSub }) {
     if (engine === "ok") recommendFor(st.cfg, video, st).then((d) => !dead && setRel(d.items || [])).catch(() => {});
     return () => { dead = true; };
   }, [video.videoId, engine, st.cfg.engineUrl]);
+
+  // endless play: a safety queue so "video khatam" never means "app ruk gaya"
+  useEffect(() => {
+    let dead = false;
+    setFallback([]);
+    if (engine !== "ok" || st.cfg.endless === false) return;
+    apiTrending(st.cfg, st.cfg.region)
+      .then((d) => { if (!dead) setFallback((d.items || []).filter((v) => v.videoId !== video.videoId)); })
+      .catch(() => {});
+    return () => { dead = true; };
+  }, [video.videoId, engine, st.cfg.engineUrl, st.cfg.region, st.cfg.endless]);
 
   const meta = useMemo(() => {
     const m = { ...video };
@@ -2550,10 +2732,26 @@ function WatchPage({ video, onPlay, st, engine, onChannel, onAddSub }) {
     }
   }, [status]);
 
+  // after 12s of watching, quietly resolve the next video so the hand-off is instant
+  useEffect(() => {
+    if (status !== "ready" || st.cfg.endless === false) return;
+    const upcoming = rel.find((v) => v.videoId !== video.videoId) || fallback.find((v) => v.videoId !== video.videoId);
+    if (!upcoming || streamCached(st.cfg, upcoming.videoId)) return;
+    const t = setTimeout(() => {
+      apiPlayer(st.cfg, upcoming.videoId)
+        .then((d) => { if (d && d.ok) streamRemember(st.cfg, d); })
+        .catch(() => {});
+    }, 12000);
+    return () => clearTimeout(t);
+  }, [status, rel, fallback, video.videoId, engine, st.cfg.engineUrl]);
+
   const nextVideo = useCallback(() => {
-    const n = rel.find((v) => v.videoId !== video.videoId);
-    if (n) onPlay(n);
-  }, [rel, video.videoId, onPlay]);
+    const n =
+      rel.find((v) => v.videoId !== video.videoId) ||
+      fallback.find((v) => v.videoId !== video.videoId);
+    if (n) { onPlay(n); return true; }
+    return false;
+  }, [rel, fallback, video.videoId, onPlay]);
 
   const share = async () => {
     const url = YTW(video.videoId);
@@ -2626,7 +2824,8 @@ function WatchPage({ video, onPlay, st, engine, onChannel, onAddSub }) {
             </div>
           )}
           {status === "ready" && stream && (
-            <CPlayer video={meta} formats={stream.formats} st={st} onNext={rel.length ? nextVideo : null}
+            <CPlayer video={meta} formats={stream.formats} st={st}
+              onNext={(rel.length || fallback.length || st.cfg.endless !== false) ? nextVideo : null}
               poster={meta.thumbnail || YTT(video.videoId, "hqdefault")} onRefresh={() => setAttempt((a) => a + 1)} />
           )}
         </div>
@@ -3019,10 +3218,10 @@ function SetPage({ st, engine, onCheck, onAddSub }) {
 
       <div className="set-blk">
         <div className="set-blk-title">⚡ Playback</div>
-        {[["Autoplay", "Video khulte hi play + next auto", "autoplay"], ["Show related videos", "Watch page par Up next + recommendations", "showRelated"], ["Theater mode", "Player ko wide karein", "theater"], ["Preserve pitch", "Speed badhne par awaaz natural rahe (varispeed off)", "pitch"]].map(([l, s, k]) => (
-          <div key={k} className="tog-row" onClick={() => upd({ [k]: k === "pitch" ? !(st.cfg.pitch !== false) : !st.cfg[k] })}>
+        {[["Autoplay", "Video khulte hi play + next auto", "autoplay"], ["Endless play", "Recommendations khatam ho to trending se agla — warna wahi video loop", "endless"], ["Auto-recover", "Stream atke ya URL expire ho to player khud theek kare (4 steps)", "autoRecover"], ["Show related videos", "Watch page par Up next + recommendations", "showRelated"], ["Theater mode", "Player ko wide karein", "theater"], ["Preserve pitch", "Speed badhne par awaaz natural rahe (varispeed off)", "pitch"]].map(([l, s, k]) => (
+          <div key={k} className="tog-row" onClick={() => upd({ [k]: k === "pitch" || k === "endless" || k === "autoRecover" ? !(st.cfg[k] !== false) : !st.cfg[k] })}>
             <div><div className="tog-lbl">{l}</div><div className="tog-sub">{s}</div></div>
-            <div className={"toggle" + ((k === "pitch" ? st.cfg.pitch !== false : st.cfg[k]) ? " on" : "")}><div className="tok" /></div>
+            <div className={"toggle" + ((k === "pitch" || k === "endless" || k === "autoRecover" ? st.cfg[k] !== false : st.cfg[k]) ? " on" : "")}><div className="tok" /></div>
           </div>
         ))}
 
@@ -3080,14 +3279,14 @@ function SetPage({ st, engine, onCheck, onAddSub }) {
 
       <div className="set-blk">
         <div className="set-blk-title">🔒 Privacy</div>
-        {[["Custom player", "YouTube iframe/embed load nahi hota — sirf <video>."], ["No API key, no login", "Channel feeds + InnerTube, sab bina account."], ["Zero localStorage", "Kuch bhi browser ke localStorage me nahi — sab Layerbase DB me."], ["Your data, your key", "Profile key cookie me; koi tracking, koi third-party analytics."]].map(([t, d]) => (
+        {[["Custom player", "YouTube iframe/embed load nahi hota — sirf <video>."], ["No API key, no login", "Channel feeds + InnerTube, sab bina account."], ["Zero localStorage", "Kuch bhi browser ke localStorage me nahi — sab Layerbase DB me."], ["Kabhi rukta nahi", "Stall/expired URL par player 4 step me khud theek hota hai; end par endless play."], ["Your data, your key", "Profile key cookie me; koi tracking, koi third-party analytics."]].map(([t, d]) => (
           <div key={t} className="priv-item"><span className="priv-ico">✓</span><div><div className="priv-name">{t}</div><div className="priv-sub">{d}</div></div></div>
         ))}
         <button className="danger-btn" onClick={() => window.confirm("Watch history clear karein?") && st.clrHist()}>Clear watch history</button>
       </div>
 
       <div style={{ textAlign: "center", padding: "16px 0", fontSize: 13, color: "var(--t3)" }}>
-        StreamVoid v7.7 · Layerbase cloud store · capped lists, no TTL · channel-feed subscriptions · custom player · Made for India 🇮🇳
+        StreamVoid v7.8 · never-stops player · Layerbase cloud store · capped lists, no TTL · channel-feed subscriptions · custom player · Made for India 🇮🇳
       </div>
     </div>
   );

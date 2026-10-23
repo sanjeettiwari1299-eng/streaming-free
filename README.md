@@ -3,6 +3,7 @@
 `index.html` (whole app, one file) + `worker.js` (Cloudflare Worker, free tier).
 **No API key. No Google login. No Piped/Invidious. No server/VPS. No YouTube iframe. No localStorage.**
 Search · Trending · **Shorts** (+ **ShortsFire** embed) · **RSS subscriptions** · watch page · hand-built player.
+Self-healing playback: **video kabhi band na ho** — 5-step player recovery, proxy re-signing, endless play.
 
 ---
 
@@ -147,6 +148,47 @@ https://<worker>/mp4/dQw4w9WgXcQ.mp4              → inline video/mp4 (works in
 https://<worker>/mp4/dQw4w9WgXcQ.mp4?dl=1         → attachment download
 https://<worker>/mp4/dQw4w9WgXcQ.mp4?itag=18      → pick a specific quality
 ```
+
+---
+
+## Video kabhi band na ho — the self-healing stream
+
+"A one-off fix" is not a thing here; every layer that can die has a next step that does not need you.
+
+### Player ladder (browser)
+
+A stall or a dead signature is not an error, it is a queue of remedies. Position is carried through all of them.
+
+| # | What happens | Why it works |
+| --- | --- | --- |
+| 0 | *Reconnecting…* — reload the element at the same position | the buffer hiccuped, not the URL |
+| 1 | *Lower quality…* — next format down | the current track is too heavy / codec refused |
+| 2 | *Fresh stream…* — re-resolve `/api/player` | the signed URL expired mid-playback |
+| 3 | *Stable stream…* — switch to `/mp4/<id>.mp4?itag=` | this URL carries **no signature**, the worker resolves on every request |
+| 4 | honest error panel with Retry / Open on YouTube | only after four remedies failed |
+
+- **Watchdog:** no `currentTime` progress for ~9s while playing → the ladder runs. `stalled`/`waiting` start the same clock, and one escalation per 14s max, so it never fights the buffer.
+- **Memory survives the remount:** stage, chosen quality and playback position live outside the component (`REC`), so step 2's re-resolve does not silently restart the ladder at 0.
+- **Online / tab-back:** `online` or a visible tab resumes by itself (`autoRecover`).
+- **Instant hand-off:** after 12s of watching, the next video is resolved in the background; a resolved stream is cached 6 minutes, so going back to a video — or looping — starts immediately. A retry *always* bypasses that cache, because the cached URL is what just died.
+
+### Proxy ladder (worker)
+
+`/api/media` and the pretty routes repair themselves before the browser sees anything:
+
+- **Expired signature is detected before the request** (`expire=` in the past) → re-resolve first, no wasted fetch.
+- **401 / 403 / 404 / 410** → fresh signature from `/api/player`, retried once (`x-sv-refreshed: 1`).
+- **5xx / 429** → 250ms backoff, retry, then one fresh signature.
+- **Network reset** → retry, then a fresh signature.
+- **InnerTube blocked entirely** → `refreshedUrl()` falls back to the mirror extractors for a working URL.
+- **Range headers survive every retry**, so seeking keeps working after a repair.
+- **`/api/stream?id=&itag=`** is the signature-free URL: no expiry, resolves per request, ideal for shaky networks or long pauses.
+
+### Endless play (never a dead end)
+
+`Ended` → next recommendation → if recommendations are empty, **trending** → if that fails too, **the same video loops**. Both `Endless play` and `Auto-recover` are switches in Settings (on by default), so you can turn the chattiness off.
+
+**Honest limit:** if YouTube bot-checks the worker's IP for a specific video, no client-side ladder can conjure a stream — that needs `YT_COOKIES`/`PO_TOKEN` (see the secrets cheat-sheet). What the ladder guarantees is that a *transient* failure (buffer, expiry, 5xx, network blip, one bad quality) never reaches you as "video stopped".
 
 ---
 
@@ -563,6 +605,8 @@ tests/           regression suites (worker: node tests/smoke.mjs etc; UI: see be
 node tests/smoke.mjs      # worker core: decipher, list calls, breakers, media, routes
 node tests/rsstest.mjs    # feeds: parsing, merge/dedupe/sort, resolveChannel, /api/rss + /api/channel
 node tests/mptest.mjs     # /mp4 endpoint: Range/206, HEAD, content-type, ?itag, ?dl
+node tests/keeptest.mjs   # 33 checks: expired/403/410/5xx/network self-heal, Range survival,
+                          # mirror refresh fallback, /api/stream, /mp4, health guarantees
 node tests/synctest.mjs   # 63 checks: Layerbase libSQL pipeline against a real SQLite, every cap, trim,
                           # edge-snapshot fallback, import/export, profile isolation, cron heartbeat
 node tests/brahmatest.mjs # 39 checks: failure classification, bot-check escalation, cookies pass,
