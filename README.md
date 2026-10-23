@@ -39,7 +39,8 @@ Playback stays 100% custom: a plain `<video>` element with our own YouTube-style
 | Route | Purpose |
 | --- | --- |
 | `GET /` | status page: worker running, links to every route (`?format=json` for machines). Never a 404 |
-| `GET /api/health` | connection check, discovered client versions, cookie state |
+| `GET /api/health` | connection check, **`build`** (which worker version is live), discovered client versions, cookie state |
+| `GET /api/probe?q=&endpoint=search\|browse` | debug aid: per-client top-level keys, renderer histogram, parsed count, capped raw sample — use it when YouTube changes shape |
 | `GET /api/debug` | full client ladder + version sources (`?refresh=1` re-discovers) |
 | `GET /api/selftest?id=` | end-to-end check: which pass/client worked, ms, breaker state |
 | `GET /api/search?q=` | InnerTube `search` → normalized video list (+ continuation token) |
@@ -57,6 +58,13 @@ Playback stays 100% custom: a plain `<video>` element with our own YouTube-style
 Unknown paths return a JSON 404 that tells you *what* you asked for and lists every valid route
 (`{error:"not found", detail:{path, routes, hint, didYouMean}}`). A trailing slash is tolerated
 (`/api/health/` works), and `/favicon.ico` is a quiet 204.
+
+**Parsing is shape-tolerant.** YouTube keeps moving list data between renderers. `normalizeList()` reads every
+renderer it knows (`videoRenderer`, `compactVideoRenderer`, `gridVideoRenderer`, `playlistVideoRenderer`,
+`videoWithContextRenderer`) **and** the 2025/26 `lockupViewModel`, then — if none match — falls back to a
+generic scan that finds any object carrying a plausible 11-char video id and rebuilds the item from the strings
+and thumbnails in that subtree. Bad id → dropped; duplicates → merged. If lists ever come back empty again,
+`/api/probe` prints what shape YouTube is serving so it can be taught in one line.
 
 Signature handling: if a format comes back as `signatureCipher`, the worker fetches the video's `base.js`,
 extracts the sig and `n` transform functions and applies them (`buildDecipher`). Plain `url` formats skip all of that.

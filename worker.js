@@ -20,6 +20,9 @@
  * No Piped, no Invidious, no API key, no VM.
  */
 
+// bump this when the worker changes, so /api/health tells you which code is live
+const BUILD = "7.4.0";
+
 const INNERTUBE_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8";
 const UA = {
   web: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
@@ -1765,6 +1768,7 @@ p{margin:8px 0}
   <div class="card">
     <h2>Status</h2>
     <div class="badges">
+      <span class="b ok">build ${BUILD}</span>
       <span class="b ok">engine: innertube</span>
       <span class="b ${cookies ? "ok" : ""}">cookies: ${cookies ? "configured" : "not set"}</span>
       <span class="b ${keyed ? "ok" : ""}">SV_KEY: ${keyed ? "set (cookies need ?key=)" : "not set"}</span>
@@ -1810,6 +1814,7 @@ const ROUTES = [
       const cookies = env && env.YT_COOKIES ? parseCookies(env.YT_COOKIES) : "";
       return {
         ok: true,
+        build: BUILD,
         service: "streamvoid-worker",
         engine: "innertube",
         clients: CLIENT_SPECS.map((c) => c.id),
@@ -1906,7 +1911,7 @@ export default {
         // human-friendly status page; ?format=json / Accept: application/json for machines
         const wantJson = url.searchParams.get("format") === "json" || /application\/json/.test(request.headers.get("accept") || "");
         if (wantJson) {
-          return json({ ok: true, service: "streamvoid-worker", routes: ROUTE_LIST, health: "/api/health" });
+          return json({ ok: true, build: BUILD, service: "streamvoid-worker", routes: ROUTE_LIST, health: "/api/health" });
         }
         return new Response(landingPage(env), {
           status: 200,

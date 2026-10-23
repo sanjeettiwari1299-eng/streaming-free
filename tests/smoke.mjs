@@ -177,6 +177,7 @@ check("media allowlist", badHost.status === 400, badHost.status);
 /* routes */
 const h = await (await W.default.fetch(new Request("https://w.dev/api/health"), {})).json();
 check("health ok + resilience", h.ok === true && !!h.resilience, JSON.stringify(h.resilience || {}).slice(0, 60));
+check("health reports a build stamp", /^\d+\.\d+\.\d+$/.test(h.build || ""), h.build);
 const st = await (await W.default.fetch(new Request("https://w.dev/api/selftest?id=happyVid001"), {})).json();
 check("selftest ok", st.ok === true && typeof st.ms === "number", JSON.stringify(st).slice(0, 80));
 const mp4 = await W.default.fetch(new Request("https://w.dev/mp4/happyVid001.mp4", { headers: { Range: "bytes=0-4" } }), {});
