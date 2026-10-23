@@ -151,6 +151,59 @@ const check = (n, c, e) => checks.push({ n, pass: !!c, e });
   check("sub persisted", JSON.parse(w.localStorage.getItem("sv_subs") || "[]").length === 1);
   check("sidebar lists channel", /Resolved Chan/.test(q(w, ".sidebar").textContent));
 
+  /* ══ 2. player: 3× speed, pitch, zoom ═══════════════════════════════════ */
+  check("recommender asks RSS for watched channels", w.__calls.some((u) => /\/api\/rss\?channels=/.test(u)), w.__calls.filter((u) => /rss/.test(u)).slice(0, 2).join(" "));
+  const reasons = all(w, ".vc-reason").map((x) => x.textContent);
+  check("up-next cards explain why", reasons.length > 0, reasons.slice(0, 3).join(" | "));
+  check("reasons are specific, not generic", reasons.every((r) => /Because you watch|More from|From a channel you follow|Trending now|Related to this video/.test(r)), reasons.slice(0, 3).join(" | "));
+  check("affinity feed surfaced", reasons.some((r) => /Because you watch|More from/.test(r)), reasons.join(" | "));
+  check("up next excludes the current video", all(w, ".vc .vc-title").every((t) => t.textContent !== "Resolved Title"));
+
+  const gear = all(w, ".cp-btn").find((b) => b.getAttribute("title") === "Settings");
+  click(w, gear);
+  await wait(120);
+  check("speed menu offers 10 steps", all(w, ".cp-speed").length === 10, all(w, ".cp-speed").length);
+  check("3× speed option exists", all(w, ".cp-speed").some((b) => b.textContent === "3×"));
+
+  click(w, all(w, ".cp-speed").find((b) => b.textContent === "2.5×"));
+  await wait(150);
+  check("playbackRate applied", q(w, "video").playbackRate === 2.5, q(w, "video").playbackRate);
+  check("speed badge shown", /2\.5×/.test((q(w, ".cp-rate-badge") || {}).textContent || ""), (q(w, ".cp-rate-badge") || {}).textContent);
+  check("rate persisted", JSON.parse(w.localStorage.getItem("sv_cfg") || "{}").rate === 2.5, w.localStorage.getItem("sv_cfg"));
+
+  const pitchBtn = all(w, ".cp-mi").find((b) => /Preserve pitch|Varispeed/.test(b.textContent));
+  check("pitch control present", !!pitchBtn);
+  check("pitch preserved by default", q(w, "video").preservesPitch !== false);
+  click(w, pitchBtn);
+  await wait(120);
+  check("varispeed disables pitch preserve", q(w, "video").preservesPitch === false);
+  check("pitch persisted", JSON.parse(w.localStorage.getItem("sv_cfg") || "{}").pitch === false);
+
+  click(w, all(w, ".cp-mi").find((b) => b.textContent === "Fill (crop)"));
+  await wait(120);
+  check("fill mode crops to the frame", q(w, "video").style.objectFit === "cover");
+  check("fill badge shown", /Fill/.test((q(w, ".cp-zoom-badge") || {}).textContent || ""));
+  click(w, all(w, ".cp-mi").find((b) => b.textContent === "Fit to screen"));
+  await wait(120);
+  check("fit mode restores contain", q(w, "video").style.objectFit === "contain");
+
+  const zoomBtn = all(w, ".cp-btn").find((b) => /^Zoom:/.test(b.getAttribute("title") || ""));
+  click(w, zoomBtn);
+  await wait(120);
+  check("quick zoom button enters Fill", q(w, "video").style.objectFit === "cover", q(w, "video").style.objectFit);
+  click(w, zoomBtn);
+  click(w, zoomBtn);
+  await wait(120);
+  check("zoom presets scale the frame", /scale\(1\.5\)/.test(q(w, "video").style.transform || ""), q(w, "video").style.transform);
+  check("zoom persisted", JSON.parse(w.localStorage.getItem("sv_cfg") || "{}").zoom === "1.5", w.localStorage.getItem("sv_cfg"));
+
+  w.dispatchEvent(new w.KeyboardEvent("keydown", { key: ">", bubbles: true }));
+  await wait(120);
+  check("keyboard > raises speed", q(w, "video").playbackRate >= 3, q(w, "video").playbackRate);
+  w.dispatchEvent(new w.KeyboardEvent("keydown", { key: "m", bubbles: true }));
+  await wait(120);
+  check("keyboard m mutes", q(w, "video").muted === true);
+
   /* ══ 2. subscriptions page renders RSS ═══════════════════════════════════ */
   const subsNav = all(w, ".s-item").find((b) => /Subscriptions/.test(b.textContent));
   click(w, subsNav);
@@ -187,6 +240,12 @@ const check = (n, c, e) => checks.push({ n, pass: !!c, e });
   click(w, all(w, ".s-item").find((b) => /Settings/.test(b.textContent)));
   await wait(400);
   check("settings lists both subs", all(w, ".sub-row").length === 2, all(w, ".sub-row").length);
+  check("settings has speed chips to 3×", all(w, ".set-chip").some((b) => b.textContent === "3×"), all(w, ".set-chip").map((b) => b.textContent).slice(0, 6).join(","));
+  check("settings has zoom chips", all(w, ".set-chip").some((b) => /Fill \(crop\)/.test(b.textContent)));
+  check("settings lists shortcuts", all(w, ".key-row").length >= 8, all(w, ".key-row").length);
+  click(w, all(w, ".set-chip").find((b) => /Zoom 150%/.test(b.textContent)));
+  await wait(150);
+  check("default zoom chip persists", JSON.parse(w.localStorage.getItem("sv_cfg") || "{}").zoom === "1.5", w.localStorage.getItem("sv_cfg"));
   let blobText = "";
   const realBlob = w.Blob;
   w.Blob = function (parts, opts) { blobText = parts.join(""); return new realBlob(parts, opts); };
@@ -236,6 +295,8 @@ const check = (n, c, e) => checks.push({ n, pass: !!c, e });
   click(w, all(w, ".s-item").find((b) => /Home/.test(b.textContent)));
   await wait(600);
   check("home shows a Shorts shelf", !!q(w, ".shorts-shelf") && all(w, ".shelf-card").length === 3, all(w, ".shelf-card").length);
+  check("home shows Recommended for you", !!q(w, ".rec-shelf"), w.document.body.textContent.includes("Recommended for you"));
+  check("recommended rail has scored cards", all(w, ".rec-card").length > 0 && all(w, ".rec-reason").length > 0, all(w, ".rec-card").length);
   check("no JS errors after shorts", errs.filter((e) => !/Not implemented|scrollTo|navigate/.test(e)).length === 0, errs.slice(0, 2).join(" | "));
 
   /* ══ 7. empty subscriptions state ═══════════════════════════════════════ */

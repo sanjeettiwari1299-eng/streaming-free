@@ -94,6 +94,31 @@ check costs 20 of your 100k daily worker requests. There is no background pollin
 
 ---
 
+## Recommendations
+
+The Up-next list is built on the client, from four signals — no recommendation service, no tracking:
+
+| Signal | Source | Weight |
+| --- | --- | --- |
+| What YouTube itself pairs with this video | `/api/related` (`next` endpoint) | highest base |
+| Channels you actually watch | local watch history → top 6 authors → `/api/rss` | high, +8 per past view |
+| Subscriptions (any source) | subscription list | +10 flat |
+| More from the current channel | the same RSS call (current `authorId` included) | high |
+| Freshness & popularity | `published` (feed) + `viewCount` | recency decays over a day, log-scaled views |
+
+Items are merged, deduped, scored and sorted (top 20) — then each card says *why* it is there:
+*Because you watch X*, *More from X*, *From a channel you follow*, *Related to this video*, *Trending now*.
+Cold start (no history, no subs) falls back to related + trending, so the rail is never empty.
+Results are cached for 5 minutes per video, so replaying the rail costs nothing.
+
+Home gets a **Recommended for you** rail built the same way once you have any history or subscriptions
+(`recommendHome()`), with subscriptions and frequent channels weighted first.
+
+Shorts are filtered out of the watch-page rail (long-form context), and the video you are already
+watching is always excluded.
+
+---
+
 ## Shorts
 
 Shorts are just normal videos, so playback needs nothing new: `/api/shorts` gives the list, `/api/player`
@@ -198,9 +223,14 @@ which cookies do not fully solve.
 ## The player (hand-built)
 
 - Big centre play, auto-hiding gradient controls, buffered + played bars, scrub tooltip on hover, drag-to-seek.
-- Volume slider, mute, current/total time, quality menu, playback speed (0.5×–2×), theater mode, fullscreen.
-- Keyboard: `space`/`k` play-pause · `j`/`l` ±10s · `←`/`→` ±5s · `↑`/`↓` volume · `m` mute · `f` fullscreen ·
-  `t` theater · `n` next · `0`–`9` jump to %
+- Volume slider, mute, current/total time, quality menu, theater mode, fullscreen.
+- **Speed 0.25×–3×** in ten steps, with an on-screen `2×` badge whenever you are not at normal speed.
+- **Pitch control** — *Preserve pitch* (default, voices stay natural at any speed) or *Varispeed*
+  (tape-style, pitch follows speed), toggled in the player or in Settings.
+- **Zoom / fit** — *Fit to screen* (contain), *Fill (crop)* (cover), or 125% / 150% / 200% zoom, from the
+  player's zoom button (`z`), the settings menu, or as a default in Settings. Badge shows the current mode.
+- Keyboard: `space`/`k` play-pause · `j`/`l` ±10s · `←`/`→` ±5s · `↑`/`↓` volume · `<`/`>` speed step ·
+  `z` zoom · `m` mute · `f` fullscreen · `t` theater · `n` next · `0`–`9` jump to %
 - Double-click = fullscreen, click = play/pause, "tap to play" overlay when a browser blocks autoplay.
 - Quality switching keeps your position; autoplay pushes the next Up-next video on end.
 - Errors are specific (unsupported format / network / decode) with Retry + "Open on YouTube".

@@ -510,6 +510,44 @@ img{max-width:100%;display:block}
   .shelf-card,.shelf-card img{width:124px}
   .shelf-card img{height:168px}
 }
+
+/* ── speed / pitch / zoom ─────────────────────────────────────────────── */
+.cp-rate-badge{position:absolute;right:14px;top:12px;background:rgba(0,0,0,.72);color:#fff;font-size:12px;font-weight:600;padding:3px 7px;border-radius:4px;border:1px solid rgba(255,255,255,.18)}
+.cp-zoom-badge{right:64px}
+.cp-top{display:flex;align-items:center;gap:8px}
+.cp-top .cp-title{flex:1;min-width:0}
+.cp-speed-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:4px;padding:4px 12px 6px}
+.cp-speed{font-size:12px;padding:6px 0;border-radius:6px;background:rgba(255,255,255,.09);color:#eee;text-align:center}
+.cp-speed:hover{background:rgba(255,255,255,.18)}
+.cp-speed.sel{background:#3ea6ff;color:#062033;font-weight:700}
+.cp-switch{position:relative;width:34px;height:18px;border-radius:9px;background:rgba(255,255,255,.24);flex-shrink:0;transition:background .15s}
+.cp-switch[data-on="1"]{background:#3ea6ff}
+.cp-switch-dot{position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#fff;transition:transform .15s}
+.cp-switch[data-on="1"] .cp-switch-dot{transform:translateX(16px)}
+
+/* ── recommendation shelves ───────────────────────────────────────────── */
+.rec-shelf{margin-bottom:22px}
+.rec-head{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+.rec-title{font-size:18px;font-weight:700}
+.rec-sub{font-size:12px;color:var(--t3);margin-left:2px}
+.rec-rail{display:flex;gap:14px;overflow-x:auto;padding-bottom:6px;scrollbar-width:thin}
+.rec-card{flex:0 0 auto;width:236px;text-align:left;cursor:pointer}
+.rec-card img{width:236px;height:133px;object-fit:cover;border-radius:12px;background:var(--bg3);display:block}
+.rec-card-t{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font-size:14px;font-weight:500;margin-top:8px;line-height:1.35}
+.rec-card-m{font-size:12px;color:var(--t3);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.side-sub{font-size:11px;font-weight:400;color:var(--t3);background:var(--bg3);border-radius:4px;padding:1px 6px;margin-left:8px;text-transform:none;letter-spacing:0}
+.rec-reason{display:inline-block;font-size:11px;color:var(--t2);background:var(--bg3);border-radius:4px;padding:1px 6px;margin-top:4px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.vc-reason{font-size:11.5px;color:var(--t3);margin-top:3px;display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;overflow:hidden}
+@media (max-width:640px){ .rec-card,.rec-card img{width:180px} .rec-card img{height:101px} }
+
+.set-sub-h{font-size:12px;color:var(--t2);font-weight:600;margin:16px 0 8px;text-transform:uppercase;letter-spacing:.5px}
+.set-chip-row{display:flex;gap:6px;flex-wrap:wrap}
+.set-chip{font-size:12px;padding:5px 10px;border-radius:999px;background:var(--bg3);color:var(--t1)}
+.set-chip:hover{background:var(--bg4)}
+.set-chip.on{background:#3ea6ff;color:#062033;font-weight:600}
+.keys-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:6px 14px}
+.key-row{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--t2)}
+.key-row kbd{background:var(--bg3);border:1px solid var(--border);border-radius:5px;padding:1px 6px;font-size:11px;color:var(--t1);font-family:ui-monospace,monospace;white-space:nowrap}
 </style>
 </head>
 <body>
@@ -529,8 +567,20 @@ const DEFAULT_CFG = {
   volume: 1,
   muted: false,
   rate: 1,
+  zoom: "fit",
+  pitch: true,
   region: "IN",
 };
+
+// player: 3× top speed, and the fit/zoom presets YouTube offers
+const SPEEDS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3];
+const ZOOMS = [
+  { k: "fit", l: "Fit to screen" },
+  { k: "fill", l: "Fill (crop)" },
+  { k: "1.25", l: "Zoom 125%" },
+  { k: "1.5", l: "Zoom 150%" },
+  { k: "2", l: "Zoom 200%" },
+];
 
 const ls = (k, d) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } };
 const ss = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
@@ -610,6 +660,120 @@ const apiPlayer = (cfg, id) => ep(cfg, "/api/player?id=" + encodeURIComponent(id
 const apiRss = (cfg, ids) => ep(cfg, "/api/rss?channels=" + encodeURIComponent(ids.join(",")), 30000);
 const apiChannel = (cfg, q) => ep(cfg, "/api/channel?q=" + encodeURIComponent(q), 20000);
 
+
+/* ════════════════════════════════════════════════════════════════════════════
+   RECOMMENDATION ENGINE — client-side, keyless
+   Signals: YouTube's own "next" list · channels you watch (via RSS) ·
+            subscriptions · freshness · popularity. No tracking, all local.
+   ════════════════════════════════════════════════════════════════════════════ */
+const REC_TTL = 5 * 60 * 1000;
+const recCache = new Map();
+
+function recAffinity(hist, excludeId) {
+  const counts = new Map();
+  for (const v of hist || []) {
+    if (!v || !v.authorId || v.authorId === excludeId) continue;
+    counts.set(v.authorId, (counts.get(v.authorId) || 0) + 1);
+  }
+  return counts;
+}
+
+function recScore(v, ctx) {
+  let s = 0;
+  const aff = ctx.counts.get(v.authorId) || 0;
+  s += Math.min(24, aff * 8); // how often you watch this channel
+  if (ctx.subs.has(v.authorId)) s += 10; // explicit intent
+  if (v.viewCount > 0) s += Math.min(10, Math.log10(Math.max(10, v.viewCount)) * 2.5);
+  if (v.published) {
+    const hrs = (Date.now() / 1000 - v.published) / 3600;
+    if (hrs >= 0) s += Math.max(0, 12 - hrs / 24); // fresh uploads first
+  }
+  if (v.isShort) s -= 6; // keep the watch-page rail long-form
+  return s;
+}
+
+function recMerge(groups, ctx, exclude, limit = 20) {
+  const out = new Map();
+  for (const g of groups) {
+    for (const v of g.items || []) {
+      if (!v || !v.videoId || exclude.has(v.videoId)) continue;
+      const score = g.base + recScore(v, ctx);
+      const prev = out.get(v.videoId);
+      if (prev && prev.__score >= score) continue;
+      out.set(v.videoId, {
+        ...v,
+        recReason: typeof g.reason === "function" ? g.reason(v) : g.reason,
+        __score: score,
+      });
+    }
+  }
+  return [...out.values()]
+    .sort((a, b) => b.__score - a.__score)
+    .slice(0, limit)
+    .map(({ __score, ...v }) => v);
+}
+
+async function recommendFor(cfg, video, st) {
+  const hit = recCache.get("v:" + video.videoId);
+  if (hit && Date.now() - hit.ts < REC_TTL) return hit.data;
+
+  const counts = recAffinity(st.hist, null);
+  const subs = new Set((st.subs || []).map((x) => x.channelId));
+  const ctx = { counts, subs };
+  const top = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6).map(([id]) => id);
+  const feedIds = [...new Set([video.authorId, ...top].filter(Boolean))].slice(0, 8);
+
+  const [rel, feed, trend] = await Promise.all([
+    apiRelated(cfg, video.videoId).then((d) => d.items || []).catch(() => []),
+    feedIds.length ? apiRss(cfg, feedIds).then((d) => d.items || []).catch(() => []) : [],
+    (st.hist || []).length === 0 ? apiTrending(cfg, cfg.region).then((d) => d.items || []).catch(() => []) : [],
+  ]);
+
+  const items = recMerge(
+    [
+      { items: rel, base: 58, reason: (v) => (subs.has(v.authorId) ? "From a channel you follow" : "Related to this video") },
+      { items: feed.filter((v) => v.authorId && v.authorId !== video.authorId), base: 44, reason: (v) => "Because you watch " + (v.author || "this channel") },
+      { items: feed.filter((v) => v.authorId && v.authorId === video.authorId), base: 52, reason: (v) => "More from " + (v.author || video.author || "this channel") },
+      { items: trend, base: 20, reason: "Trending now" },
+    ],
+    ctx,
+    new Set([video.videoId]),
+    20
+  );
+
+  const data = { items, affinity: top.slice(0, 3) };
+  recCache.set("v:" + video.videoId, { ts: Date.now(), data });
+  return data;
+}
+
+async function recommendHome(cfg, st) {
+  const hit = recCache.get("home");
+  if (hit && Date.now() - hit.ts < REC_TTL) return hit.data;
+
+  const counts = recAffinity(st.hist, null);
+  const subs = new Set((st.subs || []).map((x) => x.channelId));
+  const ids = [...new Set([...subs, ...[...counts.entries()].sort((a, b) => b[1] - a[1]).map(([id]) => id)])].slice(0, 8);
+
+  const [feed, trend] = await Promise.all([
+    ids.length ? apiRss(cfg, ids).then((d) => d.items || []).catch(() => []) : [],
+    apiTrending(cfg, cfg.region).then((d) => d.items || []).catch(() => []),
+  ]);
+
+  const items = recMerge(
+    [
+      { items: feed, base: 40, reason: (v) => (subs.has(v.authorId) ? "New from " + (v.author || "a channel you follow") : "Because you watch " + (v.author || "this channel")) },
+      { items: trend, base: 18, reason: "Trending now" },
+    ],
+    { counts, subs },
+    new Set(),
+    12
+  );
+
+  const data = { items };
+  recCache.set("home", { ts: Date.now(), data });
+  return data;
+}
+
 /* ════════════════════════════════════════════════════════════════════════════
    ICONS
    ════════════════════════════════════════════════════════════════════════════ */
@@ -629,6 +793,7 @@ const I = {
   more: "M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z",
   check: "M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z",
   bell: "M12 22c1.1 0 2-.9 2-2h-4c0 1.1.9 2 2 2zm6-6v-5c0-3.07-1.63-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5S10.5 3.17 10.5 4v.68C7.64 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z",
+  zoom: "M15 3h6v6h-2V5h-4V3zM9 3v2H5v4H3V3h6zm12 12h2v6h-6v-2h4v-4zM3 15h2v4h4v2H3v-6z",
   rss: "M6.18 15.64a2.18 2.18 0 1 1 0 4.36 2.18 2.18 0 0 1 0-4.36zM4 4.44A15.56 15.56 0 0 1 19.56 20h-2.83A12.73 12.73 0 0 0 4 7.27V4.44zm0 5.66a9.9 9.9 0 0 1 9.9 9.9h-2.83A7.07 7.07 0 0 0 4 12.93V10.1z",
 };
 const Icon = ({ d, size }) => (
@@ -727,6 +892,7 @@ function VCard({ v, onPlay, layout = "grid", st, onChannel, showAv = true }) {
             {(v.viewCount > 0 && (v.publishedText || v.published)) && <span className="vc-dot">•</span>}
             {(v.publishedText || v.published) && <span>{ago(v.published, v.publishedText)}</span>}
           </div>
+          {v.recReason && <div className="vc-reason">{v.recReason}</div>}
         </div>
         <button className="vc-more-btn" onClick={(e) => { e.stopPropagation(); setMenu(!menu); }} aria-label="Menu">⋮</button>
       </div>
@@ -773,6 +939,8 @@ function CPlayer({ video, formats, st, onNext, poster, onRefresh }) {
   const [full, setFull] = useState(false), [theater, setTheater] = useState(!!st.cfg.theater);
   const [ui, setUi] = useState(true), [hoverX, setHoverX] = useState(null), [drag, setDrag] = useState(false);
   const [menu, setMenu] = useState(null), [rate, setRate] = useState(st.cfg.rate || 1);
+  const [zoom, setZoom] = useState(st.cfg.zoom || "fit");
+  const [pitch, setPitch] = useState(st.cfg.pitch !== false);
   const [waiting, setWaiting] = useState(true), [err, setErr] = useState(""), [flash, setFlash] = useState(null);
   const pendingSeek = useRef(null);
   const refreshTries = useRef(0);
@@ -795,9 +963,15 @@ function CPlayer({ video, formats, st, onNext, poster, onRefresh }) {
     if (!el) return;
     el.volume = muted ? 0 : vol;
     el.muted = muted;
-    el.playbackRate = rate;
-    st.updCfg({ volume: vol, muted, rate });
-  }, [vol, muted, rate]);
+    try { el.playbackRate = rate; } catch {}
+    // pitch: keep voices natural at any speed (default) or do tape-style varispeed
+    try {
+      el.preservesPitch = pitch;
+      el.mozPreservesPitch = pitch;
+      el.webkitPreservesPitch = pitch;
+    } catch {}
+    st.updCfg({ volume: vol, muted, rate, zoom, pitch });
+  }, [vol, muted, rate, zoom, pitch]);
 
   useEffect(() => {
     const onFs = () => setFull(!!(document.fullscreenElement && wrapRef.current && document.fullscreenElement === wrapRef.current));
@@ -839,6 +1013,27 @@ function CPlayer({ video, formats, st, onNext, poster, onRefresh }) {
   };
   const toggleTheater = () => { const t = !theater; setTheater(t); st.updCfg({ theater: t }); };
 
+  const bumpRate = useCallback((dir) => {
+    setRate((r) => {
+      const i = SPEEDS.indexOf(r);
+      const at = i < 0 ? SPEEDS.indexOf(1) : i;
+      return SPEEDS[Math.max(0, Math.min(SPEEDS.length - 1, at + dir))];
+    });
+    bump();
+  }, [bump]);
+  const cycleZoom = useCallback(() => {
+    setZoom((z) => {
+      const i = ZOOMS.findIndex((x) => x.k === z);
+      return ZOOMS[(i + 1) % ZOOMS.length].k;
+    });
+    bump();
+  }, [bump]);
+  const zoomLabel = (ZOOMS.find((z) => z.k === zoom) || ZOOMS[0]).l;
+  const zoomStyle =
+    zoom === "fit" ? { objectFit: "contain" }
+      : zoom === "fill" ? { objectFit: "cover" }
+        : { objectFit: "cover", transform: `scale(${Number(zoom) || 1})`, transformOrigin: "center center" };
+
   useEffect(() => {
     const onKey = (e) => {
       const tag = (e.target.tagName || "").toLowerCase();
@@ -856,13 +1051,16 @@ function CPlayer({ video, formats, st, onNext, poster, onRefresh }) {
       else if (k === "m") setMuted((m) => !m);
       else if (k === "f") toggleFull();
       else if (k === "t") toggleTheater();
+      else if (k === ">" || k === ".") bumpRate(1);
+      else if (k === "<" || k === ",") bumpRate(-1);
+      else if (k === "z") cycleZoom();
       else if (k === "n" && onNext) onNext();
       else if (/^[0-9]$/.test(k)) seekTo(((el.duration || 0) * Number(k)) / 10);
       bump();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [toggle, skip, vol, onNext, bump, seekTo]);
+  }, [toggle, skip, vol, onNext, bump, seekTo, bumpRate, cycleZoom]);
 
   const pct = dur > 0 ? (time / dur) * 100 : 0;
   const bufPct = dur > 0 ? (buf / dur) * 100 : 0;
@@ -887,6 +1085,7 @@ function CPlayer({ video, formats, st, onNext, poster, onRefresh }) {
       onClick={(e) => { if (e.target === vidRef.current) toggle(); }} onDoubleClick={toggleFull}>
       <video
         ref={vidRef} src={src} poster={poster} playsInline preload="metadata" controls={false}
+        style={zoomStyle}
         onClick={toggle}
         onPlay={() => { setPlaying(true); refreshTries.current = 0; }}
         onPause={() => setPlaying(false)}
@@ -917,7 +1116,11 @@ function CPlayer({ video, formats, st, onNext, poster, onRefresh }) {
         }}
       />
 
-      <div className={"cp-top" + (ui || !playing ? "" : " hidden")}><div className="cp-title">{video.title}</div></div>
+      <div className={"cp-top" + (ui || !playing ? "" : " hidden")}>
+        <div className="cp-title">{video.title}</div>
+        {rate !== 1 && <span className="cp-rate-badge">{rate}×</span>}
+        {zoom !== "fit" && <span className="cp-rate-badge cp-zoom-badge">{zoom === "fill" ? "Fill" : zoom + "×"}</span>}
+      </div>
       {waiting && !err && <div className="cp-big"><div className="cp-spin" /></div>}
       {!playing && !waiting && !err && (
         <div className="cp-big">
@@ -959,6 +1162,7 @@ function CPlayer({ video, formats, st, onNext, poster, onRefresh }) {
           </div>
           <span className="cp-time">{fd(time)} / {fd(dur)}</span>
           <div className="cp-spacer" />
+          <button className="cp-btn" onClick={cycleZoom} title={"Zoom: " + zoomLabel + " (z)"}><Icon d={I.zoom} /></button>
           <button className="cp-btn" onClick={() => setMenu(menu === "settings" ? null : "settings")} title="Settings"><Icon d={I.gear} /></button>
           <button className="cp-btn" onClick={toggleTheater} title="Theater (t)"><Icon d={I.theater} /></button>
           <button className="cp-btn" onClick={toggleFull} title="Fullscreen (f)"><Icon d={full ? I.fsExit : I.fs} /></button>
@@ -971,12 +1175,26 @@ function CPlayer({ video, formats, st, onNext, poster, onRefresh }) {
                 {i === qi ? <Icon d={I.check} size={16} /> : <span style={{ width: 16 }} />}{f.quality}
               </button>
             ))}
-            <div className="cp-mi-h" style={{ marginTop: 6 }}>Playback speed</div>
-            {[0.5, 0.75, 1, 1.25, 1.5, 2].map((r) => (
-              <button key={r} className={"cp-mi" + (r === rate ? " sel" : "")} onClick={() => { setRate(r); setMenu(null); }}>
-                {r === rate ? <Icon d={I.check} size={16} /> : <span style={{ width: 16 }} />}{r === 1 ? "Normal" : r + "×"}
+            <div className="cp-mi-h" style={{ marginTop: 6 }}>Playback speed · {rate === 1 ? "Normal" : rate + "×"}</div>
+            <div className="cp-speed-grid">
+              {SPEEDS.map((r) => (
+                <button key={r} className={"cp-speed" + (r === rate ? " sel" : "")} onClick={() => setRate(r)}>
+                  {r === 1 ? "1×" : r + "×"}
+                </button>
+              ))}
+            </div>
+            <div className="cp-mi-h" style={{ marginTop: 6 }}>Audio pitch</div>
+            <button className="cp-mi" onClick={() => setPitch((v) => !v)}>
+              <span className="cp-switch" data-on={pitch ? "1" : "0"}><span className="cp-switch-dot" /></span>
+              {pitch ? "Preserve pitch (natural voice)" : "Varispeed (pitch follows speed)"}
+            </button>
+            <div className="cp-mi-h" style={{ marginTop: 6 }}>Zoom / fit · {zoomLabel}</div>
+            {ZOOMS.map((z) => (
+              <button key={z.k} className={"cp-mi" + (z.k === zoom ? " sel" : "")} onClick={() => setZoom(z.k)}>
+                {z.k === zoom ? <Icon d={I.check} size={16} /> : <span style={{ width: 16 }} />}{z.l}
               </button>
             ))}
+            <div className="cp-mi-h" style={{ marginTop: 6, fontSize: 11, fontWeight: 400 }}>&lt; &gt; speed · z zoom · j/l ±10s</div>
           </div>
         )}
       </div>
@@ -1137,6 +1355,7 @@ function HomePage({ onPlay, st, engine, onChannel, onShorts }) {
         <div className="inline-warn"><span>⚠️</span><span style={{ flex: 1 }}>{warn}</span>
           <button className="cp-pill" onClick={() => setNonce((n) => n + 1)}>Retry</button></div>
       )}
+      {chip === "All" && <RecShelf st={st} engine={engine} onPlay={onPlay} />}
       {chip === "All" && <ShortsShelf st={st} engine={engine} onOpen={() => onShorts()} />}
       {loading ? <Skels /> : items.length === 0 ? (
         <div className="err-box"><div className="err-ico">📭</div><div className="err-msg">Kuch nahi mila — engine connect karein ya chips try karein</div></div>
@@ -1330,6 +1549,38 @@ function ChannelPage({ channelId, name, st, engine, onPlay, onChannel }) {
 /* ════════════════════════════════════════════════════════════════════════════
    SHORTS — vertical snap feed, one stream resolved at a time
    ════════════════════════════════════════════════════════════════════════════ */
+function RecShelf({ st, engine, onPlay }) {
+  const [items, setItems] = useState([]);
+  useEffect(() => {
+    let dead = false;
+    if (engine !== "ok") return;
+    if (!(st.hist.length || st.subs.length)) return; // nothing to personalize yet
+    recommendHome(st.cfg, st)
+      .then((d) => { if (!dead) setItems((d.items || []).slice(0, 12)); })
+      .catch(() => {});
+    return () => { dead = true; };
+  }, [engine, st.cfg.engineUrl, st.hist.length, st.subs.length]);
+  if (!items.length) return null;
+  return (
+    <div className="rec-shelf">
+      <div className="rec-head">
+        <span className="rec-title">Recommended for you</span>
+        <span className="rec-sub">history + subscriptions se</span>
+      </div>
+      <div className="rec-rail">
+        {items.map((v) => (
+          <button key={v.videoId} className="rec-card" onClick={() => onPlay(v)}>
+            <img src={v.thumbnail || YTT(v.videoId)} alt="" loading="lazy" onError={(e) => { e.currentTarget.src = YTT(v.videoId); }} />
+            <div className="rec-card-t">{v.title}</div>
+            <div className="rec-card-m">{v.author}{v.viewCount > 0 ? " · " + fv(v.viewCount) + " views" : ""}</div>
+            {v.recReason && <div className="rec-reason">{v.recReason}</div>}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function ShortsShelf({ st, engine, onOpen }) {
   const [items, setItems] = useState([]);
   useEffect(() => {
@@ -1670,7 +1921,8 @@ function WatchPage({ video, onPlay, st, engine, onChannel, onAddSub }) {
 
   useEffect(() => {
     let dead = false;
-    if (engine === "ok") apiRelated(st.cfg, video.videoId).then((d) => !dead && setRel(d.items || [])).catch(() => {});
+    setRel([]);
+    if (engine === "ok") recommendFor(st.cfg, video, st).then((d) => !dead && setRel(d.items || [])).catch(() => {});
     return () => { dead = true; };
   }, [video.videoId, engine, st.cfg.engineUrl]);
 
@@ -1794,7 +2046,7 @@ function WatchPage({ video, onPlay, st, engine, onChannel, onAddSub }) {
       {st.cfg.showRelated && (
         <aside className="watch-side">
           <div className="side-head">
-            <span>Up next</span>
+            <span>Up next<span className="side-sub">recommended</span></span>
             <label className="auto-tog" onClick={() => st.updCfg({ autoplay: !st.cfg.autoplay })}>
               Autoplay<span className={"toggle sm" + (st.cfg.autoplay ? " on" : "")}><span className="tok" /></span>
             </label>
@@ -2014,12 +2266,33 @@ function SetPage({ st, engine, onCheck, onAddSub }) {
 
       <div className="set-blk">
         <div className="set-blk-title">⚡ Playback</div>
-        {[["Autoplay", "Video khulte hi play + next auto", "autoplay"], ["Show related videos", "Watch page par Up next", "showRelated"], ["Theater mode", "Player ko wide karein", "theater"]].map(([l, s, k]) => (
-          <div key={k} className="tog-row" onClick={() => upd({ [k]: !st.cfg[k] })}>
+        {[["Autoplay", "Video khulte hi play + next auto", "autoplay"], ["Show related videos", "Watch page par Up next + recommendations", "showRelated"], ["Theater mode", "Player ko wide karein", "theater"], ["Preserve pitch", "Speed badhne par awaaz natural rahe (varispeed off)", "pitch"]].map(([l, s, k]) => (
+          <div key={k} className="tog-row" onClick={() => upd({ [k]: k === "pitch" ? !(st.cfg.pitch !== false) : !st.cfg[k] })}>
             <div><div className="tog-lbl">{l}</div><div className="tog-sub">{s}</div></div>
-            <div className={"toggle" + (st.cfg[k] ? " on" : "")}><div className="tok" /></div>
+            <div className={"toggle" + ((k === "pitch" ? st.cfg.pitch !== false : st.cfg[k]) ? " on" : "")}><div className="tok" /></div>
           </div>
         ))}
+
+        <div className="set-sub-h">Default speed</div>
+        <div className="set-chip-row">
+          {SPEEDS.map((r) => (
+            <button key={r} className={"set-chip" + ((st.cfg.rate || 1) === r ? " on" : "")} onClick={() => upd({ rate: r })}>{r}×</button>
+          ))}
+        </div>
+
+        <div className="set-sub-h">Default zoom</div>
+        <div className="set-chip-row">
+          {ZOOMS.map((z) => (
+            <button key={z.k} className={"set-chip" + ((st.cfg.zoom || "fit") === z.k ? " on" : "")} onClick={() => upd({ zoom: z.k })}>{z.l}</button>
+          ))}
+        </div>
+
+        <div className="set-sub-h">Player shortcuts</div>
+        <div className="keys-grid">
+          {[["space / k", "play · pause"], ["j / l", "±10s"], ["← / →", "±5s"], ["↑ / ↓", "volume"], ["< / >", "speed step"], ["z", "zoom / fit"], ["m", "mute"], ["f", "fullscreen"], ["t", "theater"], ["n", "next video"], ["0–9", "jump to %"]].map(([k, d]) => (
+            <div key={k} className="key-row"><kbd>{k}</kbd><span>{d}</span></div>
+          ))}
+        </div>
       </div>
 
       <div className="set-blk">
@@ -2043,7 +2316,7 @@ function SetPage({ st, engine, onCheck, onAddSub }) {
       </div>
 
       <div style={{ textAlign: "center", padding: "16px 0", fontSize: 13, color: "var(--t3)" }}>
-        StreamVoid v5 · RSS subscriptions · custom player · Made for India 🇮🇳
+        StreamVoid v7 · RSS subscriptions · Shorts · recommendations · custom player · Made for India 🇮🇳
       </div>
     </div>
   );
