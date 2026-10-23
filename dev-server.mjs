@@ -74,9 +74,81 @@ const json = (res, data, status = 200) => {
   res.end(JSON.stringify(data));
 };
 
-const server = http.createServer((req, res) => {
+/* ── dev cloud store: same contract as the worker's Layerbase route ─────────
+   In-memory + capped, so the UI's sync path is real even without Layerbase.   */
+const CAPS = { history: 300, subs: 150, likes: 500, watchlater: 300, playlists: 50, cfg: 1 };
+const DB = new Map();                                   // profileKey → { kind: Map(id → {pos,data}) }
+const KIND = { hist: "history", history: "history", s: "subs", subs: "subs", f: "likes", likes: "likes", w: "watchlater", wl: "watchlater", watchlater: "watchlater", p: "playlists", playlists: "playlists", c: "cfg", cfg: "cfg" };
+const bucket = (p, kind) => {
+  if (!DB.has(p)) DB.set(p, new Map());
+  const prof = DB.get(p);
+  if (!prof.has(kind)) prof.set(kind, new Map());
+  return prof.get(kind);
+};
+const trim = (p, kind) => {
+  const m = bucket(p, kind);
+  const cap = CAPS[kind] || 1;
+  if (m.size <= cap) return;
+  const sorted = [...m.entries()].sort((a, b) => b[1].pos - a[1].pos);
+  for (const [id] of sorted.slice(cap)) m.delete(id);
+};
+const readBody = (req) =>
+  new Promise((resolve) => {
+    let raw = "";
+    req.on("data", (c) => (raw += c));
+    req.on("end", () => { try { resolve(raw ? JSON.parse(raw) : {}); } catch { resolve({}); } });
+  });
+const syncRead = (p) => {
+  const store = { history: [], subs: [], likes: [], watchlater: [], playlists: [], cfg: {} };
+  const prof = DB.get(p) || new Map();
+  for (const [kind, m] of prof) {
+    const rows = [...m.values()].sort((a, b) => b.pos - a.pos).map((r) => r.data);
+    if (kind === "cfg") store.cfg = rows[0] || {};
+    else store[kind] = rows;
+  }
+  return store;
+};
+const syncWrite = (p, ops) => {
+  let written = 0;
+  for (const op of ops || []) {
+    const kind = KIND[String(op.kind || "").toLowerCase()];
+    if (!kind) continue;
+    const m = bucket(p, kind);
+    if (op.clear) { m.clear(); continue; }
+    for (const it of op.upsert || []) {
+      const id = it.id || it.videoId || it.channelId;
+      if (!id) continue;
+      m.set(String(id), { pos: Number(it.pos) || Date.now(), data: it.data !== undefined ? it.data : it });
+      written++;
+    }
+    for (const id of op.del || []) m.delete(String(id));
+    trim(p, kind);
+  }
+  return { written };
+};
+
+const server = http.createServer(async (req, res) => {
   const u = new URL(req.url, `http://${req.headers.host || "localhost"}`);
 
+  if (u.pathname === "/api/sync" || u.pathname === "/api/sync/import") {
+    const p = (u.searchParams.get("p") || "").trim();
+    if (!/^[A-Za-z0-9_-]{16,64}$/.test(p)) return json(res, { ok: false, error: "profile key must be 16-64 chars of [A-Za-z0-9_-]" });
+    if (req.method === "GET") return json(res, { ok: true, backend: "dev-memory", store: syncRead(p), caps: CAPS, at: Date.now() });
+    if (req.method === "DELETE") { bucket(p, KIND[u.searchParams.get("kind")] || "").clear(); return json(res, { ok: true, written: 0, caps: CAPS }); }
+    if (req.method === "POST") {
+      const body = await readBody(req);
+      if (u.pathname === "/api/sync/import") {
+        const store = body.store || {};
+        const ops = Object.keys(CAPS).map((kind) => kind === "cfg"
+          ? { kind, upsert: [{ id: "cfg", pos: 1, data: store.cfg || {} }] }
+          : { kind, upsert: (store[kind] || []).map((v, i) => ({ id: v.videoId || v.channelId || v.id, pos: Number(v.pos) || Date.now() - i, data: v })) });
+        const r = syncWrite(p, ops);
+        return json(res, { ok: true, ...r, imported: r.written, caps: CAPS });
+      }
+      return json(res, { ok: true, ...syncWrite(p, body.ops || []), caps: CAPS, backend: "dev-memory" });
+    }
+    return json(res, { ok: false, error: "method not allowed" }, 405);
+  }
   if (u.pathname === "/api/health") {
     return json(res, { ok: true, service: "dev-preview", mode: "mock", note: "production = your Cloudflare Worker" });
   }

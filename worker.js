@@ -21,7 +21,7 @@
  */
 
 // bump this when the worker changes, so /api/health tells you which code is live
-const BUILD = "7.6.0";
+const BUILD = "7.7.0";
 
 const INNERTUBE_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8";
 const UA = {
@@ -1932,6 +1932,7 @@ const ROUTE_LIST = [
   "/api/related?id=",
   "/api/rss?channels=UC..,UC..",
   "/api/channel?q=@handle",
+  "/api/sync?p=KEY  (GET/POST/DELETE)",
   "/api/media?u=",
   "/mp4/{id}.mp4",
 ];
@@ -1978,6 +1979,7 @@ p{margin:8px 0}
       <span class="b ok">engine: innertube</span>
       <span class="b ${cookies ? "ok" : ""}">cookies: ${cookies ? "configured" : "not set"}</span>
       <span class="b ${keyed ? "ok" : ""}">SV_KEY: ${keyed ? "set (cookies need ?key=)" : "not set"}</span>
+      <span class="b ${storeConfigured(env) ? "ok" : "off"}">store: ${storeConfigured(env) ? "layerbase libSQL" : "not configured"}</span>
     </div>
     <p style="margin-top:14px"><a class="btn" href="/api/health">/api/health</a><a class="btn ghost" href="/?format=json">same as JSON</a>${app ? `<a class="btn ghost" href="${app}">Open the app</a>` : ""}</p>
     <p class="muted">App me Settings → Engine URL me is worker ka URL daalo, phir search/trending/shorts/playback chalu ho jayega.</p>
@@ -1997,6 +1999,285 @@ p{margin:8px 0}
 
   <p class="muted">This page is only shown at the root — every real endpoint lives under <code>/api/*</code> or <code>/mp4/*</code>.</p>
 </div></body></html>`;
+}
+
+// ── cloud store: Layerbase libSQL over HTTPS (Hrana v2 pipeline) ─────────────
+// Everything the app remembers lives here — no localStorage, no cookies holding
+// content. Each write also trims that list, so "aage ka yaad, peeche ka bhool"
+// and the DB can never creep past its cap. No TTL anywhere: nothing expires by
+// time, only by cap.
+const CAPS = { history: 300, subs: 150, likes: 500, watchlater: 300, playlists: 50, cfg: 1 };
+const KIND_ALIAS = {
+  hist: "history", history: "history",
+  s: "subs", sub: "subs", subs: "subs", subscriptions: "subs",
+  f: "likes", fav: "likes", favs: "likes", likes: "likes",
+  w: "watchlater", wl: "watchlater", watchlater: "watchlater",
+  p: "playlists", pls: "playlists", playlists: "playlists",
+  c: "cfg", config: "cfg", cfg: "cfg",
+};
+const SYNC_SCHEMA = [
+  "CREATE TABLE IF NOT EXISTS sv_store (uid TEXT NOT NULL, kind TEXT NOT NULL, id TEXT NOT NULL, pos INTEGER NOT NULL, data TEXT NOT NULL, PRIMARY KEY (uid, kind, id))",
+  "CREATE INDEX IF NOT EXISTS sv_store_trim ON sv_store (uid, kind, pos DESC)",
+];
+
+const canonicalKind = (k) => KIND_ALIAS[String(k || "").toLowerCase()] || "";
+const validProfileKey = (k) => /^[A-Za-z0-9_-]{16,64}$/.test(String(k || ""));
+
+const libsqlBase = (env) =>
+  String((env && (env.LIBSQL_URL || env.LAYERBASE_URL)) || "")
+    .trim()
+    .replace(/^libsql:\/\//i, "https://")
+    .replace(/\/+$/, "");
+
+const storeConfigured = (env) => !!(libsqlBase(env) && String((env && (env.LIBSQL_TOKEN || env.LAYERBASE_TOKEN)) || "").trim());
+
+// Hrana v2 typed values
+const T = (v) => ({ type: "text", value: String(v) });
+const I = (v) => ({ type: "integer", value: String(Math.trunc(Number(v) || 0)) });
+
+const SCHEMA_DONE = new Set();
+
+async function libsqlPipeline(env, stmts) {
+  const base = libsqlBase(env);
+  const token = String((env && (env.LIBSQL_TOKEN || env.LAYERBASE_TOKEN)) || "").trim();
+  if (!base || !token) throw new Error("cloud store not configured: set LIBSQL_URL + LIBSQL_TOKEN");
+  const body = {
+    requests: stmts
+      .map((s) => ({ type: "execute", stmt: { sql: s.sql, args: s.args || [] } }))
+      .concat([{ type: "close" }]),
+  };
+  const r = await fetchRetry(
+    base + "/v2/pipeline",
+    {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer " + token },
+      body: JSON.stringify(body),
+    },
+    { retries: 1, timeout: 9000 }
+  );
+  const text = await r.text();
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    throw new Error(`layerbase returned non-JSON (HTTP ${r.status})`);
+  }
+  if (!r.ok) throw new Error(`layerbase HTTP ${r.status}${data && data.error ? ": " + data.error : ""}`);
+  const out = [];
+  for (const res of data.results || []) {
+    if (res.type === "error") {
+      const e = res.error || {};
+      throw new Error("layerbase: " + (e.message || e.code || "query failed"));
+    }
+    if (res.type === "ok" && res.response && res.response.type === "execute") {
+      const result = res.response.result || {};
+      const cols = (result.cols || []).map((c) => c.name);
+      const rows = (result.rows || []).map((row) => {
+        const o = {};
+        cols.forEach((c, i) => {
+          const v = row[i];
+          if (v == null) o[c] = null;
+          else if (typeof v === "object" && "value" in v) o[c] = v.type === "integer" ? Number(v.value) : v.value;
+          else o[c] = v;
+        });
+        return o;
+      });
+      out.push({ cols, rows, affected: result.affected_row_count || 0 });
+    } else {
+      out.push(null);
+    }
+  }
+  return out;
+}
+
+async function ensureSchema(env) {
+  const base = libsqlBase(env);
+  if (SCHEMA_DONE.has(base)) return;
+  await libsqlPipeline(env, SYNC_SCHEMA.map((sql) => ({ sql })));
+  SCHEMA_DONE.add(base);
+}
+
+function trimStmt(uid, kind) {
+  const cap = CAPS[kind] || 1;
+  return {
+    sql: "DELETE FROM sv_store WHERE uid = ? AND kind = ? AND id NOT IN (SELECT id FROM sv_store WHERE uid = ? AND kind = ? ORDER BY pos DESC, id DESC LIMIT ?)",
+    args: [T(uid), T(kind), T(uid), T(kind), I(cap)],
+  };
+}
+
+// one upsert + one trim per kind; deletes chunked so we stay well inside the pipeline limit
+function opsToStatements(uid, ops) {
+  const stmts = [];
+  let written = 0;
+  for (const op of ops || []) {
+    const kind = canonicalKind(op && op.kind);
+    if (!kind) continue;
+    if (op.clear) {
+      stmts.push({ sql: "DELETE FROM sv_store WHERE uid = ? AND kind = ?", args: [T(uid), T(kind)] });
+      continue;
+    }
+    const ups = (op.upsert || []).slice(-1000);
+    for (const it of ups) {
+      const id = String((it && (it.id || it.videoId || it.channelId)) || "").slice(0, 120);
+      if (!id) continue;
+      const pos = Number(it.pos) || Date.now();
+      let data = it.data !== undefined ? it.data : it;
+      let blob;
+      try {
+        blob = JSON.stringify(data);
+      } catch {
+        continue;
+      }
+      if (blob.length > 60000) blob = JSON.stringify({ videoId: id, title: "(too large)" });
+      stmts.push({
+        sql: "INSERT INTO sv_store (uid, kind, id, pos, data) VALUES (?, ?, ?, ?, ?) ON CONFLICT(uid, kind, id) DO UPDATE SET pos = excluded.pos, data = excluded.data",
+        args: [T(uid), T(kind), T(id), I(pos), T(blob)],
+      });
+      written++;
+    }
+    const dels = (op.del || []).map((x) => String(x)).filter(Boolean);
+    for (let i = 0; i < dels.length; i += 40) {
+      const chunk = dels.slice(i, i + 40);
+      stmts.push({
+        sql: `DELETE FROM sv_store WHERE uid = ? AND kind = ? AND id IN (${chunk.map(() => "?").join(",")})`,
+        args: [T(uid), T(kind), ...chunk.map(T)],
+      });
+    }
+    if (ups.length || dels.length) stmts.push(trimStmt(uid, kind));
+  }
+  return { stmts, written };
+}
+
+const emptyStore = () => ({ history: [], subs: [], likes: [], watchlater: [], playlists: [], cfg: {} });
+
+// Cache API snapshot: if Layerbase is asleep / unreachable, the last known
+// profile still opens the app (edge cache, 1 year, never expires on its own).
+const snapshotKey = (uid) => new Request(`https://sv-store.internal/${uid}`, { method: "GET" });
+
+async function readSnapshot(uid) {
+  try {
+    if (typeof caches === "undefined" || !caches.default) return null;
+    const r = await caches.default.match(snapshotKey(uid));
+    if (!r) return null;
+    return await r.json();
+  } catch {
+    return null;
+  }
+}
+
+async function writeSnapshot(uid, payload) {
+  try {
+    if (typeof caches === "undefined" || !caches.default) return false;
+    await caches.default.put(
+      snapshotKey(uid),
+      new Response(JSON.stringify(payload), {
+        headers: { "content-type": "application/json", "cache-control": "max-age=31536000" },
+      })
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function syncGet(env, uid) {
+  if (!validProfileKey(uid)) return { ok: false, error: "profile key must be 16-64 chars of [A-Za-z0-9_-]" };
+  if (!storeConfigured(env)) {
+    return { ok: false, configured: false, error: "cloud store not configured (add LIBSQL_URL + LIBSQL_TOKEN to the worker)" };
+  }
+  try {
+    await ensureSchema(env);
+    const [res] = await libsqlPipeline(env, [
+      { sql: "SELECT kind, id, pos, data FROM sv_store WHERE uid = ? ORDER BY kind, pos DESC, id DESC", args: [T(uid)] },
+    ]);
+    const store = emptyStore();
+    for (const row of (res && res.rows) || []) {
+      const kind = canonicalKind(row.kind);
+      if (!kind) continue;
+      let data = {};
+      try {
+        data = JSON.parse(row.data);
+      } catch {
+        continue;
+      }
+      if (kind === "cfg") {
+        store.cfg = data && typeof data === "object" ? data : {};
+        continue;
+      }
+      const list = store[kind];
+      if (Array.isArray(list)) list.push(data);
+    }
+    // a read is also the wake-up: a sleeping libSQL wakes in 1-5s, an archived
+    // one needs a dashboard Restore — this flag tells the app which happened
+    const payload = { ok: true, backend: "layerbase-libsql", store, caps: CAPS, at: Date.now() };
+    writeSnapshot(uid, payload);
+    return payload;
+  } catch (e) {
+    const snap = await readSnapshot(uid);
+    if (snap && snap.store) {
+      return { ...snap, ok: true, stale: true, backend: "edge-snapshot", warning: e.message };
+    }
+    return { ok: false, configured: true, error: e.message, hint: "Layerbase free DB sleeps when idle (wakes in ~1-5s) and is archived after 14 idle days — open the dashboard and hit Restore." };
+  }
+}
+
+async function syncWrite(env, uid, body) {
+  if (!validProfileKey(uid)) return { ok: false, error: "profile key must be 16-64 chars of [A-Za-z0-9_-]" };
+  if (!storeConfigured(env)) return { ok: false, configured: false, error: "cloud store not configured (add LIBSQL_URL + LIBSQL_TOKEN to the worker)" };
+  const ops = Array.isArray(body && body.ops) ? body.ops : body && body.kind ? [body] : [];
+  const { stmts, written } = opsToStatements(uid, ops);
+  if (!stmts.length) return { ok: true, written: 0, backend: "layerbase-libsql", caps: CAPS };
+  try {
+    await ensureSchema(env);
+    for (let i = 0; i < stmts.length; i += 60) {
+      await libsqlPipeline(env, stmts.slice(i, i + 60));
+    }
+    const kinds = [...new Set(ops.map((o) => canonicalKind(o.kind)).filter(Boolean))];
+    const payload = { ok: true, written, backend: "layerbase-libsql", caps: CAPS, kinds, at: Date.now() };
+    // refresh the edge snapshot with the post-write truth, cheaply: re-read only
+    // when it is a small profile (<= 120 rows) — otherwise the next GET refreshes
+    if (written <= 120) {
+      try {
+        const fresh = await syncGet(env, uid);
+        if (fresh && fresh.ok) payload.store = fresh.store;
+      } catch {
+        /* snapshot is best effort */
+      }
+    }
+    return payload;
+  } catch (e) {
+    return { ok: false, configured: true, error: e.message, written: 0 };
+  }
+}
+
+async function syncClear(env, uid, kind) {
+  const k = canonicalKind(kind);
+  if (!k) return { ok: false, error: "unknown kind" };
+  return syncWrite(env, uid, { kind: k, clear: true });
+}
+
+async function syncImport(env, uid, body) {
+  const store = (body && body.store) || {};
+  const ops = [];
+  for (const kind of Object.keys(CAPS)) {
+    if (kind === "cfg") {
+      if (store.cfg) ops.push({ kind, upsert: [{ id: "cfg", pos: 1, data: store.cfg }] });
+      continue;
+    }
+    const list = store[kind];
+    if (!Array.isArray(list) || !list.length) continue;
+    ops.push({
+      kind,
+      upsert: list.slice(0, CAPS[kind]).map((v, i) => ({
+        id: v.videoId || v.channelId || v.id,
+        pos: Number(v.pos) || Date.now() - i,
+        data: v,
+      })),
+    });
+  }
+  if (!ops.length) return { ok: false, error: "nothing to import" };
+  const r = await syncWrite(env, uid, { ops });
+  return { ...r, imported: ops.reduce((n, o) => n + o.upsert.length, 0) };
 }
 
 function notFound(url) {
@@ -2051,6 +2332,14 @@ const ROUTES = [
           ],
           escalateOnBotCheck: true,
           canary: "/api/canary?n=3",
+        },
+        store: {
+          backend: "layerbase-libsql",
+          configured: storeConfigured(env),
+          caps: CAPS,
+          ttl: "none — nothing expires, old items drop off at the cap",
+          routes: ["GET /api/sync?p=", "POST /api/sync?p=", "DELETE /api/sync?p=&kind=", "POST /api/sync/import?p="],
+          hint: storeConfigured(env) ? "ready" : "add LIBSQL_URL + LIBSQL_TOKEN (Layerbase → libSQL → Connect)",
         },
       };
     },
@@ -2113,6 +2402,23 @@ const ROUTES = [
 ];
 
 export default {
+  // Cron trigger (optional, free): a tiny write every few hours means the free
+  // Layerbase DB never idles long enough to be archived (data is never deleted
+  // either way — this just avoids the manual Restore click).
+  async scheduled(event, env = {}, ctx) {
+    try {
+      if (!storeConfigured(env)) return;
+      await ensureSchema(env);
+      await libsqlPipeline(env, [
+        {
+          sql: "INSERT INTO sv_store (uid, kind, id, pos, data) VALUES ('__system', 'ping', 'ping', ?, '{}') ON CONFLICT(uid, kind, id) DO UPDATE SET pos = excluded.pos",
+          args: [I(Math.floor(Date.now() / 1000))],
+        },
+      ]);
+    } catch {
+      /* a missed beat is harmless */
+    }
+  },
   async fetch(request, env = {}) {
     const url = new URL(request.url);
     if (request.method === "OPTIONS") {
@@ -2120,7 +2426,7 @@ export default {
         status: 204,
         headers: {
           "access-control-allow-origin": "*",
-          "access-control-allow-methods": "GET,HEAD,OPTIONS",
+          "access-control-allow-methods": "GET,HEAD,POST,DELETE,OPTIONS",
           "access-control-allow-headers": "*",
           "access-control-max-age": "86400",
         },
@@ -2141,6 +2447,24 @@ export default {
         });
       }
       if (path === "/favicon.ico") return new Response(null, { status: 204 });
+      // cloud store — the app's only memory. GET reads the whole profile,
+      // POST upserts + trims, DELETE clears one list.
+      if (path === "/api/sync" || path === "/api/sync/import") {
+        const p = (url.searchParams.get("p") || url.searchParams.get("profile") || "").trim();
+        if (request.method === "GET") return json(await syncGet(env, p));
+        if (request.method === "DELETE") return json(await syncClear(env, p, url.searchParams.get("kind") || ""));
+        if (request.method === "POST") {
+          let body = {};
+          try {
+            body = await request.json();
+          } catch {
+            return err("body must be JSON", 400);
+          }
+          if (path === "/api/sync/import") return json(await syncImport(env, p, body));
+          return json(await syncWrite(env, p, body));
+        }
+        return err("method not allowed", 405);
+      }
       if (path === "/api/media" || path === "/api/thumb") {
         return media(url.searchParams.get("u") || "", request, env);
       }
@@ -2214,6 +2538,17 @@ export {
   landingPage,
   notFound,
   ROUTE_LIST,
+  CAPS,
+  validProfileKey,
+  canonicalKind,
+  opsToStatements,
+  libsqlBase,
+  libsqlPipeline,
+  syncGet,
+  syncWrite,
+  syncImport,
+  syncClear,
+  storeConfigured,
   parseShorts,
   shortFromReel,
   shortFromLockup,
