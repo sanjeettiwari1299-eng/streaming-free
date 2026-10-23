@@ -260,6 +260,30 @@ check("trim is the last statement", /^DELETE FROM sv_store WHERE uid = \? AND ki
 check("trim carries the cap as an integer arg", stmts[2].args[4].type === "integer" && stmts[2].args[4].value === "300");
 check("opsToStatements drops unknown kinds", W.opsToStatements(KEY, [{ kind: "xx", upsert: [{ id: "a" }] }]).stmts.length === 0);
 
+/* ── 15. setup probe: "is Layerbase really connected?" ───────────────────── */
+const probeOff = await W.storeProbe({}, "");
+check("probe says not configured when secrets are missing", probeOff.ok === false && probeOff.configured === false);
+check("probe hands back the exact 5 setup steps", Array.isArray(probeOff.steps) && probeOff.steps.length === 5, (probeOff.steps || []).length);
+check("steps name the two secrets", probeOff.steps.join(" ").includes("LIBSQL_URL") && probeOff.steps.join(" ").includes("LIBSQL_TOKEN"));
+
+const probe = await W.storeProbe(ENV, KEY);
+check("probe reports ok against a live store", probe.ok === true && probe.configured === true, JSON.stringify(probe).slice(0, 120));
+check("probe reports the host, not the token", probe.host === "fake.layerbase.dev" && !JSON.stringify(probe).includes(ENV.LIBSQL_TOKEN), probe.host);
+check("probe reports a latency", typeof probe.latencyMs === "number" && probe.latencyMs >= 0, probe.latencyMs);
+check("probe counts this profile's rows", typeof probe.rows === "number" && probe.rows > 0, probe.rows);
+check("probe promises no TTL", probe.ttl === "none" && probe.caps.history === 300);
+
+server.mode = "down";
+const probeBad = await W.storeProbe(ENV, KEY);
+check("probe surfaces a real failure", probeBad.ok === false && /boom|layerbase/i.test(probeBad.error || ""), probeBad.error);
+check("probe explains how to fix it", /LIBSQL_URL|wake|Restore/i.test(probeBad.hint || ""), probeBad.hint);
+server.mode = "ok";
+
+const viaRoute = await (await W.default.fetch(new Request("https://w.dev/api/sync/probe?p=" + KEY), ENV)).json();
+check("probe is reachable over HTTP", viaRoute.ok === true && viaRoute.backend === "layerbase-libsql");
+const healthProbe = await (await W.default.fetch(new Request("https://w.dev/api/health"), ENV)).json();
+check("health points at the probe", healthProbe.store.probe === "/api/sync/probe");
+
 /* ── report ──────────────────────────────────────────────────────────────── */
 const failed = checks.filter((c) => !c.pass);
 for (const c of failed) console.log("FAIL  " + c.n + (c.e !== undefined ? "   → " + c.e : ""));

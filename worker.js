@@ -2123,6 +2123,7 @@ const ROUTE_LIST = [
   "/api/rss?channels=UC..,UC..",
   "/api/channel?q=@handle",
   "/api/sync?p=KEY  (GET/POST/DELETE)",
+  "/api/sync/probe  (is Layerbase really connected?)",
   "/api/media?u=",
   "/mp4/{id}.mp4",
   "/api/stream?id=&itag=",
@@ -2279,6 +2280,58 @@ async function libsqlPipeline(env, stmts) {
     }
   }
   return out;
+}
+
+// One-click setup check: does this worker actually reach Layerbase, sleep/wake
+// included? Returns the round-trip time so "slow because it was hibernating" is
+// visible instead of guessed.
+async function storeProbe(env, uid = "") {
+  if (!storeConfigured(env)) {
+    return {
+      ok: false,
+      configured: false,
+      backend: "layerbase-libsql",
+      error: "LIBSQL_URL + LIBSQL_TOKEN missing",
+      steps: [
+        "layerbase.com → sign in (free, no card)",
+        "New Database → engine libSQL → Free plan → Create",
+        "open the DB → Connect → copy the https://…cloud.layerbase.dev URL and the auth token",
+        "Cloudflare → Workers → your worker → Settings → Variables → add LIBSQL_URL and LIBSQL_TOKEN as Secret",
+        "hit this probe again — it should say ok:true in a few hundred ms",
+      ],
+    };
+  }
+  const t0 = Date.now();
+  try {
+    await ensureSchema(env);
+    const stmts = [{ sql: "SELECT 1 AS ok", args: [] }];
+    if (validProfileKey(uid)) stmts.push({ sql: "SELECT COUNT(*) AS n FROM sv_store WHERE uid = ?", args: [T(uid)] });
+    const out = await libsqlPipeline(env, stmts);
+    const rows = validProfileKey(uid) ? Number((out[1] && out[1].rows && out[1].rows[0] && out[1].rows[0].n) || 0) : null;
+    return {
+      ok: true,
+      configured: true,
+      backend: "layerbase-libsql",
+      host: libsqlBase(env).replace(/^https?:\/\//, "").split("/")[0],
+      latencyMs: Date.now() - t0,
+      schema: "sv_store ready",
+      rows,
+      caps: CAPS,
+      ttl: "none",
+      wokeFromSleep: Date.now() - t0 > 1200,
+    };
+  } catch (e) {
+    return {
+      ok: false,
+      configured: true,
+      backend: "layerbase-libsql",
+      latencyMs: Date.now() - t0,
+      error: /^layerbase/i.test(e.message) ? e.message : "layerbase: " + e.message,
+      hint: /restore|archiv/i.test(e.message)
+        ? "database is archived — open the Layerbase dashboard and press Restore (data + backups are kept)"
+        : "check LIBSQL_URL (https://…cloud.layerbase.dev) and LIBSQL_TOKEN; a sleeping DB wakes on the first query in ~1-5s",
+    };
+  }
 }
 
 async function ensureSchema(env) {
@@ -2546,6 +2599,7 @@ const ROUTES = [
           ttl: "none — nothing expires, old items drop off at the cap",
           routes: ["GET /api/sync?p=", "POST /api/sync?p=", "DELETE /api/sync?p=&kind=", "POST /api/sync/import?p="],
           hint: storeConfigured(env) ? "ready" : "add LIBSQL_URL + LIBSQL_TOKEN (Layerbase → libSQL → Connect)",
+          probe: "/api/sync/probe",
         },
       };
     },
@@ -2663,6 +2717,9 @@ export default {
       if (path === "/favicon.ico") return new Response(null, { status: 204 });
       // cloud store — the app's only memory. GET reads the whole profile,
       // POST upserts + trims, DELETE clears one list.
+      if (path === "/api/sync/probe" || path === "/api/store/probe") {
+        return json(await storeProbe(env, (url.searchParams.get("p") || "").trim()));
+      }
       if (path === "/api/sync" || path === "/api/sync/import") {
         const p = (url.searchParams.get("p") || url.searchParams.get("profile") || "").trim();
         if (request.method === "GET") return json(await syncGet(env, p));
@@ -2734,6 +2791,7 @@ export {
   resetBreakers,
   noteFail,
   noteOk,
+  storeProbe,
   breakerCooling,
   emergencyMirrors,
   mirrorStream,
