@@ -3,14 +3,15 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
-<title>StreamVoid</title>
+<title>StreamVoid · YouTube, apne player me</title>
+<meta name="description" content="Serverless YouTube front-end: RSS subscriptions, custom player, no ads, no login."/>
+<meta name="theme-color" content="#0f0f0f"/>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap" rel="stylesheet"/>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
-<style>
-*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+<style>*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
   --bg:#0f0f0f;
   --bg2:#181818;
@@ -299,53 +300,138 @@ img{max-width:100%;display:block}
   .skel-grid{padding:4px 12px}
 }
 
-/* ══ CUSTOM PLAYER ══════════════════════════════════════════════════════════ */
-.cp{position:relative;width:100%;height:100%;background:#000;overflow:hidden;user-select:none;outline:none}
-.cp.hide-cursor{cursor:none}
+/* ══ CUSTOM PLAYER (YouTube-accurate) ═══════════════════════════════════════ */
+.cp{position:relative;width:100%;height:100%;background:#000;overflow:hidden;user-select:none;outline:none;
+  --cp-btn:48px; --cp-ico:26px}
+.cp.cp-hide-cursor{cursor:none}
 .cp video{width:100%;height:100%;display:block;object-fit:contain;background:#000}
-.cp-top{position:absolute;top:0;left:0;right:0;padding:14px 16px 26px;background:linear-gradient(rgba(0,0,0,.65),transparent);z-index:3;opacity:1;transition:opacity .22s;pointer-events:none}
+.cp-stage{position:absolute;inset:0;z-index:2;background:transparent}
+
+/* top gradient */
+.cp-top{position:absolute;top:0;left:0;right:0;z-index:5;display:flex;align-items:flex-start;gap:12px;
+  padding:14px 16px 34px;background:linear-gradient(rgba(0,0,0,.72),transparent);
+  opacity:1;transition:opacity .2s;pointer-events:none}
 .cp-top.hidden{opacity:0}
-.cp-title{color:#fff;font-size:15px;font-weight:500;text-shadow:0 1px 3px rgba(0,0,0,.7);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.cp-ui{position:absolute;left:0;right:0;bottom:0;padding:24px 12px 6px;background:linear-gradient(transparent,rgba(0,0,0,.55) 35%,rgba(0,0,0,.82));z-index:4;opacity:1;transition:opacity .22s}
+.cp-title{flex:1;min-width:0;color:#fff;font-size:18px;font-weight:500;line-height:1.35;
+  text-shadow:0 1px 3px rgba(0,0,0,.8);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cp-top-actions{display:flex;align-items:center;gap:4px;pointer-events:auto}
+.cp-top-btn{width:40px;height:40px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+  color:#fff;background:rgba(0,0,0,.28);transition:background .12s,transform .12s}
+.cp-top-btn:hover{background:rgba(0,0,0,.6);transform:scale(1.05)}
+.cp-top-btn svg{fill:#fff}
+
+/* bottom gradient */
+.cp-ui{position:absolute;left:0;right:0;bottom:0;z-index:6;padding:28px 12px 8px;
+  background:linear-gradient(transparent,rgba(0,0,0,.5) 30%,rgba(0,0,0,.86));
+  opacity:1;transition:opacity .2s}
 .cp-ui.hidden{opacity:0;pointer-events:none}
-.cp-bar{position:relative;height:16px;display:flex;align-items:center;cursor:pointer;touch-action:none}
-.cp-bar-track{position:relative;height:3px;width:100%;background:rgba(255,255,255,.28);border-radius:2px;transition:height .1s}
-.cp-bar:hover .cp-bar-track{height:5px}
-.cp-buf{position:absolute;left:0;top:0;bottom:0;background:rgba(255,255,255,.42);border-radius:2px}
+
+/* progress */
+.cp-bar{position:relative;height:18px;display:flex;align-items:center;cursor:pointer;touch-action:none}
+.cp-bar-track{position:relative;height:4px;width:100%;background:rgba(255,255,255,.3);border-radius:2px;transition:height .1s}
+.cp-bar:hover .cp-bar-track{height:6px}
+.cp-buf{position:absolute;left:0;top:0;bottom:0;background:rgba(255,255,255,.45);border-radius:2px}
 .cp-played{position:absolute;left:0;top:0;bottom:0;background:#f00;border-radius:2px;transition:width .08s linear}
-.cp-knob{position:absolute;top:50%;width:13px;height:13px;border-radius:50%;background:#f00;transform:translate(-50%,-50%) scale(0);transition:transform .1s;box-shadow:0 0 4px rgba(0,0,0,.6)}
+.cp-knob{position:absolute;top:50%;width:14px;height:14px;border-radius:50%;background:#f00;
+  transform:translate(-50%,-50%) scale(0);transition:transform .1s;box-shadow:0 0 6px rgba(0,0,0,.6)}
 .cp-bar:hover .cp-knob{transform:translate(-50%,-50%) scale(1)}
-.cp-tip{position:absolute;bottom:22px;transform:translateX(-50%);background:rgba(0,0,0,.92);color:#fff;font-size:12px;padding:2px 6px;border-radius:3px;pointer-events:none;white-space:nowrap}
-.cp-row{display:flex;align-items:center;gap:4px;height:44px}
-.cp-btn{width:40px;height:40px;border-radius:50%;display:flex;align-items:center;justify-content:center;color:#fff;opacity:.95;transition:background .12s}
-.cp-btn:hover{background:rgba(255,255,255,.16);opacity:1}
+.cp-tip{position:absolute;bottom:24px;transform:translateX(-50%);background:rgba(0,0,0,.92);color:#fff;
+  font-size:12px;font-weight:500;padding:3px 7px;border-radius:4px;pointer-events:none;white-space:nowrap}
+
+/* control row — YouTube metrics */
+.cp-row{display:flex;align-items:center;gap:2px;height:var(--cp-btn);margin-top:2px}
+.cp-btn{width:var(--cp-btn);height:var(--cp-btn);border-radius:50%;display:flex;align-items:center;
+  justify-content:center;color:#fff;opacity:.98;transition:background .12s,transform .1s}
+.cp-btn:hover{background:rgba(255,255,255,.16)}
+.cp-btn:active{transform:scale(.94)}
 .cp-btn svg{fill:#fff}
-.cp-time{font-size:12.5px;color:#eee;font-variant-numeric:tabular-nums;margin:0 8px;white-space:nowrap}
+.cp-ico{fill:currentColor}
+.cp-btn.on{background:rgba(255,255,255,.18)}
+.cp-btn-main svg{margin-left:1px}
+.cp-time{font-size:13px;color:#fff;font-variant-numeric:tabular-nums;margin:0 10px;white-space:nowrap;text-shadow:0 1px 2px rgba(0,0,0,.6)}
+.cp-time-sep{opacity:.55;margin:0 2px}
+.cp-badge{font-size:12px;font-weight:600;color:#fff;background:rgba(255,255,255,.2);border-radius:4px;padding:3px 7px;margin-left:4px}
 .cp-spacer{flex:1}
 .cp-vol-wrap{display:flex;align-items:center}
 .cp-vol{width:0;overflow:hidden;transition:width .18s ease;display:flex;align-items:center}
-.cp-vol-wrap:hover .cp-vol,.cp-vol.open{width:76px}
-.cp-vol input{width:70px;accent-color:#fff;cursor:pointer}
-.cp-big{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;z-index:2;pointer-events:none}
-.cp-bigplay{pointer-events:auto;width:76px;height:76px;border-radius:50%;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;transition:background .15s,transform .15s}
+.cp-vol-wrap:hover .cp-vol,.cp-vol.open{width:84px}
+.cp-vol input{width:78px;accent-color:#fff;cursor:pointer}
+
+/* centre play + loading */
+.cp-big{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;z-index:4;pointer-events:none}
+.cp-bigplay{pointer-events:auto;width:82px;height:82px;border-radius:50%;background:rgba(0,0,0,.55);
+  display:flex;align-items:center;justify-content:center;transition:background .15s,transform .15s}
 .cp-bigplay:hover{background:#f00;transform:scale(1.06)}
-.cp-bigplay svg{fill:#fff;margin-left:4px}
-.cp-big-icon{width:80px;height:80px;border-radius:50%;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;animation:cpPop .45s ease forwards}
+.cp-bigplay svg{fill:#fff;margin-left:5px}
+.cp-big-icon{width:84px;height:84px;border-radius:50%;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;animation:cpPop .45s ease forwards}
 .cp-big-icon svg{fill:#fff}
-@keyframes cpPop{0%{transform:scale(.65);opacity:.2}60%{transform:scale(1.05);opacity:1}100%{transform:scale(1);opacity:0}}
-.cp-spin{width:52px;height:52px;border:4px solid rgba(255,255,255,.22);border-top-color:#f00;border-radius:50%;animation:cpSpn .8s linear infinite}
+@keyframes cpPop{from{transform:scale(.7);opacity:0}to{transform:scale(1);opacity:1}}
+.cp-spin{width:56px;height:56px;border:4px solid rgba(255,255,255,.22);border-top-color:#f00;border-radius:50%;animation:cpSpn .8s linear infinite}
 @keyframes cpSpn{to{transform:rotate(360deg)}}
-.cp-loadtxt{position:absolute;left:0;right:0;bottom:78px;text-align:center;color:#bbb;font-size:12.5px;z-index:2}
-.cp-menu{position:absolute;right:10px;bottom:58px;background:rgba(28,28,28,.98);border-radius:12px;padding:6px 0;min-width:210px;z-index:6;box-shadow:0 8px 28px rgba(0,0,0,.7);max-height:70%;overflow-y:auto}
-.cp-mi{display:flex;align-items:center;gap:10px;width:100%;padding:9px 14px;font-size:13.5px;color:#eee;text-align:left;white-space:nowrap}
+.cp-loadtxt{position:absolute;left:0;right:0;bottom:92px;text-align:center;color:#ccc;font-size:13px;z-index:4}
+
+/* double-tap skip animation (YouTube style) */
+.cp-skip-fx{position:absolute;top:0;bottom:0;width:38%;z-index:3;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;gap:8px;pointer-events:none;
+  background:radial-gradient(circle at center,rgba(255,255,255,.18),transparent 70%);
+  animation:cpSkipFade .7s ease forwards}
+.cp-skip-fx.left{left:0;border-radius:0 50% 50% 0}
+.cp-skip-fx.right{right:0;border-radius:50% 0 0 50%}
+.cp-skip-ring{width:64px;height:64px;border-radius:50%;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;
+  color:#fff;animation:cpSkipSpin .7s ease}
+.cp-skip-ring svg{fill:#fff}
+.cp-skip-txt{color:#fff;font-size:12.5px;font-weight:500;text-shadow:0 1px 3px rgba(0,0,0,.8)}
+@keyframes cpSkipSpin{from{transform:scale(.85)}50%{transform:scale(1.08)}to{transform:scale(1)}}
+@keyframes cpSkipFade{0%{opacity:0}18%{opacity:1}72%{opacity:1}100%{opacity:0}}
+
+/* settings panel */
+.cp-menu{position:absolute;right:12px;bottom:60px;min-width:320px;max-width:min(340px,92vw);
+  background:rgba(28,28,28,.97);backdrop-filter:blur(8px);border-radius:12px;padding:8px 0;
+  z-index:8;box-shadow:0 12px 40px rgba(0,0,0,.75);max-height:min(72vh,520px);overflow-y:auto}
+.cp-menu-title{font-size:15px;font-weight:500;color:#fff;padding:8px 18px 10px}
+.cp-menu-head{display:flex;align-items:center;gap:8px;padding:6px 10px 10px;font-size:15px;font-weight:500;color:#fff}
+.cp-back{width:34px;height:34px;border-radius:50%;color:#fff;font-size:17px;display:flex;align-items:center;justify-content:center}
+.cp-back:hover{background:rgba(255,255,255,.12)}
+.cp-mi{display:flex;align-items:center;gap:12px;width:100%;padding:10px 18px;min-height:44px;font-size:14.5px;
+  color:#eee;text-align:left}
 .cp-mi:hover{background:rgba(255,255,255,.1)}
-.cp-mi.sel{color:#3ea6ff;font-weight:500}
-.cp-mi svg{fill:currentColor}
-.cp-mi-h{font-size:11px;color:#9a9a9a;padding:8px 14px 3px;text-transform:uppercase;letter-spacing:.6px}
-.cp-err{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;background:#0b0b0b;color:#ddd;text-align:center;padding:24px;z-index:7}
-.cp-pill{padding:0 16px;height:34px;border-radius:17px;background:#fff;color:#0f0f0f;font-size:13px;font-weight:500;display:inline-flex;align-items:center;gap:6px}
+.cp-mi.sel{color:#3ea6ff}
+.cp-mi svg{fill:currentColor;flex-shrink:0}
+.cp-mi-lbl{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px;line-height:1.25}
+.cp-mi-sub{font-size:11.5px;color:#9a9a9a;font-weight:400}
+.cp-mi.sel .cp-mi-sub{color:#7fb9e8}
+.cp-mi-val{margin-left:auto;color:#aaa;font-size:13px;white-space:nowrap}
+.cp-check-space{width:18px;flex-shrink:0}
+.cp-menu-foot{font-size:11px;color:#8a8a8a;padding:10px 18px 6px;border-top:1px solid rgba(255,255,255,.08);margin-top:6px}
+.cp-speed-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;padding:2px 14px 10px}
+.cp-speed{font-size:12.5px;padding:9px 0;border-radius:8px;background:rgba(255,255,255,.09);color:#eee;text-align:center;font-variant-numeric:tabular-nums}
+.cp-speed:hover{background:rgba(255,255,255,.18)}
+.cp-speed.sel{background:#3ea6ff;color:#062033;font-weight:700}
+.cp-switch{position:relative;width:36px;height:20px;border-radius:10px;background:rgba(255,255,255,.24);flex-shrink:0;transition:background .15s}
+.cp-switch[data-on="1"]{background:#3ea6ff}
+.cp-switch-dot{position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;transition:transform .15s}
+.cp-switch[data-on="1"] .cp-switch-dot{transform:translateX(16px)}
+
+/* error */
+.cp-err{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;
+  background:#0b0b0b;color:#ddd;text-align:center;padding:24px;z-index:7}
+.cp-pill{padding:0 16px;height:36px;border-radius:18px;background:#fff;color:#0f0f0f;font-size:13px;font-weight:500;
+  display:inline-flex;align-items:center;gap:6px}
 .cp-pill.ghost{background:rgba(255,255,255,.14);color:#fff}
 .cp-pill.ghost:hover{background:rgba(255,255,255,.24)}
+
+/* fullscreen + theater tuning: bigger hit targets like YouTube */
+.cp:fullscreen{--cp-btn:52px}
+.cp:fullscreen .cp-row{height:52px}
+.cp:fullscreen .cp-title{font-size:20px}
+@media (max-width:720px){
+  .cp{--cp-btn:42px}
+  .cp-row{height:42px;gap:0}
+  .cp-time{font-size:12px;margin:0 6px}
+  .cp-menu{right:8px;bottom:52px;min-width:0;width:calc(100% - 16px)}
+  .cp-menu-title,.cp-mi{font-size:14px}
+  .cp-top-btn{width:34px;height:34px}
+}
 
 /* ══ WATCH PAGE EXTRAS ═════════════════════════════════════════════════════ */
 .watch.theater .watch-side{display:none}
@@ -404,6 +490,149 @@ img{max-width:100%;display:block}
 .setup-btn{padding:0 18px;height:40px;border-radius:8px;background:#3ea6ff;color:#0f0f0f;font-size:13.5px;font-weight:600}
 .setup-btn:disabled{opacity:.6}
 
+/* ══ v5 additions: subscriptions / RSS ══════════════════════════════════════ */
+.side-sub{display:flex;align-items:center;gap:8px}
+.side-sub .s-av{width:24px;height:24px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:#fff;overflow:hidden}
+.side-sub .s-av img{width:100%;height:100%;object-fit:cover}
+.s-live{width:6px;height:6px;border-radius:50%;background:#f00;margin-left:auto;flex-shrink:0}
+.subs-empty{padding:8px 24px 4px;font-size:12.5px;color:var(--t3)}
+.sub-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 24px 4px}
+.sub-head h2{font-size:20px;font-weight:600}
+.sub-actions{display:flex;gap:8px;flex-wrap:wrap}
+.sub-chip{padding:0 14px;height:34px;border-radius:17px;background:var(--bg3);color:var(--t1);font-size:13px;font-weight:500}
+.sub-chip:hover{background:var(--bg4)}
+.sub-chip.pri{background:#3ea6ff;color:#0f0f0f}
+.ch-rail{display:flex;gap:14px;overflow-x:auto;padding:12px 24px 4px;scrollbar-width:none}
+.ch-rail::-webkit-scrollbar{display:none}
+.ch-card{display:flex;flex-direction:column;align-items:center;gap:6px;width:78px;flex-shrink:0;cursor:pointer}
+.ch-card .ch-av{width:56px;height:56px;border-radius:50%;background:var(--bg3);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:20px;color:#fff;overflow:hidden;border:2px solid transparent;transition:border-color .12s}
+.ch-card:hover .ch-av{border-color:var(--t1)}
+.ch-card .ch-av img{width:100%;height:100%;object-fit:cover}
+.ch-card .ch-name{font-size:11.5px;color:var(--t2);text-align:center;max-width:78px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ch-card.new .ch-av{background:var(--bg2);border:2px dashed var(--border);font-size:22px;color:var(--t2)}
+.sub-btn{height:36px;padding:0 16px;border-radius:18px;background:var(--t1);color:var(--bg);font-size:13.5px;font-weight:500;margin-left:auto;white-space:nowrap}
+.sub-btn.on{background:var(--bg3);color:var(--t2)}
+.sub-btn.small{height:32px;padding:0 12px;font-size:12.5px;margin:0}
+.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.62);z-index:400;display:flex;align-items:center;justify-content:center;padding:16px;animation:fadeIn .12s ease}
+.modal{background:var(--bg2);border:1px solid var(--border);border-radius:14px;width:100%;max-width:460px;padding:22px;box-shadow:0 18px 60px rgba(0,0,0,.6)}
+.modal h3{font-size:17px;font-weight:600;margin-bottom:6px}
+.modal p{font-size:13px;color:var(--t2);line-height:1.6;margin-bottom:14px}
+.modal input,.modal textarea{width:100%;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px 12px;color:var(--t1);font-size:13.5px;outline:none;font-family:inherit}
+.modal input:focus,.modal textarea:focus{border-color:#3ea6ff}
+.modal-row{display:flex;gap:8px;justify-content:flex-end;margin-top:14px;flex-wrap:wrap}
+.modal-err{color:#f28b82;font-size:12.5px;margin-top:8px;min-height:16px}
+.btn-ghost{height:36px;padding:0 16px;border-radius:18px;background:var(--bg3);color:var(--t1);font-size:13.5px}
+.btn-ghost:hover{background:var(--bg4)}
+.btn-pri{height:36px;padding:0 18px;border-radius:18px;background:#3ea6ff;color:#0f0f0f;font-size:13.5px;font-weight:600}
+.sub-row{display:flex;align-items:center;gap:12px;padding:10px 4px;border-bottom:1px solid var(--bg3)}
+.sub-row:last-child{border-bottom:none}
+.sub-row .sr-av{width:40px;height:40px;border-radius:50%;background:var(--bg3);display:flex;align-items:center;justify-content:center;font-weight:700;overflow:hidden;flex-shrink:0}
+.sub-row .sr-av img{width:100%;height:100%;object-fit:cover}
+.sub-row .sr-name{font-size:14px;font-weight:500}
+.sub-row .sr-id{font-size:11.5px;color:var(--t3);font-family:monospace}
+.sub-row .sr-actions{margin-left:auto;display:flex;gap:6px}
+.day-head{font-size:13px;font-weight:600;color:var(--t2);padding:18px 24px 6px;letter-spacing:.3px;text-transform:uppercase}
+.new-dot{width:6px;height:6px;border-radius:50%;background:#3ea6ff;display:inline-block;margin-right:6px}
+
+/* avatar + channel header */
+.av{width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;color:#fff;overflow:hidden;flex-shrink:0}
+.av img{width:100%;height:100%;object-fit:cover}
+.vc-av-wrap{cursor:pointer}
+.ch-head{display:flex;align-items:center;gap:20px;padding:24px;flex-wrap:wrap}
+.ch-title{font-size:26px;font-weight:700;line-height:1.2}
+.ch-meta{font-size:13px;color:var(--t2);margin-top:4px}
+
+
+/* ════════════════ SHORTS ════════════════ */
+.shorts-wrap{display:flex;flex-direction:column;gap:12px}
+.shorts-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.shorts-h-title{display:flex;align-items:center;gap:8px;font-size:22px;font-weight:700}
+.shorts-h-ico{color:var(--red);font-size:20px}
+.shorts-h-count{font-size:13px;font-weight:500;color:var(--t2);background:var(--bg4);border-radius:999px;padding:4px 10px}
+.shorts-h-actions{display:flex;gap:8px}
+.shorts-feed{height:calc(100vh - 200px);min-height:420px;overflow-y:auto;scroll-snap-type:y mandatory;border-radius:16px;display:flex;flex-direction:column;gap:16px;scrollbar-width:none;overscroll-behavior:contain}
+.shorts-feed::-webkit-scrollbar{display:none}
+.short-card{flex:0 0 100%;scroll-snap-align:center;display:flex;align-items:center;justify-content:center;min-height:0}
+.short-stage{position:relative;height:100%;max-width:100%;aspect-ratio:9/16;background:#000;border-radius:16px;overflow:hidden;display:flex;align-items:center;justify-content:center;box-shadow:0 8px 30px rgba(0,0,0,.45)}
+.short-video,.short-poster{width:100%;height:100%;object-fit:cover;background:#000;display:block}
+.short-video{cursor:pointer}
+.short-spin{position:absolute;width:34px;height:34px;border-radius:50%;border:3px solid rgba(255,255,255,.25);border-top-color:#fff;animation:sv-spin .8s linear infinite}
+@keyframes sv-spin{to{transform:rotate(360deg)}}
+.short-err{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:#fff;font-size:14px;background:rgba(0,0,0,.55);text-align:center;padding:20px}
+.short-ov{position:absolute;left:0;right:0;bottom:0;padding:14px 12px 16px;background:linear-gradient(transparent,rgba(0,0,0,.82))}
+.short-who{display:flex;align-items:center;gap:10px;min-width:0}
+.short-av{border-radius:50%;overflow:hidden;flex-shrink:0;line-height:0;cursor:pointer}
+.short-txt{flex:1;min-width:0;color:#fff}
+.short-ch{font-size:13px;font-weight:600}
+.short-title{font-size:14px;font-weight:500;margin-top:2px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.short-views{font-size:12px;color:rgba(255,255,255,.72);margin-top:3px}
+.short-sub{flex-shrink:0;padding:7px 14px!important;font-size:12px!important;background:#fff!important;color:#0f0f0f!important;border-radius:999px!important}
+.short-sub.on{background:rgba(255,255,255,.18)!important;color:#fff!important}
+.short-side{position:absolute;right:10px;bottom:96px;display:flex;flex-direction:column;gap:10px}
+.short-btn{width:42px;height:42px;border-radius:50%;background:rgba(0,0,0,.45);backdrop-filter:blur(6px);color:#fff;display:flex;align-items:center;justify-content:center;border:1px solid rgba(255,255,255,.12);transition:background .15s,transform .15s}
+.short-btn:hover{background:rgba(0,0,0,.7);transform:scale(1.06)}
+.short-btn.on{color:var(--red)}
+.shorts-nav{display:flex;gap:8px;justify-content:center}
+.shorts-nav-btn{width:40px;height:34px;border-radius:10px;background:var(--bg3);color:var(--t1);font-size:12px}
+.shorts-nav-btn:disabled{opacity:.35;cursor:default}
+.shorts-hint{text-align:center;color:var(--t3);font-size:12px}
+.shorts-shelf{margin-bottom:20px}
+.shelf-head{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+.shelf-ico{color:var(--red)}
+.shelf-title{font-size:18px;font-weight:700}
+.shelf-more{margin-left:auto;color:var(--t2);font-size:13px;font-weight:600;padding:6px 12px;border-radius:999px;background:var(--bg3)}
+.shelf-more:hover{background:var(--bg4)}
+.shelf-rail{display:flex;gap:12px;overflow-x:auto;padding-bottom:6px;scrollbar-width:thin}
+.shelf-card{flex:0 0 auto;width:150px;text-align:left;cursor:pointer}
+.shelf-card img{width:150px;height:200px;object-fit:cover;border-radius:12px;background:var(--bg3);display:block}
+.shelf-card-t{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font-size:13px;font-weight:500;margin-top:8px;line-height:1.35}
+.shelf-card-v{font-size:12px;color:var(--t3);margin-top:2px}
+.vc-short{position:absolute;left:8px;bottom:8px;background:rgba(0,0,0,.72);color:#fff;font-size:11px;font-weight:700;letter-spacing:.3px;padding:3px 7px;border-radius:5px;display:flex;align-items:center;gap:4px}
+.vc-short:before{content:"⚡";font-size:10px}
+@media (max-width:640px){
+  .shorts-feed{height:calc(100vh - 232px)}
+  .short-stage{aspect-ratio:9/16;width:100%;border-radius:0}
+  .shelf-card,.shelf-card img{width:124px}
+  .shelf-card img{height:168px}
+}
+
+/* ── speed / pitch / zoom ─────────────────────────────────────────────── */
+.cp-rate-badge{position:absolute;right:14px;top:12px;background:rgba(0,0,0,.72);color:#fff;font-size:12px;font-weight:600;padding:3px 7px;border-radius:4px;border:1px solid rgba(255,255,255,.18)}
+.cp-zoom-badge{right:64px}
+.cp-top{display:flex;align-items:center;gap:8px}
+.cp-top .cp-title{flex:1;min-width:0}
+.cp-speed-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:4px;padding:4px 12px 6px}
+.cp-speed{font-size:12px;padding:6px 0;border-radius:6px;background:rgba(255,255,255,.09);color:#eee;text-align:center}
+.cp-speed:hover{background:rgba(255,255,255,.18)}
+.cp-speed.sel{background:#3ea6ff;color:#062033;font-weight:700}
+.cp-switch{position:relative;width:34px;height:18px;border-radius:9px;background:rgba(255,255,255,.24);flex-shrink:0;transition:background .15s}
+.cp-switch[data-on="1"]{background:#3ea6ff}
+.cp-switch-dot{position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#fff;transition:transform .15s}
+.cp-switch[data-on="1"] .cp-switch-dot{transform:translateX(16px)}
+
+/* ── recommendation shelves ───────────────────────────────────────────── */
+.rec-shelf{margin-bottom:22px}
+.rec-head{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+.rec-title{font-size:18px;font-weight:700}
+.rec-sub{font-size:12px;color:var(--t3);margin-left:2px}
+.rec-rail{display:flex;gap:14px;overflow-x:auto;padding-bottom:6px;scrollbar-width:thin}
+.rec-card{flex:0 0 auto;width:236px;text-align:left;cursor:pointer}
+.rec-card img{width:236px;height:133px;object-fit:cover;border-radius:12px;background:var(--bg3);display:block}
+.rec-card-t{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font-size:14px;font-weight:500;margin-top:8px;line-height:1.35}
+.rec-card-m{font-size:12px;color:var(--t3);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.side-sub{font-size:11px;font-weight:400;color:var(--t3);background:var(--bg3);border-radius:4px;padding:1px 6px;margin-left:8px;text-transform:none;letter-spacing:0}
+.rec-reason{display:inline-block;font-size:11px;color:var(--t2);background:var(--bg3);border-radius:4px;padding:1px 6px;margin-top:4px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.vc-reason{font-size:11.5px;color:var(--t3);margin-top:3px;display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;overflow:hidden}
+@media (max-width:640px){ .rec-card,.rec-card img{width:180px} .rec-card img{height:101px} }
+
+.set-sub-h{font-size:12px;color:var(--t2);font-weight:600;margin:16px 0 8px;text-transform:uppercase;letter-spacing:.5px}
+.set-chip-row{display:flex;gap:6px;flex-wrap:wrap}
+.set-chip{font-size:12px;padding:5px 10px;border-radius:999px;background:var(--bg3);color:var(--t1)}
+.set-chip:hover{background:var(--bg4)}
+.set-chip.on{background:#3ea6ff;color:#062033;font-weight:600}
+.keys-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:6px 14px}
+.key-row{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--t2)}
+.key-row kbd{background:var(--bg3);border:1px solid var(--border);border-radius:5px;padding:1px 6px;font-size:11px;color:var(--t1);font-family:ui-monospace,monospace;white-space:nowrap}
 </style>
 </head>
 <body>
@@ -412,23 +641,39 @@ img{max-width:100%;display:block}
 const { useState, useEffect, useRef, useCallback, useMemo } = React;
 
 /* ════════════════════════════════════════════════════════════════════════════
-   CONFIG
+   CONFIG + utils
    ════════════════════════════════════════════════════════════════════════════ */
 const DEFAULT_CFG = {
   engineUrl: "",
+  accessKey: "",
   autoplay: true,
   showRelated: true,
+  theater: false,
   volume: 1,
   muted: false,
   rate: 1,
+  zoom: "fit",
+  pitch: true,
   region: "IN",
-  theater: false,
 };
+
+// player: 3× top speed, and the fit/zoom presets YouTube offers
+const SPEEDS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3];
+const ZOOM_LIST = [
+  { k: "fit", l: "Fit to screen" },
+  { k: "fill", l: "Fill width" },
+  { k: "1.25", l: "Zoom 125%" },
+  { k: "1.5", l: "Zoom 150%" },
+  { k: "2", l: "Zoom 200%" },
+];
+
 const ls = (k, d) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } };
 const ss = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
 
 const YTT = (id, q) => `https://i.ytimg.com/vi/${id}/${q || "mqdefault"}.jpg`;
 const YTW = (id) => `https://www.youtube.com/watch?v=${id}`;
+const YTC = (id) => `https://www.youtube.com/channel/${id}`;
+
 const fv = (n) => {
   n = Number(n) || 0;
   if (n >= 1e9) return (n / 1e9).toFixed(1).replace(/\.0$/, "") + "B";
@@ -446,22 +691,31 @@ const parseDur = (v) => {
   const p = String(v.lengthText || "").split(":").map(Number);
   return p.length ? p.reduce((a, b) => a * 60 + b, 0) : 0;
 };
-
-/* curated shelf — sirf tab dikhta hai jab engine connect nahi hai */
-const DEMO = [
-  { videoId: "dQw4w9WgXcQ", title: "Rick Astley - Never Gonna Give You Up (Official Video)", author: "Rick Astley", lengthSeconds: 213, viewCount: 1.6e9, publishedText: "16 years ago" },
-  { videoId: "kJQP7kiw5Fk", title: "Luis Fonsi - Despacito ft. Daddy Yankee", author: "Luis Fonsi", lengthSeconds: 282, viewCount: 8.7e9, publishedText: "8 years ago" },
-  { videoId: "JGwWNGJdvx8", title: "Ed Sheeran - Shape of You (Official Music Video)", author: "Ed Sheeran", lengthSeconds: 264, viewCount: 6.5e9, publishedText: "8 years ago" },
-  { videoId: "9bZkp7q19f0", title: "PSY - GANGNAM STYLE(강남스타일) M/V", author: "officialpsy", lengthSeconds: 253, viewCount: 5.2e9, publishedText: "13 years ago" },
-  { videoId: "OPf0YbXqDm0", title: "Mark Ronson - Uptown Funk ft. Bruno Mars", author: "Mark Ronson", lengthSeconds: 271, viewCount: 5.1e9, publishedText: "10 years ago" },
-  { videoId: "RgKAFK5djSk", title: "Wiz Khalifa - See You Again ft. Charlie Puth", author: "Wiz Khalifa", lengthSeconds: 238, viewCount: 6.4e9, publishedText: "10 years ago" },
-  { videoId: "hT_nvWreIhg", title: "OneRepublic - Counting Stars", author: "OneRepublic", lengthSeconds: 258, viewCount: 4.2e9, publishedText: "12 years ago" },
-  { videoId: "nfWlot6h_JM", title: "Taylor Swift - Shake It Off", author: "Taylor Swift", lengthSeconds: 242, viewCount: 3.6e9, publishedText: "11 years ago" },
-];
-const CHIPS = ["All", "Music", "Gaming", "News", "Movies", "Live", "Cricket", "Podcasts", "Science", "Comedy", "Recently uploaded"];
+const ago = (ts, text) => {
+  if (text) return text;
+  if (!ts) return "";
+  const d = Date.now() / 1000 - ts;
+  if (d < 60) return "just now";
+  if (d < 3600) return Math.floor(d / 60) + " min ago";
+  if (d < 86400) return Math.floor(d / 3600) + " hours ago";
+  if (d < 604800) return Math.floor(d / 86400) + " days ago";
+  if (d < 2592000) return Math.floor(d / 604800) + " weeks ago";
+  if (d < 31536000) return Math.floor(d / 2592000) + " months ago";
+  return Math.floor(d / 31536000) + " years ago";
+};
+const dayKey = (ts) => {
+  if (!ts) return "Earlier";
+  const d = new Date(ts * 1000);
+  const today = new Date();
+  const y = new Date(Date.now() - 86400000);
+  if (d.toDateString() === today.toDateString()) return "Today";
+  if (d.toDateString() === y.toDateString()) return "Yesterday";
+  return d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: d.getFullYear() === today.getFullYear() ? undefined : "numeric" });
+};
+const uid = () => Math.random().toString(36).slice(2, 10);
 
 /* ════════════════════════════════════════════════════════════════════════════
-   ENGINE CLIENT (Cloudflare Worker → YouTube InnerTube)
+   ENGINE (Cloudflare Worker)
    ════════════════════════════════════════════════════════════════════════════ */
 const baseOf = (cfg) => String((cfg && cfg.engineUrl) || "").replace(/\/+$/, "");
 const mediaUrl = (cfg, u) => (!u ? "" : /^https?:/i.test(u) ? u : baseOf(cfg) + u);
@@ -470,10 +724,12 @@ async function ep(cfg, path, timeout = 25000) {
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), timeout);
   try {
-    const r = await fetch(baseOf(cfg) + path, { signal: ac.signal, headers: { Accept: "application/json" } });
+    const key = String((cfg && cfg.accessKey) || "").trim();
+    const withKey = key ? path + (path.includes("?") ? "&" : "?") + "key=" + encodeURIComponent(key) : path;
+    const r = await fetch(baseOf(cfg) + withKey, { signal: ac.signal, headers: { Accept: "application/json" } });
     const text = await r.text();
     let data = null;
-    try { data = text ? JSON.parse(text) : null; } catch { throw new Error("engine returned non-JSON (worker URL galat hai?)"); }
+    try { data = text ? JSON.parse(text) : null; } catch { throw new Error("engine returned non-JSON (worker URL check karein)"); }
     if (!r.ok) throw new Error((data && (data.error || data.detail)) || "engine HTTP " + r.status);
     return data;
   } finally { clearTimeout(t); }
@@ -484,7 +740,124 @@ const apiSearch = (cfg, q) => ep(cfg, "/api/search?q=" + encodeURIComponent(q));
 const apiSearchMore = (cfg, q, token) => ep(cfg, "/api/searchmore?q=" + encodeURIComponent(q) + "&token=" + encodeURIComponent(token));
 const apiTrending = (cfg, region) => ep(cfg, "/api/trending?region=" + encodeURIComponent(region || "IN"));
 const apiRelated = (cfg, id) => ep(cfg, "/api/related?id=" + encodeURIComponent(id));
+const apiShorts = (cfg, region) => ep(cfg, "/api/shorts?region=" + encodeURIComponent(region || "IN"), 20000);
 const apiPlayer = (cfg, id) => ep(cfg, "/api/player?id=" + encodeURIComponent(id), 30000);
+const apiRss = (cfg, ids) => ep(cfg, "/api/rss?channels=" + encodeURIComponent(ids.join(",")), 30000);
+const apiChannel = (cfg, q) => ep(cfg, "/api/channel?q=" + encodeURIComponent(q), 20000);
+
+
+/* ════════════════════════════════════════════════════════════════════════════
+   RECOMMENDATION ENGINE — client-side, keyless
+   Signals: YouTube's own "next" list · channels you watch (via RSS) ·
+            subscriptions · freshness · popularity. No tracking, all local.
+   ════════════════════════════════════════════════════════════════════════════ */
+const REC_TTL = 5 * 60 * 1000;
+const recCache = new Map();
+
+function recAffinity(hist, excludeId) {
+  const counts = new Map();
+  for (const v of hist || []) {
+    if (!v || !v.authorId || v.authorId === excludeId) continue;
+    counts.set(v.authorId, (counts.get(v.authorId) || 0) + 1);
+  }
+  return counts;
+}
+
+function recScore(v, ctx) {
+  let s = 0;
+  const aff = ctx.counts.get(v.authorId) || 0;
+  s += Math.min(24, aff * 8); // how often you watch this channel
+  if (ctx.subs.has(v.authorId)) s += 10; // explicit intent
+  if (v.viewCount > 0) s += Math.min(10, Math.log10(Math.max(10, v.viewCount)) * 2.5);
+  if (v.published) {
+    const hrs = (Date.now() / 1000 - v.published) / 3600;
+    if (hrs >= 0) s += Math.max(0, 12 - hrs / 24); // fresh uploads first
+  }
+  if (v.isShort) s -= 6; // keep the watch-page rail long-form
+  return s;
+}
+
+function recMerge(groups, ctx, exclude, limit = 20) {
+  const out = new Map();
+  for (const g of groups) {
+    for (const v of g.items || []) {
+      if (!v || !v.videoId || exclude.has(v.videoId)) continue;
+      const score = g.base + recScore(v, ctx);
+      const prev = out.get(v.videoId);
+      if (prev && prev.__score >= score) continue;
+      out.set(v.videoId, {
+        ...v,
+        recReason: typeof g.reason === "function" ? g.reason(v) : g.reason,
+        __score: score,
+      });
+    }
+  }
+  return [...out.values()]
+    .sort((a, b) => b.__score - a.__score)
+    .slice(0, limit)
+    .map(({ __score, ...v }) => v);
+}
+
+async function recommendFor(cfg, video, st) {
+  const hit = recCache.get("v:" + video.videoId);
+  if (hit && Date.now() - hit.ts < REC_TTL) return hit.data;
+
+  const counts = recAffinity(st.hist, null);
+  const subs = new Set((st.subs || []).map((x) => x.channelId));
+  const ctx = { counts, subs };
+  const top = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6).map(([id]) => id);
+  const feedIds = [...new Set([video.authorId, ...top].filter(Boolean))].slice(0, 8);
+
+  const [rel, feed, trend] = await Promise.all([
+    apiRelated(cfg, video.videoId).then((d) => d.items || []).catch(() => []),
+    feedIds.length ? apiRss(cfg, feedIds).then((d) => d.items || []).catch(() => []) : [],
+    (st.hist || []).length === 0 ? apiTrending(cfg, cfg.region).then((d) => d.items || []).catch(() => []) : [],
+  ]);
+
+  const items = recMerge(
+    [
+      { items: rel, base: 58, reason: (v) => (subs.has(v.authorId) ? "From a channel you follow" : "Related to this video") },
+      { items: feed.filter((v) => v.authorId && v.authorId !== video.authorId), base: 44, reason: (v) => "Because you watch " + (v.author || "this channel") },
+      { items: feed.filter((v) => v.authorId && v.authorId === video.authorId), base: 52, reason: (v) => "More from " + (v.author || video.author || "this channel") },
+      { items: trend, base: 20, reason: "Trending now" },
+    ],
+    ctx,
+    new Set([video.videoId]),
+    20
+  );
+
+  const data = { items, affinity: top.slice(0, 3) };
+  recCache.set("v:" + video.videoId, { ts: Date.now(), data });
+  return data;
+}
+
+async function recommendHome(cfg, st) {
+  const hit = recCache.get("home");
+  if (hit && Date.now() - hit.ts < REC_TTL) return hit.data;
+
+  const counts = recAffinity(st.hist, null);
+  const subs = new Set((st.subs || []).map((x) => x.channelId));
+  const ids = [...new Set([...subs, ...[...counts.entries()].sort((a, b) => b[1] - a[1]).map(([id]) => id)])].slice(0, 8);
+
+  const [feed, trend] = await Promise.all([
+    ids.length ? apiRss(cfg, ids).then((d) => d.items || []).catch(() => []) : [],
+    apiTrending(cfg, cfg.region).then((d) => d.items || []).catch(() => []),
+  ]);
+
+  const items = recMerge(
+    [
+      { items: feed, base: 40, reason: (v) => (subs.has(v.authorId) ? "New from " + (v.author || "a channel you follow") : "Because you watch " + (v.author || "this channel")) },
+      { items: trend, base: 18, reason: "Trending now" },
+    ],
+    { counts, subs },
+    new Set(),
+    12
+  );
+
+  const data = { items };
+  recCache.set("home", { ts: Date.now(), data });
+  return data;
+}
 
 /* ════════════════════════════════════════════════════════════════════════════
    ICONS
@@ -493,9 +866,9 @@ const I = {
   play: "M8 5v14l11-7z",
   pause: "M6 19h4V5H6v14zm8-14v14h4V5h-4z",
   next: "M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z",
-  vol: "M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z",
-  mute: "M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z",
-  gear: "M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.488.488 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z",
+  vol: "M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z",
+  mute: "M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z",
+  gear: "M19.14 12.94c.04-.3.06-.61.06-.94 0-.33-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.48.48 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.49.49 0 0 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z",
   fs: "M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z",
   fsExit: "M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z",
   theater: "M19 6H5c-1.1 0-2 .9-2 2v8c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm0 10H5V8h14v8z",
@@ -504,6 +877,9 @@ const I = {
   save: "M14 10H2v2h12v-2zm0-4H2v2h12V6zm4 8v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zM2 16h8v-2H2v2z",
   more: "M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z",
   check: "M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z",
+  bell: "M12 22c1.1 0 2-.9 2-2h-4c0 1.1.9 2 2 2zm6-6v-5c0-3.07-1.63-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5S10.5 3.17 10.5 4v.68C7.64 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z",
+  zoom: "M15 3h6v6h-2V5h-4V3zM9 3v2H5v4H3V3h6zm12 12h2v6h-6v-2h4v-4zM3 15h2v4h4v2H3v-6z",
+  rss: "M6.18 15.64a2.18 2.18 0 1 1 0 4.36 2.18 2.18 0 0 1 0-4.36zM4 4.44A15.56 15.56 0 0 1 19.56 20h-2.83A12.73 12.73 0 0 0 4 7.27V4.44zm0 5.66a9.9 9.9 0 0 1 9.9 9.9h-2.83A7.07 7.07 0 0 0 4 12.93V10.1z",
 };
 const Icon = ({ d, size }) => (
   <svg viewBox="0 0 24 24" width={size || 22} height={size || 22} aria-hidden="true"><path d={d} /></svg>
@@ -517,6 +893,7 @@ function useStore() {
   const [favs, setFavs] = useState(() => ls("sv_f", []));
   const [wl, setWl] = useState(() => ls("sv_w", []));
   const [pls, setPls] = useState(() => ls("sv_p", []));
+  const [subs, setSubs] = useState(() => ls("sv_subs", []));
   const [cfg, setCfg] = useState(() => ({ ...DEFAULT_CFG, ...ls("sv_cfg", {}) }));
 
   const addHist = useCallback((v) => {
@@ -528,23 +905,41 @@ function useStore() {
   const isFav = (id) => favs.some((v) => v.videoId === id);
   const togWL = (v) => setWl((w) => { const n = w.some((x) => x.videoId === v.videoId) ? w.filter((x) => x.videoId !== v.videoId) : [v, ...w]; ss("sv_w", n); return n; });
   const isWL = (id) => wl.some((v) => v.videoId === id);
-  const mkPL = (nm) => setPls((p) => { const n = [...p, { id: Date.now().toString(), name: nm, videos: [] }]; ss("sv_p", n); return n; });
+  const mkPL = (nm) => setPls((p) => { const n = [...p, { id: uid(), name: nm, videos: [] }]; ss("sv_p", n); return n; });
   const rmPL = (id) => setPls((p) => { const n = p.filter((x) => x.id !== id); ss("sv_p", n); return n; });
-  const addToPL = (plId, v) => setPls((p) => {
-    const n = p.map((pl) => (pl.id === plId && !pl.videos.some((x) => x.videoId === v.videoId) ? { ...pl, videos: [v, ...pl.videos] } : pl));
-    ss("sv_p", n); return n;
+
+  /* ── subscriptions (channel metadata cached locally, videos from RSS) ── */
+  const addSub = (ch) => setSubs((s) => {
+    if (!ch || !ch.channelId || s.some((x) => x.channelId === ch.channelId)) return s;
+    const n = [...s, { channelId: ch.channelId, name: ch.name || ch.channelId, avatar: ch.avatar || "", addedAt: Date.now() }];
+    ss("sv_subs", n); return n;
   });
+  const removeSub = (id) => setSubs((s) => { const n = s.filter((x) => x.channelId !== id); ss("sv_subs", n); return n; });
+  const isSub = (id) => !!id && subs.some((x) => x.channelId === id);
+  const setSubsRaw = (list) => { ss("sv_subs", list); setSubs(list); };
+
   const updCfg = useCallback((patch) => setCfg((c) => { const n = { ...c, ...patch }; ss("sv_cfg", n); return n; }), []);
-  return { hist, addHist, clrHist, rmHist, favs, togFav, isFav, wl, togWL, isWL, pls, mkPL, rmPL, addToPL, cfg, updCfg };
+  return {
+    hist, addHist, clrHist, rmHist, favs, togFav, isFav, wl, togWL, isWL, pls, mkPL, rmPL,
+    subs, addSub, removeSub, isSub, setSubsRaw, cfg, updCfg,
+  };
 }
 
 const AV_COLORS = ["#ff4e45", "#ff8c00", "#ffd600", "#4caf50", "#2196f3", "#9c27b0", "#e91e63", "#00bcd4"];
 const avColor = (name) => AV_COLORS[(String(name || "A").charCodeAt(0) || 65) % AV_COLORS.length];
 
+function Av({ name, src, size = 36, cls = "" }) {
+  return (
+    <div className={"av " + cls} style={{ width: size, height: size, background: src ? "var(--bg3)" : avColor(name), fontSize: Math.round(size * 0.42) }}>
+      {src ? <img src={src} alt="" onError={(e) => { e.currentTarget.style.display = "none"; }} /> : (name || "?")[0].toUpperCase()}
+    </div>
+  );
+}
+
 /* ════════════════════════════════════════════════════════════════════════════
    VIDEO CARD
    ════════════════════════════════════════════════════════════════════════════ */
-function VCard({ v, onPlay, layout = "grid", st }) {
+function VCard({ v, onPlay, layout = "grid", st, onChannel, showAv = true }) {
   const [menu, setMenu] = useState(false);
   const menuRef = useRef();
   useEffect(() => {
@@ -556,28 +951,33 @@ function VCard({ v, onPlay, layout = "grid", st }) {
   if (!v || !v.videoId) return null;
   const row = layout === "list";
   const dur = parseDur(v);
-  const thumb = v.thumbnail || YTT(v.videoId, "mqdefault");
+  const thumb = v.thumbnail || YTT(v.videoId);
   const fav = st.isFav(v.videoId), wl = st.isWL(v.videoId);
   const act = (e, a) => { e.stopPropagation(); a === "fav" ? st.togFav(v) : st.togWL(v); setMenu(false); };
 
   return (
-    <div className={"vc" + (row ? " vc-row" : "")} style={{ position: "relative" }} onClick={() => onPlay(v)}>
+    <div className={"vc" + (row ? " vc-row" : "")} onClick={() => onPlay(v)}>
       <div className="vc-thumb">
-        <img className="vc-thumb-img" src={thumb} alt="" loading="lazy"
-          onError={(e) => { e.currentTarget.src = YTT(v.videoId, "mqdefault"); }} />
+        <img className="vc-thumb-img" src={thumb} alt="" loading="lazy" onError={(e) => { e.currentTarget.src = YTT(v.videoId); }} />
         {dur > 0 && <span className="vc-dur">{fd(dur)}</span>}
         {v.live && <span className="vc-live">LIVE</span>}
+        {v.isShort && !v.live && <span className="vc-short">Shorts</span>}
       </div>
       <div className="vc-body">
-        {!row && <div className="vc-av" style={{ background: avColor(v.author) }}>{(v.author || "?")[0].toUpperCase()}</div>}
+        {!row && showAv && (
+          <div className="vc-av-wrap" onClick={(e) => { if (onChannel && v.authorId) { e.stopPropagation(); onChannel(v.authorId, v.author); } }}>
+            <Av name={v.author} size={36} />
+          </div>
+        )}
         <div className="vc-meta">
           <div className="vc-title">{v.title}</div>
-          <div className="vc-channel">{v.author}</div>
+          <div className="vc-channel" onClick={(e) => { if (onChannel && v.authorId) { e.stopPropagation(); onChannel(v.authorId, v.author); } }}>{v.author}</div>
           <div className="vc-info">
             {v.viewCount > 0 && <span>{fv(v.viewCount)} views</span>}
-            {v.viewCount > 0 && v.publishedText && <span className="vc-dot">•</span>}
-            {v.publishedText && <span>{v.publishedText}</span>}
+            {(v.viewCount > 0 && (v.publishedText || v.published)) && <span className="vc-dot">•</span>}
+            {(v.publishedText || v.published) && <span>{ago(v.published, v.publishedText)}</span>}
           </div>
+          {v.recReason && <div className="vc-reason">{v.recReason}</div>}
         </div>
         <button className="vc-more-btn" onClick={(e) => { e.stopPropagation(); setMenu(!menu); }} aria-label="Menu">⋮</button>
       </div>
@@ -613,10 +1013,31 @@ function Skels({ n = 12 }) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
-   CUSTOM PLAYER (YouTube-style chrome on a plain <video>)
+   CUSTOM PLAYER — YouTube-accurate chrome
+   48px controls · double-tap skip · nested settings (speed / quality / zoom)
    ════════════════════════════════════════════════════════════════════════════ */
-function CPlayer({ video, formats, st, onNext, poster, onQuality }) {
+const SkipIco = ({ dir, size = 24 }) => (
+  <svg viewBox="0 0 24 24" width={size} height={size} aria-hidden="true" className="cp-ico">
+    <path
+      fill="currentColor"
+      d={dir < 0
+        ? "M12 5V1L7 6l5 5V7a6 6 0 1 1-6 6H4a8 8 0 1 0 8-8z"
+        : "M12 5V1l5 5-5 5V7a6 6 0 1 0 6 6h2a8 8 0 1 1-8-8z"}
+    />
+  </svg>
+);
+
+const ZOOM_MODES = [
+  { k: "fit", l: "Fit to screen", d: "Poora video, letterbox ke saath" },
+  { k: "fill", l: "Fill width", d: "Frame bhar do — kinare crop honge" },
+  { k: "1.25", l: "Zoom 125%" },
+  { k: "1.5", l: "Zoom 150%" },
+  { k: "2", l: "Zoom 200%" },
+];
+
+function CPlayer({ video, formats, st, onNext, poster, onRefresh }) {
   const wrapRef = useRef(null), vidRef = useRef(null), hideT = useRef(null);
+  const tapT = useRef(null), tapAt = useRef(0);
   const [qi, setQi] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [time, setTime] = useState(0), [dur, setDur] = useState(0), [buf, setBuf] = useState(0);
@@ -624,16 +1045,19 @@ function CPlayer({ video, formats, st, onNext, poster, onQuality }) {
   const [full, setFull] = useState(false), [theater, setTheater] = useState(!!st.cfg.theater);
   const [ui, setUi] = useState(true), [hoverX, setHoverX] = useState(null), [drag, setDrag] = useState(false);
   const [menu, setMenu] = useState(null), [rate, setRate] = useState(st.cfg.rate || 1);
+  const [zoom, setZoom] = useState(st.cfg.zoom || "fit");
+  const [pitch, setPitch] = useState(st.cfg.pitch !== false);
   const [waiting, setWaiting] = useState(true), [err, setErr] = useState(""), [flash, setFlash] = useState(null);
-  const [showBig, setShowBig] = useState(true);
+  const [skipFx, setSkipFx] = useState(null);
   const pendingSeek = useRef(null);
+  const refreshTries = useRef(0);
+  const firstRender = useRef(true);
+  const barRef = useRef(null);
 
   const list = formats && formats.length ? formats : [];
   const cur = list[Math.min(qi, list.length - 1)];
   const src = cur ? mediaUrl(st.cfg, cur.url) : "";
 
-  /* keep the same position when switching quality (but never on first mount) */
-  const firstRender = useRef(true);
   useEffect(() => {
     if (firstRender.current) { firstRender.current = false; return; }
     const el = vidRef.current;
@@ -642,16 +1066,19 @@ function CPlayer({ video, formats, st, onNext, poster, onQuality }) {
     setWaiting(true);
   }, [qi]);
 
-  useEffect(() => { if (onQuality && cur) onQuality(cur); }, [cur && cur.itag]);
-
   useEffect(() => {
     const el = vidRef.current;
     if (!el) return;
     el.volume = muted ? 0 : vol;
     el.muted = muted;
-    el.playbackRate = rate;
-    st.updCfg({ volume: vol, muted, rate });
-  }, [vol, muted, rate]);
+    try { el.playbackRate = rate; } catch {}
+    try {
+      el.preservesPitch = pitch;
+      el.mozPreservesPitch = pitch;
+      el.webkitPreservesPitch = pitch;
+    } catch {}
+    st.updCfg({ volume: vol, muted, rate, zoom, pitch });
+  }, [vol, muted, rate, zoom, pitch]);
 
   useEffect(() => {
     const onFs = () => setFull(!!(document.fullscreenElement && wrapRef.current && document.fullscreenElement === wrapRef.current));
@@ -662,22 +1089,16 @@ function CPlayer({ video, formats, st, onNext, poster, onQuality }) {
   const bump = useCallback(() => {
     setUi(true);
     clearTimeout(hideT.current);
-    hideT.current = setTimeout(() => setUi(false), 2800);
+    hideT.current = setTimeout(() => setUi(false), 3200);
   }, []);
-
-  useEffect(() => { bump(); return () => clearTimeout(hideT.current); }, [bump]);
+  useEffect(() => { bump(); return () => { clearTimeout(hideT.current); clearTimeout(tapT.current); }; }, [bump]);
 
   const toggle = useCallback(() => {
     const el = vidRef.current;
     if (!el) return;
-    if (el.paused || el.ended) {
-      el.play().catch(() => {});
-      setFlash("play");
-    } else {
-      el.pause();
-      setFlash("pause");
-    }
-    setTimeout(() => setFlash(null), 450);
+    if (el.paused || el.ended) { const p = el.play(); if (p && p.catch) p.catch(() => {}); setFlash("play"); }
+    else { el.pause(); setFlash("pause"); }
+    setTimeout(() => setFlash(null), 420);
     bump();
   }, [bump]);
 
@@ -690,19 +1111,64 @@ function CPlayer({ video, formats, st, onNext, poster, onQuality }) {
     bump();
   }, [dur, bump]);
 
-  const skip = useCallback((s) => seekTo((vidRef.current?.currentTime || 0) + s), [seekTo]);
+  const showSkip = useCallback((dir, secs = 10) => {
+    setSkipFx({ dir, secs, id: Date.now() });
+    clearTimeout(showSkip._t);
+    showSkip._t = setTimeout(() => setSkipFx(null), 700);
+  }, []);
+
+  const skip = useCallback((s) => {
+    const el = vidRef.current;
+    seekTo((el?.currentTime || 0) + s);
+    showSkip(s < 0 ? -1 : 1, Math.abs(s));
+  }, [seekTo, showSkip]);
 
   const setV = (v) => { const nv = Math.max(0, Math.min(1, Number(v))); setVol(nv); setMuted(nv === 0); };
 
-  const toggleFull = () => {
+  const toggleFull = useCallback(() => {
     const w = wrapRef.current;
     if (!w) return;
     if (document.fullscreenElement) document.exitFullscreen?.();
-    else w.requestFullscreen?.().catch(() => {});
-  };
+    else {
+      const p = w.requestFullscreen?.();
+      if (p && p.catch) p.catch(() => {});
+    }
+  }, []);
+
   const toggleTheater = () => { const t = !theater; setTheater(t); st.updCfg({ theater: t }); };
 
-  /* keyboard */
+  const bumpRate = useCallback((dir) => {
+    setRate((r) => {
+      const i = SPEEDS.indexOf(r);
+      const at = i < 0 ? SPEEDS.indexOf(1) : i;
+      return SPEEDS[Math.max(0, Math.min(SPEEDS.length - 1, at + dir))];
+    });
+    bump();
+  }, [bump]);
+
+  const cycleZoom = useCallback(() => {
+    setZoom((z) => {
+      const i = ZOOM_MODES.findIndex((x) => x.k === z);
+      return ZOOM_MODES[(i + 1) % ZOOM_MODES.length].k;
+    });
+    bump();
+  }, [bump]);
+
+  const zoomLabel = (ZOOM_MODES.find((z) => z.k === zoom) || ZOOM_MODES[0]).l;
+  const zoomStyle =
+    zoom === "fit" ? { objectFit: "contain" }
+      : zoom === "fill" ? { objectFit: "cover" }
+        : { objectFit: "cover", transform: `scale(${Number(zoom) || 1})`, transformOrigin: "center center" };
+
+  const shareVideo = async () => {
+    const url = YTW(video.videoId);
+    try {
+      if (navigator.share) await navigator.share({ title: video.title, url });
+      else { await navigator.clipboard.writeText(url); alert("Link copied"); }
+    } catch {}
+  };
+
+  /* ── keyboard ──────────────────────────────────────────────────────────── */
   useEffect(() => {
     const onKey = (e) => {
       const tag = (e.target.tagName || "").toLowerCase();
@@ -717,46 +1183,68 @@ function CPlayer({ video, formats, st, onNext, poster, onQuality }) {
       else if (k === "arrowleft") { e.preventDefault(); skip(-5); }
       else if (k === "arrowup") { e.preventDefault(); setV(vol + 0.1); }
       else if (k === "arrowdown") { e.preventDefault(); setV(vol - 0.1); }
-      else if (k === "m") { setMuted((m) => !m); }
+      else if (k === "m") setMuted((m) => !m);
       else if (k === "f") toggleFull();
       else if (k === "t") toggleTheater();
+      else if (k === "escape" && menu) setMenu(null);
+      else if (k === ">" || k === ".") bumpRate(1);
+      else if (k === "<" || k === ",") bumpRate(-1);
+      else if (k === "z") cycleZoom();
       else if (k === "n" && onNext) onNext();
-      else if (/^[0-9]$/.test(k)) { seekTo(((el.duration || 0) * Number(k)) / 10); }
+      else if (/^[0-9]$/.test(k)) seekTo(((el.duration || 0) * Number(k)) / 10);
       bump();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [toggle, skip, vol, onNext, bump, seekTo]);
+  }, [toggle, skip, vol, onNext, bump, seekTo, bumpRate, cycleZoom, toggleFull, menu]);
+
+  /* ── stage taps: 1 tap = play/pause, double tap = ±10s, centre = fullscreen ─ */
+  const stageTap = (e) => {
+    if (menu) { setMenu(null); return; }
+    const stage = e.currentTarget;
+    const r = stage.getBoundingClientRect ? stage.getBoundingClientRect() : { left: 0, width: 1 };
+    const rel = ((e.clientX || 0) - r.left) / (r.width || 1);
+    const now = Date.now();
+    if (now - tapAt.current < 300) {
+      clearTimeout(tapT.current);
+      tapAt.current = 0;
+      if (rel < 0.35) skip(-10);
+      else if (rel > 0.65) skip(10);
+      else toggleFull();
+      return;
+    }
+    tapAt.current = now;
+    clearTimeout(tapT.current);
+    tapT.current = setTimeout(() => { toggle(); }, 250);
+  };
 
   const pct = dur > 0 ? (time / dur) * 100 : 0;
   const bufPct = dur > 0 ? (buf / dur) * 100 : 0;
-  const barRef = useRef(null);
   const posFromEvent = (e) => {
     const b = barRef.current;
     if (!b) return 0;
     const r = b.getBoundingClientRect();
     return Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
   };
-
-  const fmtErr = (e) => {
-    const c = e && e.target && e.target.error;
+  const fmtErr = (el) => {
+    const c = el && el.error;
     if (!c) return "Playback error";
     if (c.code === 4) return "Format not supported by this browser";
     if (c.code === 2) return "Network error while loading the stream";
     if (c.code === 3) return "Stream decode error";
     return "Playback error (" + c.code + ")";
   };
+  const hideUI = !ui && playing && !menu;
 
   return (
-    <div className={"cp" + (ui ? "" : " hide-cursor")} ref={wrapRef} tabIndex={0}
-      onMouseMove={bump} onMouseLeave={() => setUi(false)}
-      onClick={(e) => { if (e.target === vidRef.current) toggle(); }}
-      onDoubleClick={toggleFull}>
+    <div className={"cp" + (ui ? "" : " cp-hide-cursor")} ref={wrapRef} tabIndex={0}
+      onMouseMove={bump} onMouseLeave={() => { setUi(false); setMenu(null); }}>
+
       <video
         ref={vidRef} src={src} poster={poster} playsInline preload="metadata" controls={false}
-        onClick={toggle}
-        onPlay={() => { setPlaying(true); setShowBig(false); }}
-        onPause={() => { setPlaying(false); setShowBig(true); }}
+        style={zoomStyle}
+        onPlay={() => { setPlaying(true); refreshTries.current = 0; }}
+        onPause={() => setPlaying(false)}
         onTimeUpdate={(e) => setTime(e.currentTarget.currentTime)}
         onDurationChange={(e) => setDur(e.currentTarget.duration || 0)}
         onLoadedMetadata={(e) => {
@@ -764,18 +1252,53 @@ function CPlayer({ video, formats, st, onNext, poster, onQuality }) {
           setTime(e.currentTarget.currentTime || 0);
           setWaiting(false);
           if (pendingSeek.current != null) { e.currentTarget.currentTime = pendingSeek.current; pendingSeek.current = null; }
-          if (st.cfg.autoplay) e.currentTarget.play().catch(() => setShowBig(true));
+          if (st.cfg.autoplay) { const p = e.currentTarget.play(); if (p && p.catch) p.catch(() => {}); }
         }}
         onProgress={(e) => { const b = e.currentTarget.buffered; if (b.length) setBuf(b.end(b.length - 1)); }}
         onWaiting={() => setWaiting(true)}
         onPlaying={() => { setWaiting(false); setErr(""); }}
         onCanPlay={() => setWaiting(false)}
-        onEnded={() => { setPlaying(false); setShowBig(true); if (st.cfg.autoplay && onNext) onNext(); }}
-        onError={() => { setErr(fmtErr({ target: vidRef.current })); setWaiting(false); }}
+        onEnded={() => { setPlaying(false); if (st.cfg.autoplay && onNext) onNext(); }}
+        onError={(e) => {
+          if (onRefresh && refreshTries.current < 2) {
+            refreshTries.current += 1;
+            pendingSeek.current = vidRef.current?.currentTime || 0;
+            setWaiting(true); setErr("");
+            onRefresh();
+            return;
+          }
+          setErr(fmtErr(e.currentTarget));
+          setWaiting(false);
+        }}
       />
 
-      <div className={"cp-top" + (ui || !playing ? "" : " hidden")}>
+      {/* tap layer: single / double tap behaviour */}
+      <div className="cp-stage" onClick={stageTap} />
+
+      {/* double-tap ripple */}
+      {skipFx && (
+        <div className={"cp-skip-fx " + (skipFx.dir < 0 ? "left" : "right")} key={skipFx.id}>
+          <div className="cp-skip-ring">
+            <SkipIco dir={skipFx.dir} size={34} />
+          </div>
+          <div className="cp-skip-txt">{skipFx.secs} seconds</div>
+        </div>
+      )}
+
+      {/* top gradient: title + actions */}
+      <div className={"cp-top" + (hideUI ? " hidden" : "")}>
         <div className="cp-title">{video.title}</div>
+        <div className="cp-top-actions">
+          <button className="cp-top-btn" title="Save to Watch later" onClick={(e) => { e.stopPropagation(); st.togWL(video); }}>
+            <Icon d={I.save} size={22} />
+          </button>
+          <button className="cp-top-btn" title="Share" onClick={(e) => { e.stopPropagation(); shareVideo(); }}>
+            <Icon d={I.share} size={22} />
+          </button>
+          <a className="cp-top-btn" href={YTW(video.videoId)} target="_blank" rel="noreferrer" title="Open on YouTube">
+            <Icon d={I.more} size={22} />
+          </a>
+        </div>
       </div>
 
       {waiting && !err && <div className="cp-big"><div className="cp-spin" /></div>}
@@ -787,7 +1310,6 @@ function CPlayer({ video, formats, st, onNext, poster, onQuality }) {
           </button>
         </div>
       )}
-
       {flash && <div className="cp-big"><div className="cp-big-icon"><Icon d={flash === "play" ? I.play : I.pause} /></div></div>}
 
       {err && (
@@ -803,15 +1325,11 @@ function CPlayer({ video, formats, st, onNext, poster, onQuality }) {
         </div>
       )}
 
-      <div className={"cp-ui" + (ui || !playing ? "" : " hidden")} onClick={(e) => e.stopPropagation()}>
+      {/* ── bottom chrome ─────────────────────────────────────────────────── */}
+      <div className={"cp-ui" + (hideUI ? " hidden" : "")} onClick={(e) => e.stopPropagation()}>
         <div className="cp-bar" ref={barRef}
-          onMouseMove={(e) => setHoverX(posFromEvent(e))}
-          onMouseLeave={() => setHoverX(null)}
-          onPointerDown={(e) => {
-            try { e.currentTarget.setPointerCapture?.(e.pointerId); } catch {}
-            setDrag(true);
-            seekTo(posFromEvent(e) * dur);
-          }}
+          onMouseMove={(e) => setHoverX(posFromEvent(e))} onMouseLeave={() => setHoverX(null)}
+          onPointerDown={(e) => { try { e.currentTarget.setPointerCapture?.(e.pointerId); } catch {} setDrag(true); seekTo(posFromEvent(e) * dur); }}
           onPointerMove={(e) => { if (drag) seekTo(posFromEvent(e) * dur); }}
           onPointerUp={(e) => { setDrag(false); seekTo(posFromEvent(e) * dur); }}>
           <div className="cp-bar-track">
@@ -823,43 +1341,115 @@ function CPlayer({ video, formats, st, onNext, poster, onQuality }) {
         </div>
 
         <div className="cp-row">
-          <button className="cp-btn" onClick={toggle} title={playing ? "Pause (k)" : "Play (k)"}>
-            <Icon d={playing ? I.pause : I.play} />
+          <button className="cp-btn" onClick={() => skip(-10)} title="Back 10s (j)"><SkipIco dir={-1} /></button>
+          <button className="cp-btn cp-btn-main" onClick={toggle} title={playing ? "Pause (k)" : "Play (k)"}>
+            <Icon d={playing ? I.pause : I.play} size={26} />
           </button>
-          {onNext && <button className="cp-btn" onClick={onNext} title="Next (n)"><Icon d={I.next} /></button>}
+          <button className="cp-btn" onClick={() => skip(10)} title="Forward 10s (l)"><SkipIco dir={1} /></button>
+          {onNext && <button className="cp-btn" onClick={onNext} title="Next (n)"><Icon d={I.next} size={24} /></button>}
+
           <div className="cp-vol-wrap">
-            <button className="cp-btn" onClick={() => setMuted(!muted)} title="Mute (m)">
-              <Icon d={muted || vol === 0 ? I.mute : I.vol} />
-            </button>
-            <div className={"cp-vol" + (menu === "vol" ? " open" : "")}>
-              <input type="range" min="0" max="1" step="0.02" value={muted ? 0 : vol}
-                onChange={(e) => setV(e.target.value)} aria-label="Volume" />
-            </div>
+            <button className="cp-btn" onClick={() => setMuted(!muted)} title="Mute (m)"><Icon d={muted || vol === 0 ? I.mute : I.vol} size={24} /></button>
+            <div className="cp-vol"><input type="range" min="0" max="1" step="0.02" value={muted ? 0 : vol} onChange={(e) => setV(e.target.value)} aria-label="Volume" /></div>
           </div>
-          <span className="cp-time">{fd(time)} / {fd(dur)}</span>
+
+          <span className="cp-time">{fd(time)} <span className="cp-time-sep">/</span> {fd(dur)}</span>
+
+          {rate !== 1 && <span className="cp-badge">{rate}×</span>}
+          {zoom !== "fit" && <span className="cp-badge">{zoom === "fill" ? "Fill" : zoom + "×"}</span>}
+
           <div className="cp-spacer" />
-          <button className="cp-btn" onClick={() => setMenu(menu === "settings" ? null : "settings")} title="Settings">
-            <Icon d={I.gear} />
+
+          <button className={"cp-btn" + (menu ? " on" : "")} onClick={() => setMenu(menu ? null : "main")} title="Settings">
+            <Icon d={I.gear} size={24} />
           </button>
-          <button className="cp-btn" onClick={toggleTheater} title="Theater (t)"><Icon d={I.theater} /></button>
-          <button className="cp-btn" onClick={toggleFull} title="Fullscreen (f)"><Icon d={full ? I.fsExit : I.fs} /></button>
+          <button className="cp-btn" onClick={cycleZoom} title={"Zoom: " + zoomLabel + " (z)"}><Icon d={I.zoom} size={23} /></button>
+          <button className="cp-btn" onClick={toggleTheater} title="Theater (t)"><Icon d={I.theater} size={24} /></button>
+          <button className="cp-btn" onClick={toggleFull} title="Fullscreen (f)"><Icon d={full ? I.fsExit : I.fs} size={24} /></button>
         </div>
 
-        {menu === "settings" && (
+        {/* ── settings panel (YouTube-style, nested) ──────────────────────── */}
+        {menu && (
           <div className="cp-menu" onClick={(e) => e.stopPropagation()}>
-            <div className="cp-mi-h">Quality {cur ? `· ${cur.quality}` : ""}</div>
-            {list.map((f, i) => (
-              <button key={f.itag || i} className={"cp-mi" + (i === qi ? " sel" : "")} onClick={() => { setQi(i); setMenu(null); }}>
-                {i === qi ? <Icon d={I.check} size={16} /> : <span style={{ width: 16 }} />}
-                {f.quality}{f.kind === "muxed" ? "" : " (video)"}
-              </button>
-            ))}
-            <div className="cp-mi-h" style={{ marginTop: 6 }}>Playback speed</div>
-            {[0.5, 0.75, 1, 1.25, 1.5, 2].map((r) => (
-              <button key={r} className={"cp-mi" + (r === rate ? " sel" : "")} onClick={() => { setRate(r); setMenu(null); }}>
-                {r === rate ? <Icon d={I.check} size={16} /> : <span style={{ width: 16 }} />}{r === 1 ? "Normal" : r + "×"}
-              </button>
-            ))}
+            {menu === "main" && (
+              <>
+                <div className="cp-menu-title">Settings</div>
+                <button className="cp-mi" onClick={() => setMenu("speed")}>
+                  <span className="cp-mi-lbl">Playback speed</span>
+                  <span className="cp-mi-val">{rate === 1 ? "Normal" : rate + "×"}</span>
+                </button>
+                <button className="cp-mi" onClick={() => setMenu("quality")}>
+                  <span className="cp-mi-lbl">Quality</span>
+                  <span className="cp-mi-val">{cur ? cur.quality : "Auto"}</span>
+                </button>
+                <button className="cp-mi" onClick={() => setMenu("zoom")}>
+                  <span className="cp-mi-lbl">Zoom</span>
+                  <span className="cp-mi-val">{zoomLabel}</span>
+                </button>
+                <button className="cp-mi" onClick={() => setPitch((v) => !v)}>
+                  <span className="cp-mi-lbl">Preserve pitch</span>
+                  <span className="cp-switch" data-on={pitch ? "1" : "0"}><span className="cp-switch-dot" /></span>
+                </button>
+                <div className="cp-menu-foot">&lt; &gt; speed · z zoom · j/l ±10s</div>
+              </>
+            )}
+
+            {menu === "speed" && (
+              <>
+                <div className="cp-menu-head">
+                  <button className="cp-back" onClick={() => setMenu("main")} aria-label="Back">←</button>
+                  <span>Playback speed</span>
+                </div>
+                <div className="cp-speed-grid">
+                  {SPEEDS.map((r) => (
+                    <button key={r} className={"cp-speed" + (r === rate ? " sel" : "")} onClick={() => setRate(r)}>
+                      {r === 1 ? "Normal" : r + "×"}
+                    </button>
+                  ))}
+                </div>
+                <button className="cp-mi" onClick={() => setPitch((v) => !v)}>
+                  <span className="cp-mi-lbl">Preserve pitch</span>
+                  <span className="cp-switch" data-on={pitch ? "1" : "0"}><span className="cp-switch-dot" /></span>
+                </button>
+                <div className="cp-menu-foot">{pitch ? "Awaaz natural rahegi har speed par" : "Varispeed — pitch bhi badhega"}</div>
+              </>
+            )}
+
+            {menu === "quality" && (
+              <>
+                <div className="cp-menu-head">
+                  <button className="cp-back" onClick={() => setMenu("main")} aria-label="Back">←</button>
+                  <span>Quality</span>
+                </div>
+                <button className={"cp-mi" + (qi === 0 ? " sel" : "")} onClick={() => { setQi(0); setMenu("main"); }}>
+                  {qi === 0 ? <Icon d={I.check} size={18} /> : <span className="cp-check-space" />}
+                  <span className="cp-mi-lbl">Auto <span className="cp-mi-sub">{cur ? cur.quality : ""}</span></span>
+                </button>
+                {list.map((f, i) => (
+                  <button key={f.itag || i} className={"cp-mi" + (i === qi ? " sel" : "")} onClick={() => { setQi(i); setMenu("main"); }}>
+                    {i === qi ? <Icon d={I.check} size={18} /> : <span className="cp-check-space" />}
+                    <span className="cp-mi-lbl">{f.quality}{f.itag ? <span className="cp-mi-sub">itag {f.itag}</span> : null}</span>
+                  </button>
+                ))}
+                <div className="cp-menu-foot">{list.length} muxed stream{list.length === 1 ? "" : "s"} available</div>
+              </>
+            )}
+
+            {menu === "zoom" && (
+              <>
+                <div className="cp-menu-head">
+                  <button className="cp-back" onClick={() => setMenu("main")} aria-label="Back">←</button>
+                  <span>Zoom</span>
+                </div>
+                {ZOOM_MODES.map((z) => (
+                  <button key={z.k} className={"cp-mi" + (z.k === zoom ? " sel" : "")} onClick={() => { setZoom(z.k); setMenu("main"); }}>
+                    {z.k === zoom ? <Icon d={I.check} size={18} /> : <span className="cp-check-space" />}
+                    <span className="cp-mi-lbl">{z.l}{z.d ? <span className="cp-mi-sub">{z.d}</span> : null}</span>
+                  </button>
+                ))}
+                <div className="cp-menu-foot">z key se cycle karein</div>
+              </>
+            )}
           </div>
         )}
       </div>
@@ -868,41 +1458,103 @@ function CPlayer({ video, formats, st, onNext, poster, onQuality }) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
-   SETUP GATE + ENGINE BAR
+   SUBSCRIBE MODAL + ENGINE BAR + SETUP
    ════════════════════════════════════════════════════════════════════════════ */
+function AddSubModal({ st, engine, onClose, onAdded }) {
+  const [q, setQ] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [found, setFound] = useState(null);
+
+  const lookup = async () => {
+    const val = q.trim();
+    if (!val) return;
+    if (engine !== "ok") { setErr("Engine connect nahi hai — pehle worker URL set karein."); return; }
+    setBusy(true); setErr(""); setFound(null);
+    try {
+      const r = await apiChannel(st.cfg, val);
+      if (!r || !r.channelId) throw new Error("channel nahi mila");
+      setFound(r);
+    } catch (e) { setErr(e.message); }
+    setBusy(false);
+  };
+  const save = () => {
+    if (!found) return;
+    st.addSub(found);
+    onAdded && onAdded(found);
+    onClose();
+  };
+
+  return (
+    <div className="modal-bg" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <h3>Subscribe to a channel</h3>
+        <p>Channel URL, @handle, ya <code>UC…</code> id paste karein. Videos channel feed se aayengi — koi login nahi, koi notification nahi.</p>
+        <input autoFocus placeholder="https://youtube.com/@LofiGirl  ·  @mkbhd  ·  UCxxxxxxx" value={q}
+          onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === "Enter" && lookup()} />
+        <div className="modal-err">{err}</div>
+        {found && (
+          <div className="sub-row" style={{ borderBottom: "none" }}>
+            <Av name={found.name} src={found.avatar} size={40} />
+            <div><div className="sr-name">{found.name || found.channelId}</div><div className="sr-id">{found.channelId}</div></div>
+          </div>
+        )}
+        <div className="modal-row">
+          <button className="btn-ghost" onClick={onClose}>Cancel</button>
+          {!found && <button className="btn-pri" disabled={busy} onClick={lookup}>{busy ? "Looking up…" : "Find channel"}</button>}
+          {found && <button className="btn-pri" onClick={save}>Subscribe</button>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function EngineBar({ status, onSetup }) {
+  if (status === "ok") return null;
+  return (
+    <div className="engine-bar">
+      <span>{status === "checking" ? "⏳" : "⚠️"}</span>
+      <div style={{ flex: 1, minWidth: 200 }}>
+        <div className="engine-bar-t">{status === "checking" ? "Engine check ho raha hai…" : "YouTube engine connected nahi hai"}</div>
+        <div className="engine-bar-s">Search/playback ke liye worker.js deploy karke URL daalein</div>
+      </div>
+      <button className="engine-bar-btn" onClick={onSetup}>Setup</button>
+    </div>
+  );
+}
+
 function SetupGate({ st, onRetry, busy }) {
   const [url, setUrl] = useState(st.cfg.engineUrl || "");
+  const [key, setKey] = useState(st.cfg.accessKey || "");
   const [copied, setCopied] = useState("");
   const copyWorker = async () => {
     try {
       const r = await fetch("./worker.js");
-      const code = await r.text();
-      await navigator.clipboard.writeText(code);
+      await navigator.clipboard.writeText(await r.text());
       setCopied("Worker code copied — Cloudflare → Workers → paste → Deploy");
-    } catch {
-      setCopied("Copy nahi hua — repo me worker.js file se manually copy karein");
-    }
+    } catch { setCopied("Copy nahi hua — repo me worker.js se manually copy karein"); }
   };
   return (
     <div className="setup">
       <div className="setup-card">
         <div className="setup-badge">ONE-TIME SETUP · 2 MIN</div>
         <h1 className="setup-h1">YouTube engine connect karein</h1>
-        <p className="setup-p">
-          Browser se YouTube direct nahi khulta (CORS + IP-bound stream URLs). Ek <b>Cloudflare Worker</b> ye dono
-          handle karta hai — free, serverless, koi Piped/Invidious nahi.
-        </p>
+        <p className="setup-p">Browser se YouTube direct nahi khulta (CORS + IP-bound URLs). Ek <b>Cloudflare Worker</b> ye handle karta hai — free, serverless.</p>
         <ol className="setup-steps">
           <li><a href="https://dash.cloudflare.com/?to=/:account/workers-and-pages" target="_blank" rel="noreferrer">dash.cloudflare.com</a> → Workers &amp; Pages → <b>Create Worker</b></li>
-          <li><button className="setup-link" onClick={copyWorker}>worker.js copy karein</button> → editor me paste → <b>Deploy</b></li>
-          <li>Worker URL yahan daalein (jaise <code>https://my-worker.abc123.workers.dev</code>)</li>
+          <li><button className="setup-link" onClick={copyWorker}>worker.js copy karein</button> → paste → <b>Deploy</b></li>
+          <li>Worker URL yahan daalein</li>
         </ol>
         {copied && <div className="setup-note ok">{copied}</div>}
         <div className="setup-row">
+          <input className="setup-input" type="password" placeholder="Access key (only if SV_KEY set)" value={key}
+            onChange={(e) => setKey(e.target.value)} onKeyDown={(e) => e.key === "Enter" && st.updCfg({ accessKey: key.trim() })} />
+        </div>
+        <div className="setup-row">
           <input className="setup-input" placeholder="https://your-worker.workers.dev" value={url}
             onChange={(e) => setUrl(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && st.updCfg({ engineUrl: url.trim() })} />
-          <button className="setup-btn" disabled={busy} onClick={() => st.updCfg({ engineUrl: url.trim() })}>
+            onKeyDown={(e) => e.key === "Enter" && st.updCfg({ engineUrl: url.trim(), accessKey: key.trim() })} />
+          <button className="setup-btn" disabled={busy} onClick={() => st.updCfg({ engineUrl: url.trim(), accessKey: key.trim() })}>
             {busy ? "Checking…" : "Connect"}
           </button>
         </div>
@@ -915,78 +1567,228 @@ function SetupGate({ st, onRetry, busy }) {
   );
 }
 
-function EngineBar({ status, cfg, onSetup }) {
-  if (status === "ok") return null;
-  return (
-    <div className="engine-bar">
-      <span>{status === "checking" ? "⏳" : "⚠️"}</span>
-      <div style={{ flex: 1, minWidth: 200 }}>
-        <div className="engine-bar-t">{status === "checking" ? "Engine check ho raha hai…" : "YouTube engine connected nahi hai"}</div>
-        <div className="engine-bar-s">Demo shelf dikha rahe hain — full search/stream ke liye worker URL set karein</div>
-      </div>
-      <button className="engine-bar-btn" onClick={onSetup}>Setup</button>
-    </div>
-  );
-}
-
 /* ════════════════════════════════════════════════════════════════════════════
    HOME
    ════════════════════════════════════════════════════════════════════════════ */
-function HomePage({ onPlay, st, engine, initChip }) {
+const CHIPS = ["All", "Music", "Gaming", "News", "Movies", "Live", "Cricket", "Podcasts", "Science", "Comedy"];
+
+function HomePage({ onPlay, st, engine, onChannel, onShorts }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [warn, setWarn] = useState("");
-  const [chip, setChip] = useState(initChip || "All");
+  const [chip, setChip] = useState("All");
   const [nonce, setNonce] = useState(0);
 
   useEffect(() => {
     let dead = false;
     setLoading(true); setWarn("");
-    const load = async () => {
-      if (engine !== "ok") {
-        setItems(DEMO); setLoading(false);
-        setWarn(engine === "checking" ? "" : "engine-offline");
-        return;
-      }
+    (async () => {
+      if (engine !== "ok") { if (!dead) { setItems([]); setLoading(false); } return; }
       try {
-        if (chip === "All" || chip === "Recently uploaded" || chip === "Live") {
+        let list;
+        if (chip === "All") {
           const d = await apiTrending(st.cfg, st.cfg.region);
-          if (dead) return;
-          let list = d.items || [];
-          if (chip === "Live") list = list.filter((v) => v.live);
-          setItems(list.length ? list : DEMO);
+          list = d.items || [];
         } else {
           const d = await apiSearch(st.cfg, chip + (chip === "Music" ? " songs" : ""));
-          if (!dead) setItems(d.items || DEMO);
+          list = d.items || [];
+          if (chip === "Live") list = list.filter((v) => v.live);
         }
-      } catch (e) {
-        if (!dead) { setWarn(e.message); setItems(DEMO); }
-      }
+        if (!dead) setItems(list);
+      } catch (e) { if (!dead) setWarn(e.message); }
       if (!dead) setLoading(false);
-    };
-    load();
+    })();
     return () => { dead = true; };
   }, [chip, nonce, engine, st.cfg.engineUrl, st.cfg.region]);
 
   return (
     <div>
-      <EngineBar status={engine} cfg={st.cfg} onSetup={() => st.updCfg({ engineUrl: st.cfg.engineUrl })} />
       <div className="chips-bar">
-        {CHIPS.map((c) => (
-          <button key={c} className={"chip" + (chip === c ? " act" : "")} onClick={() => setChip(c)}>{c}</button>
-        ))}
+        {CHIPS.map((c) => <button key={c} className={"chip" + (chip === c ? " act" : "")} onClick={() => setChip(c)}>{c}</button>)}
       </div>
-      {warn && warn !== "engine-offline" && (
-        <div className="inline-warn">
-          <span>⚠️</span><span style={{ flex: 1 }}>{warn}</span>
-          <button className="cp-pill" onClick={() => setNonce((n) => n + 1)}>Retry</button>
-        </div>
+      {warn && (
+        <div className="inline-warn"><span>⚠️</span><span style={{ flex: 1 }}>{warn}</span>
+          <button className="cp-pill" onClick={() => setNonce((n) => n + 1)}>Retry</button></div>
       )}
-      {loading ? <Skels /> : (
+      {chip === "All" && <RecShelf st={st} engine={engine} onPlay={onPlay} />}
+      {chip === "All" && <ShortsShelf st={st} engine={engine} onOpen={() => onShorts()} />}
+      {loading ? <Skels /> : items.length === 0 ? (
+        <div className="err-box"><div className="err-ico">📭</div><div className="err-msg">Kuch nahi mila — engine connect karein ya chips try karein</div></div>
+      ) : (
         <div className="vgrid">
           {items.map((v, i) => (
             <div key={v.videoId || i} style={{ animationDelay: `${Math.min(i, 16) * 0.03}s` }}>
-              <VCard v={v} onPlay={onPlay} st={st} />
+              <VCard v={v} onPlay={onPlay} st={st} onChannel={onChannel} />
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   SUBSCRIPTIONS (RSS)
+   ════════════════════════════════════════════════════════════════════════════ */
+function SubsPage({ st, engine, onPlay, onChannel, onAddSub, refreshKey }) {
+  const [feed, setFeed] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState("");
+  const [nonce, setNonce] = useState(0);
+  const ids = useMemo(() => st.subs.map((s) => s.channelId), [st.subs]);
+
+  useEffect(() => {
+    let dead = false;
+    if (!ids.length) { setFeed({ items: [], channels: [], errors: [] }); setLoading(false); return; }
+    if (engine !== "ok") { setErr("engine-offline"); setLoading(false); return; }
+    setLoading(true); setErr("");
+    apiRss(st.cfg, ids)
+      .then((d) => {
+        if (dead) return;
+        setFeed(d);
+        setLoading(false);
+        // keep channel names/avatars fresh
+        (d.channels || []).forEach((ch) => {
+          const local = st.subs.find((s) => s.channelId === ch.channelId);
+          if (local && ch.name && (local.name !== ch.name || !local.avatar)) {
+            st.setSubsRaw(st.subs.map((s) => (s.channelId === ch.channelId ? { ...s, name: ch.name || s.name } : s)));
+          }
+        });
+      })
+      .catch((e) => { if (!dead) { setErr(e.message); setLoading(false); } });
+    return () => { dead = true; };
+  }, [ids.join(","), engine, st.cfg.engineUrl, nonce, refreshKey]);
+
+  const grouped = useMemo(() => {
+    const groups = [];
+    const map = new Map();
+    (feed && feed.items ? feed.items : []).forEach((v) => {
+      const k = dayKey(v.published);
+      if (!map.has(k)) { map.set(k, []); groups.push(k); }
+      map.get(k).push(v);
+    });
+    return groups.map((k) => ({ day: k, items: map.get(k) }));
+  }, [feed]);
+
+  const itemById = useMemo(() => {
+    const m = new Map();
+    (feed && feed.items ? feed.items : []).forEach((v) => { if (v.authorId) m.set(v.videoId, v); });
+    return m;
+  }, [feed]);
+
+  return (
+    <div>
+      <div className="ch-rail">
+        {st.subs.map((s) => {
+          const name = s.name || s.channelId;
+          return (
+            <div key={s.channelId} className="ch-card" onClick={() => onChannel(s.channelId, name)}>
+              <div className="ch-av">{s.avatar ? <img src={s.avatar} alt="" onError={(e) => { e.currentTarget.remove(); }} /> : (name || "?")[0].toUpperCase()}</div>
+              <div className="ch-name" title={name}>{name}</div>
+            </div>
+          );
+        })}
+        <div className="ch-card new" onClick={onAddSub}>
+          <div className="ch-av">＋</div>
+          <div className="ch-name">Add channel</div>
+        </div>
+      </div>
+
+      <div className="sub-head">
+        <h2>Subscriptions</h2>
+        <div className="sub-actions">
+          <button className="sub-chip" onClick={() => setNonce((n) => n + 1)}>↻ Refresh</button>
+          <a className="sub-chip" href={YTW("")} onClick={(e) => e.preventDefault()} style={{ display: "none" }} />
+          <button className="sub-chip pri" onClick={onAddSub}>＋ Subscribe</button>
+        </div>
+      </div>
+
+      {err === "engine-offline" && <div className="inline-warn" style={{ marginTop: 8 }}><span>⚠️</span><span>Engine connect karein — channel feeds worker se aati hain</span></div>}
+      {err && err !== "engine-offline" && (
+        <div className="inline-warn" style={{ marginTop: 8 }}><span>⚠️</span><span style={{ flex: 1 }}>{err}</span>
+          <button className="cp-pill" onClick={() => setNonce((n) => n + 1)}>Retry</button></div>
+      )}
+      {feed && feed.errors && feed.errors.length > 0 && (
+        <div className="inline-warn" style={{ marginTop: 8 }}>
+          <span>⚠️</span><span style={{ flex: 1 }}>{feed.errors.length} channel feed(s) load nahi hui — baaki dikha rahe hain</span>
+        </div>
+      )}
+
+      {!st.subs.length ? (
+        <div className="lib-empty">
+          <div className="lib-empty-ico">📡</div>
+          <div className="lib-empty-title">Koi subscription nahi</div>
+          <div className="lib-empty-sub">Channel add karein — unki nayi videos yahan aayengi, bina login ke</div>
+          <button className="btn-pri" onClick={onAddSub}>＋ Subscribe to a channel</button>
+        </div>
+      ) : loading ? <Skels n={8} /> : (
+        <>
+          {grouped.map((g) => (
+            <div key={g.day}>
+              <div className="day-head">{g.day}</div>
+              <div className="vlist" style={{ padding: "0 24px" }}>
+                {g.items.map((v) => (
+                  <div key={v.videoId} className="lib-row">
+                    <VCard v={v} onPlay={onPlay} layout="list" st={st} onChannel={onChannel} />
+                    <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", paddingTop: 12, gap: 4 }}>
+                      <span className="sr-id" style={{ fontSize: 11, color: "var(--t3)" }}>{ago(v.published)}</span>
+                      {v.viewCount > 0 && <span className="sr-id" style={{ fontSize: 11, color: "var(--t3)" }}>{fv(v.viewCount)} views</span>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   CHANNEL PAGE (single channel RSS)
+   ════════════════════════════════════════════════════════════════════════════ */
+function ChannelPage({ channelId, name, st, engine, onPlay, onChannel }) {
+  const [feed, setFeed] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState("");
+  const [nonce, setNonce] = useState(0);
+  const sub = st.subs.find((s) => s.channelId === channelId);
+
+  useEffect(() => {
+    let dead = false;
+    setLoading(true); setErr("");
+    if (engine !== "ok" || !channelId) { setLoading(false); setErr("engine-offline"); return; }
+    apiRss(st.cfg, [channelId])
+      .then((d) => { if (!dead) { setFeed(d); setLoading(false); } })
+      .catch((e) => { if (!dead) { setErr(e.message); setLoading(false); } });
+    return () => { dead = true; };
+  }, [channelId, engine, st.cfg.engineUrl, nonce]);
+
+  const meta = (feed && feed.channels && feed.channels[0]) || sub || { name: name || channelId, channelId };
+
+  return (
+    <div>
+      <div className="ch-head">
+        <Av name={meta.name} src={sub && sub.avatar} size={88} />
+        <div style={{ flex: 1, minWidth: 200 }}>
+          <div className="ch-title">{meta.name || channelId}</div>
+          <div className="ch-meta">{(feed && feed.items ? feed.items.length : 0)} recent videos · channel feed</div>
+        </div>
+        <button className={"sub-btn" + (st.isSub(channelId) ? " on" : "")}
+          onClick={() => (st.isSub(channelId) ? st.removeSub(channelId) : st.addSub({ channelId, name: meta.name }))}>
+          {st.isSub(channelId) ? "Subscribed" : "Subscribe"}
+        </button>
+        <a className="btn-ghost" href={YTC(channelId)} target="_blank" rel="noreferrer">YouTube ↗</a>
+      </div>
+      {err && err !== "engine-offline" && (
+        <div className="inline-warn"><span>⚠️</span><span style={{ flex: 1 }}>{err}</span><button className="cp-pill" onClick={() => setNonce((n) => n + 1)}>Retry</button></div>
+      )}
+      {loading ? <Skels n={8} /> : (
+        <div className="vgrid">
+          {(feed && feed.items ? feed.items : []).map((v, i) => (
+            <div key={v.videoId} style={{ animationDelay: `${Math.min(i, 12) * 0.03}s` }}>
+              <VCard v={v} onPlay={onPlay} st={st} onChannel={onChannel} showAv={false} />
             </div>
           ))}
         </div>
@@ -998,7 +1800,293 @@ function HomePage({ onPlay, st, engine, initChip }) {
 /* ════════════════════════════════════════════════════════════════════════════
    SEARCH
    ════════════════════════════════════════════════════════════════════════════ */
-function SearchPage({ query, onPlay, st, engine }) {
+
+/* ════════════════════════════════════════════════════════════════════════════
+   SHORTS — vertical snap feed, one stream resolved at a time
+   ════════════════════════════════════════════════════════════════════════════ */
+function RecShelf({ st, engine, onPlay }) {
+  const [items, setItems] = useState([]);
+  useEffect(() => {
+    let dead = false;
+    if (engine !== "ok") return;
+    if (!(st.hist.length || st.subs.length)) return; // nothing to personalize yet
+    recommendHome(st.cfg, st)
+      .then((d) => { if (!dead) setItems((d.items || []).slice(0, 12)); })
+      .catch(() => {});
+    return () => { dead = true; };
+  }, [engine, st.cfg.engineUrl, st.hist.length, st.subs.length]);
+  if (!items.length) return null;
+  return (
+    <div className="rec-shelf">
+      <div className="rec-head">
+        <span className="rec-title">Recommended for you</span>
+        <span className="rec-sub">history + subscriptions se</span>
+      </div>
+      <div className="rec-rail">
+        {items.map((v) => (
+          <button key={v.videoId} className="rec-card" onClick={() => onPlay(v)}>
+            <img src={v.thumbnail || YTT(v.videoId)} alt="" loading="lazy" onError={(e) => { e.currentTarget.src = YTT(v.videoId); }} />
+            <div className="rec-card-t">{v.title}</div>
+            <div className="rec-card-m">{v.author}{v.viewCount > 0 ? " · " + fv(v.viewCount) + " views" : ""}</div>
+            {v.recReason && <div className="rec-reason">{v.recReason}</div>}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ShortsShelf({ st, engine, onOpen }) {
+  const [items, setItems] = useState([]);
+  useEffect(() => {
+    let dead = false;
+    if (engine !== "ok") return;
+    apiShorts(st.cfg, st.cfg.region).then((d) => { if (!dead) setItems((d.items || []).slice(0, 12)); }).catch(() => {});
+    return () => { dead = true; };
+  }, [engine, st.cfg.engineUrl, st.cfg.region]);
+  if (!items.length) return null;
+  return (
+    <div className="shorts-shelf">
+      <div className="shelf-head">
+        <span className="shelf-ico">⚡</span>
+        <span className="shelf-title">Shorts</span>
+        <button className="shelf-more" onClick={onOpen}>View all</button>
+      </div>
+      <div className="shelf-rail">
+        {items.map((v) => (
+          <button key={v.videoId} className="shelf-card" onClick={onOpen} title={v.title}>
+            <img src={v.thumbnail} alt="" loading="lazy" />
+            <span className="shelf-card-t">{v.title}</span>
+            {v.viewCount > 0 && <span className="shelf-card-v">{fv(v.viewCount)} views</span>}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ShortCard({ v, idx, active, muted, data, st, onChannel, onAddSub, onOpenWatch, onLike, onToggleMute, cardRef }) {
+  const vidRef = useRef(null);
+  const meta = { ...v, ...((data && data.video) || {}) };
+  const subscribed = st.isSub(meta.authorId);
+  const fav = st.isFav(v.videoId);
+  const share = async () => {
+    const url = YTW(v.videoId);
+    try {
+      if (navigator.share) await navigator.share({ title: meta.title, url });
+      else { await navigator.clipboard.writeText(url); alert("Link copied"); }
+    } catch {}
+  };
+  return (
+    <div className="short-card" data-idx={idx} ref={cardRef}>
+      <div className="short-stage">
+        {data && data.src ? (
+          <video
+            ref={vidRef}
+            className="short-video"
+            src={data.src}
+            poster={v.thumbnail}
+            loop
+            playsInline
+            muted={muted || !active}
+            autoPlay={active}
+            preload={Math.abs(idx - active) <= 1 ? "auto" : "none"}
+            onClick={() => { const el = vidRef.current; if (!el) return; if (el.paused) el.play().catch(() => {}); else el.pause(); }}
+          />
+        ) : (
+          <img className="short-poster" src={v.thumbnail} alt="" />
+        )}
+        {data && data.status === "loading" && <div className="short-spin" />}
+        {data && data.status === "error" && (
+          <div className="short-err">
+            <div>Stream nahi mila</div>
+            <a href={YTW(v.videoId)} target="_blank" rel="noreferrer" className="cp-pill">Open on YouTube</a>
+          </div>
+        )}
+
+        <div className="short-ov">
+          <div className="short-who">
+            <button className="short-av" onClick={() => meta.authorId && onChannel(meta.authorId, meta.author)} title={meta.author}>
+              <Av name={meta.author} src={meta.avatar} size={38} />
+            </button>
+            <div className="short-txt">
+              <div className="short-ch">{meta.author || "Shorts"}</div>
+              <div className="short-title">{meta.title}</div>
+              {meta.viewCount > 0 && <div className="short-views">{fv(meta.viewCount)} views</div>}
+            </div>
+            <button
+              className={"sub-btn short-sub" + (subscribed ? " on" : "")}
+              onClick={() => {
+                if (subscribed) st.removeSub(meta.authorId);
+                else if (meta.authorId) st.addSub({ channelId: meta.authorId, name: meta.author });
+                else onAddSub();
+              }}
+            >
+              {subscribed ? "Subscribed" : "Subscribe"}
+            </button>
+          </div>
+        </div>
+
+        <div className="short-side">
+          <button className={"short-btn" + (fav ? " on" : "")} title="Like" onClick={() => onLike(meta)}>
+            <Icon d={I.like} size={22} />
+          </button>
+          <button className="short-btn" title={muted ? "Unmute" : "Mute"} onClick={() => onToggleMute()}>
+            <Icon d={muted ? I.mute : I.vol} size={22} />
+          </button>
+          <button className="short-btn" title="Watch page" onClick={() => onOpenWatch(meta)}>
+            <Icon d={I.play} size={22} />
+          </button>
+          <button className="short-btn" title="Share" onClick={share}>
+            <Icon d={I.share} size={20} />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ShortsPage({ st, engine, onPlay, onChannel, onAddSub }) {
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [warn, setWarn] = useState("");
+  const [active, setActive] = useState(0);
+  const [muted, setMuted] = useState(true);
+  const [nonce, setNonce] = useState(0);
+  const [data, setData] = useState({});   // videoId -> {status, src, video}
+  const feedRef = useRef(null);
+  const cardRefs = useRef([]);
+
+  useEffect(() => {
+    let dead = false;
+    setLoading(true); setWarn(""); setActive(0); setData({});
+    if (engine !== "ok") {
+      if (!dead) { setItems([]); setLoading(false); if (engine === "down") setWarn("Engine connect nahi hai — Settings me worker URL daalein"); }
+      return () => { dead = true; };
+    }
+    apiShorts(st.cfg, st.cfg.region)
+      .then((d) => {
+        if (dead) return;
+        const list = d.items || [];
+        setItems(list);
+        if (!list.length) setWarn("Shorts nahi mile — Retry karein");
+      })
+      .catch((e) => { if (!dead) setWarn(e.message); })
+      .then(() => { if (!dead) setLoading(false); });
+    return () => { dead = true; };
+  }, [engine, st.cfg.engineUrl, st.cfg.region, nonce]);
+
+  // resolve the current card (+1 so the next swipe is instant)
+  useEffect(() => {
+    if (engine !== "ok") return;
+    let dead = false;
+    [active, active + 1].forEach((i) => {
+      const v = items[i];
+      if (!v) return;
+      setData((d) => (d[v.videoId] ? d : { ...d, [v.videoId]: { status: "loading" } }));
+      apiPlayer(st.cfg, v.videoId)
+        .then((p) => {
+          if (dead) return;
+          const ok = p && p.ok && (p.formats || []).length;
+          setData((d) => ({ ...d, [v.videoId]: ok ? { status: "ready", src: p.formats[0].url, video: p.video || {} } : { status: "error" } }));
+        })
+        .catch(() => { if (!dead) setData((d) => ({ ...d, [v.videoId]: { status: "error" } })); });
+    });
+    return () => { dead = true; };
+  }, [active, items, engine, st.cfg.engineUrl]);
+
+  // play the active one, pause the rest
+  useEffect(() => {
+    const feed = feedRef.current;
+    if (!feed) return;
+    const vids = feed.querySelectorAll("video");
+    vids.forEach((el) => {
+      const card = el.closest(".short-card");
+      const on = card && Number(card.dataset.idx) === active;
+      if (on) {
+        el.muted = muted;
+        const pr = el.play && el.play();
+        if (pr && pr.catch) pr.catch(() => {});
+      } else {
+        try { el.pause(); el.currentTime = 0; } catch {}
+      }
+    });
+  }, [active, muted, data, items]);
+
+  const scrollTo = useCallback((i) => {
+    const el = cardRefs.current[i];
+    if (el && el.scrollIntoView) { try { el.scrollIntoView({ behavior: "smooth", block: "start" }); } catch {} }
+  }, []);
+
+  const step = useCallback((dir) => {
+    setActive((i) => {
+      const n = Math.max(0, Math.min(items.length - 1, i + dir));
+      scrollTo(n);
+      return n;
+    });
+  }, [items.length, scrollTo]);
+
+  useEffect(() => {
+    const h = (e) => {
+      if (e.target && /INPUT|TEXTAREA/.test(e.target.tagName)) return;
+      if (e.key === "ArrowDown" || e.key === "j") { e.preventDefault(); step(1); }
+      else if (e.key === "ArrowUp" || e.key === "k") { e.preventDefault(); step(-1); }
+      else if (e.key === "m") setMuted((m) => !m);
+    };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [step]);
+
+  const cur = items[active];
+
+  return (
+    <div className="shorts-wrap">
+      <div className="shorts-head">
+        <div className="shorts-h-title"><span className="shorts-h-ico">⚡</span> Shorts
+          {items.length > 0 && <span className="shorts-h-count">{active + 1} / {items.length}</span>}
+        </div>
+        <div className="shorts-h-actions">
+          <button className="cp-pill" onClick={() => setNonce((n) => n + 1)}>Refresh</button>
+          <button className="cp-pill" onClick={() => setMuted((m) => !m)}>{muted ? "🔇 Unmute" : "🔊 Mute"}</button>
+        </div>
+      </div>
+
+      {warn && (
+        <div className="inline-warn"><span>⚠️</span><span style={{ flex: 1 }}>{warn}</span>
+          <button className="cp-pill" onClick={() => setNonce((n) => n + 1)}>Retry</button></div>
+      )}
+
+      {loading ? (
+        <div className="shorts-feed"><div className="short-card"><div className="short-stage"><div className="skel" style={{ width: "100%", height: "100%" }} /></div></div></div>
+      ) : items.length === 0 ? (
+        <div className="err-box"><div className="err-ico">⚡</div><div className="err-msg">Abhi koi Short nahi mila — Refresh try karein</div></div>
+      ) : (
+        <>
+          <div className="shorts-feed" ref={feedRef}>
+            {items.map((v, i) => (
+              <ShortCard
+                key={v.videoId}
+                v={v} idx={i} active={i === active} muted={muted} data={data[v.videoId]}
+                st={st} onChannel={onChannel} onAddSub={onAddSub}
+                cardRef={(el) => { cardRefs.current[i] = el; }}
+                onOpenWatch={(meta) => onPlay({ ...meta, isShort: true })}
+                onLike={(meta) => st.togFav(meta)}
+                onToggleMute={() => setMuted((m) => !m)}
+              />
+            ))}
+          </div>
+          <div className="shorts-nav">
+            <button className="shorts-nav-btn" onClick={() => step(-1)} disabled={active === 0} title="Previous (↑)">▲</button>
+            <button className="shorts-nav-btn" onClick={() => step(1)} disabled={active >= items.length - 1} title="Next (↓)">▼</button>
+          </div>
+          <div className="shorts-hint">Scroll / ↓ ↑ se next · {cur ? cur.title : ""}</div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function SearchPage({ query, onPlay, st, engine, onChannel }) {
   const [res, setRes] = useState([]);
   const [token, setToken] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -1010,15 +2098,10 @@ function SearchPage({ query, onPlay, st, engine }) {
     if (!query) return;
     let dead = false;
     setLoading(true); setError(""); setRes([]); setToken(null);
-    if (engine !== "ok") {
-      const q = query.toLowerCase();
-      const f = DEMO.filter((v) => v.title.toLowerCase().includes(q) || v.author.toLowerCase().includes(q));
-      setRes(f); setLoading(false); setError("engine-offline");
-      return;
-    }
+    if (engine !== "ok") { setLoading(false); setError("engine-offline"); return; }
     apiSearch(st.cfg, query)
       .then((d) => { if (dead) return; setRes(d.items || []); setToken(d.continuation || null); setLoading(false); })
-      .catch((e) => { if (!dead) { setError(e.message); setRes([]); setLoading(false); } });
+      .catch((e) => { if (!dead) { setError(e.message); setLoading(false); } });
     return () => { dead = true; };
   }, [query, engine, st.cfg.engineUrl]);
 
@@ -1027,10 +2110,7 @@ function SearchPage({ query, onPlay, st, engine }) {
     setMore(true);
     try {
       const d = await apiSearchMore(st.cfg, query, token);
-      setRes((prev) => {
-        const have = new Set(prev.map((v) => v.videoId));
-        return [...prev, ...(d.items || []).filter((v) => !have.has(v.videoId))];
-      });
+      setRes((prev) => { const have = new Set(prev.map((v) => v.videoId)); return [...prev, ...(d.items || []).filter((v) => !have.has(v.videoId))]; });
       setToken(null);
     } catch (e) { setError(e.message); }
     setMore(false);
@@ -1046,9 +2126,7 @@ function SearchPage({ query, onPlay, st, engine }) {
           <button className={"sort-btn" + (layout === "list" ? " act" : "")} onClick={() => setLayout("list")}>☰ List</button>
         </div>
       </div>
-      {error && error !== "engine-offline" && (
-        <div className="inline-warn"><span>⚠️</span><span style={{ flex: 1 }}>{error}</span></div>
-      )}
+      {error && error !== "engine-offline" && <div className="inline-warn"><span>⚠️</span><span style={{ flex: 1 }}>{error}</span></div>}
       {loading ? <Skels n={8} /> : res.length === 0 ? (
         <div className="err-box"><div className="err-ico">🔍</div><div className="err-msg">“{query}” ke liye kuch nahi mila</div></div>
       ) : (
@@ -1056,7 +2134,7 @@ function SearchPage({ query, onPlay, st, engine }) {
           <div className={layout === "grid" ? "vgrid" : "vlist"}>
             {res.map((v, i) => (
               <div key={v.videoId} style={{ animationDelay: `${Math.min(i, 20) * 0.025}s` }}>
-                <VCard v={v} onPlay={onPlay} layout={layout} st={st} />
+                <VCard v={v} onPlay={onPlay} layout={layout} st={st} onChannel={onChannel} />
               </div>
             ))}
           </div>
@@ -1070,13 +2148,12 @@ function SearchPage({ query, onPlay, st, engine }) {
 /* ════════════════════════════════════════════════════════════════════════════
    WATCH
    ════════════════════════════════════════════════════════════════════════════ */
-function WatchPage({ video, onPlay, st, engine }) {
+function WatchPage({ video, onPlay, st, engine, onChannel, onAddSub }) {
   const [stream, setStream] = useState(null);
   const [status, setStatus] = useState("loading");
   const [err, setErr] = useState("");
   const [rel, setRel] = useState([]);
   const [descOpen, setDescOpen] = useState(false);
-  const [subscribed, setSubscribed] = useState(false);
   const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
@@ -1088,11 +2165,10 @@ function WatchPage({ video, onPlay, st, engine }) {
         if (dead) return;
         if (!d || !d.ok || !(d.formats || []).length) {
           setStatus("error");
-          setErr((d && (d.error || (d.attempts || []).join(" · "))) || "koi playable stream nahi mila");
+          setErr((d && (d.error || (d.attempts || []).slice(-3).join(" · "))) || "koi playable stream nahi mila");
           return;
         }
-        setStream(d);
-        setStatus("ready");
+        setStream(d); setStatus("ready");
       })
       .catch((e) => { if (!dead) { setStatus("error"); setErr(e.message); } });
     return () => { dead = true; };
@@ -1100,7 +2176,8 @@ function WatchPage({ video, onPlay, st, engine }) {
 
   useEffect(() => {
     let dead = false;
-    if (engine === "ok") apiRelated(st.cfg, video.videoId).then((d) => !dead && setRel(d.items || [])).catch(() => {});
+    setRel([]);
+    if (engine === "ok") recommendFor(st.cfg, video, st).then((d) => !dead && setRel(d.items || [])).catch(() => {});
     return () => { dead = true; };
   }, [video.videoId, engine, st.cfg.engineUrl]);
 
@@ -1110,6 +2187,7 @@ function WatchPage({ video, onPlay, st, engine }) {
       const v = stream.video;
       m.title = v.title || m.title;
       m.author = v.author || m.author;
+      m.authorId = v.authorId || m.authorId;
       m.description = v.description || m.description;
       m.viewCount = v.viewCount || m.viewCount;
       m.lengthSeconds = v.lengthSeconds || m.lengthSeconds;
@@ -1122,8 +2200,8 @@ function WatchPage({ video, onPlay, st, engine }) {
   useEffect(() => {
     if (status === "ready") {
       st.addHist({
-        videoId: video.videoId, title: meta.title, author: meta.author, thumbnail: meta.thumbnail,
-        lengthSeconds: meta.lengthSeconds, viewCount: meta.viewCount, publishedText: meta.publishedText,
+        videoId: video.videoId, title: meta.title, author: meta.author, authorId: meta.authorId,
+        thumbnail: meta.thumbnail, lengthSeconds: meta.lengthSeconds, viewCount: meta.viewCount, publishedText: meta.publishedText,
       });
     }
   }, [status]);
@@ -1140,16 +2218,20 @@ function WatchPage({ video, onPlay, st, engine }) {
       else { await navigator.clipboard.writeText(url); alert("Link copied ✓"); }
     } catch {}
   };
+  const download = () => {
+    if (!baseOf(st.cfg)) { alert("Engine URL set nahi hai"); return; }
+    window.open(`${baseOf(st.cfg)}/mp4/${video.videoId}.mp4?dl=1`, "_blank");
+  };
 
   const fav = st.isFav(video.videoId), wl = st.isWL(video.videoId);
+  const subscribed = st.isSub(meta.authorId);
 
   return (
     <div className={"watch" + (st.cfg.theater ? " theater" : "")}>
       <div className="watch-main">
         <div className="watch-player">
           {status === "loading" && (
-            <div className="cp"><div className="cp-big"><div className="cp-spin" /></div>
-              <div className="cp-loadtxt">Stream resolve ho raha hai…</div></div>
+            <div className="cp"><div className="cp-big"><div className="cp-spin" /></div><div className="cp-loadtxt">Stream resolve ho raha hai…</div></div>
           )}
           {status === "error" && (
             <div className="cp">
@@ -1170,7 +2252,7 @@ function WatchPage({ video, onPlay, st, engine }) {
           )}
           {status === "ready" && stream && (
             <CPlayer video={meta} formats={stream.formats} st={st} onNext={rel.length ? nextVideo : null}
-              poster={meta.thumbnail || YTT(video.videoId, "hqdefault")} />
+              poster={meta.thumbnail || YTT(video.videoId, "hqdefault")} onRefresh={() => setAttempt((a) => a + 1)} />
           )}
         </div>
 
@@ -1178,24 +2260,29 @@ function WatchPage({ video, onPlay, st, engine }) {
 
         <div className="watch-meta-row">
           <div className="watch-ch-row">
-            <div className="watch-ch-av" style={{ background: avColor(meta.author) }}>{(meta.author || "?")[0].toUpperCase()}</div>
-            <div style={{ minWidth: 0 }}>
-              <div className="watch-ch-name">{meta.author || "Unknown channel"}</div>
-              <div className="watch-ch-sub">{(meta.viewCount ? fv(meta.viewCount) + " views" : "")}{meta.publishedText ? " · " + meta.publishedText : ""}</div>
+            <div onClick={() => meta.authorId && onChannel(meta.authorId, meta.author)} style={{ cursor: "pointer" }}>
+              <Av name={meta.author} size={40} />
             </div>
-            <button className={"sub-btn" + (subscribed ? " on" : "")} onClick={() => setSubscribed((s) => !s)}>
+            <div style={{ minWidth: 0 }}>
+              <div className="watch-ch-name" onClick={() => meta.authorId && onChannel(meta.authorId, meta.author)} style={{ cursor: "pointer" }}>
+                {meta.author || "Unknown channel"}
+              </div>
+              <div className="watch-ch-sub">
+                {meta.viewCount ? fv(meta.viewCount) + " views" : ""}
+                {meta.publishedText ? (meta.viewCount ? " · " : "") + meta.publishedText : ""}
+              </div>
+            </div>
+            <button className={"sub-btn" + (subscribed ? " on" : "")}
+              onClick={() => (subscribed ? st.removeSub(meta.authorId) : meta.authorId ? st.addSub({ channelId: meta.authorId, name: meta.author }) : onAddSub && onAddSub())}>
               {subscribed ? "Subscribed" : "Subscribe"}
             </button>
           </div>
 
           <div className="watch-actions">
-            <div className="pill-group">
-              <button className={"pill" + (fav ? " on" : "")} onClick={() => st.togFav(meta)} title="Like">
-                <Icon d={I.like} size={18} />{fav ? "Liked" : "Like"}
-              </button>
-            </div>
+            <button className={"pill" + (fav ? " on" : "")} onClick={() => st.togFav(meta)}><Icon d={I.like} size={18} />{fav ? "Liked" : "Like"}</button>
             <button className="pill" onClick={share}><Icon d={I.share} size={18} />Share</button>
             <button className={"pill" + (wl ? " on" : "")} onClick={() => st.togWL(meta)}><Icon d={I.save} size={18} />Save</button>
+            <button className="pill" onClick={download}>⬇ MP4</button>
             <a className="pill" href={YTW(video.videoId)} target="_blank" rel="noreferrer"><Icon d={I.more} size={18} />YouTube</a>
           </div>
         </div>
@@ -1206,11 +2293,7 @@ function WatchPage({ video, onPlay, st, engine }) {
             {meta.publishedText && <span style={{ marginLeft: 8, color: "var(--t2)" }}>{meta.publishedText}</span>}
             {stream && stream.client && <span className="tag-mini">engine: {stream.client}</span>}
           </div>
-          {descOpen && (
-            <div className="watch-desc-full" style={{ whiteSpace: "pre-wrap" }}>
-              {(meta.description || "No description.").slice(0, 5000)}
-            </div>
-          )}
+          {descOpen && <div className="watch-desc-full" style={{ whiteSpace: "pre-wrap" }}>{(meta.description || "No description.").slice(0, 5000)}</div>}
           <div className="watch-desc-tog">{descOpen ? "Show less" : "...more"}</div>
         </div>
       </div>
@@ -1218,14 +2301,13 @@ function WatchPage({ video, onPlay, st, engine }) {
       {st.cfg.showRelated && (
         <aside className="watch-side">
           <div className="side-head">
-            <span>Up next</span>
+            <span>Up next<span className="side-sub">recommended</span></span>
             <label className="auto-tog" onClick={() => st.updCfg({ autoplay: !st.cfg.autoplay })}>
-              Autoplay
-              <span className={"toggle sm" + (st.cfg.autoplay ? " on" : "")}><span className="tok" /></span>
+              Autoplay<span className={"toggle sm" + (st.cfg.autoplay ? " on" : "")}><span className="tok" /></span>
             </label>
           </div>
           <div className="watch-side-list">
-            {rel.map((v) => <VCard key={v.videoId} v={v} onPlay={onPlay} layout="list" st={st} />)}
+            {rel.map((v) => <VCard key={v.videoId} v={v} onPlay={onPlay} layout="list" st={st} onChannel={onChannel} />)}
             {!rel.length && <div className="side-empty">Related videos load ho rahe hain…</div>}
           </div>
         </aside>
@@ -1235,13 +2317,18 @@ function WatchPage({ video, onPlay, st, engine }) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
-   LIBRARY PAGES
+   LIBRARY
    ════════════════════════════════════════════════════════════════════════════ */
-const LibEmpty = ({ ico, title, sub }) => (
-  <div className="lib-empty"><div className="lib-empty-ico">{ico}</div><div className="lib-empty-title">{title}</div><div className="lib-empty-sub">{sub}</div></div>
+const LibEmpty = ({ ico, title, sub, action }) => (
+  <div className="lib-empty">
+    <div className="lib-empty-ico">{ico}</div>
+    <div className="lib-empty-title">{title}</div>
+    <div className="lib-empty-sub">{sub}</div>
+    {action}
+  </div>
 );
 
-function HistPage({ onPlay, st }) {
+function HistPage({ onPlay, st, onChannel }) {
   return (
     <div className="lib-pg">
       <div className="lib-hd">
@@ -1252,7 +2339,7 @@ function HistPage({ onPlay, st }) {
         <div className="vlist">
           {st.hist.map((v) => (
             <div key={v.videoId} className="lib-row">
-              <VCard v={v} onPlay={onPlay} layout="list" st={st} />
+              <VCard v={v} onPlay={onPlay} layout="list" st={st} onChannel={onChannel} />
               <button className="lib-rm" title="Remove" onClick={() => st.rmHist(v.videoId)}>✕</button>
             </div>
           ))}
@@ -1262,20 +2349,18 @@ function HistPage({ onPlay, st }) {
   );
 }
 
-function FavsPage({ onPlay, st }) {
+function FavsPage({ onPlay, st, onChannel }) {
   return (
     <div className="lib-pg">
       <div className="lib-hd"><div className="lib-title">Liked videos</div><span className="lib-cnt">{st.favs.length}</span></div>
       {st.favs.length === 0 ? <LibEmpty ico="♥" title="No liked videos" sub="Videos like karein taaki yahan milen" /> : (
-        <div className="vgrid">
-          {st.favs.map((v, i) => <div key={v.videoId} style={{ animationDelay: `${i * 0.03}s` }}><VCard v={v} onPlay={onPlay} st={st} /></div>)}
-        </div>
+        <div className="vgrid">{st.favs.map((v, i) => <div key={v.videoId} style={{ animationDelay: `${i * 0.03}s` }}><VCard v={v} onPlay={onPlay} st={st} onChannel={onChannel} /></div>)}</div>
       )}
     </div>
   );
 }
 
-function WLPage({ onPlay, st }) {
+function WLPage({ onPlay, st, onChannel }) {
   return (
     <div className="lib-pg">
       <div className="lib-hd"><div className="lib-title">Watch later</div><span className="lib-cnt">{st.wl.length}</span></div>
@@ -1283,7 +2368,7 @@ function WLPage({ onPlay, st }) {
         <div className="vlist">
           {st.wl.map((v) => (
             <div key={v.videoId} className="lib-row">
-              <VCard v={v} onPlay={onPlay} layout="list" st={st} />
+              <VCard v={v} onPlay={onPlay} layout="list" st={st} onChannel={onChannel} />
               <button className="lib-rm" onClick={() => st.togWL(v)}>✕</button>
             </div>
           ))}
@@ -1293,7 +2378,7 @@ function WLPage({ onPlay, st }) {
   );
 }
 
-function PLPage({ onPlay, st }) {
+function PLPage({ onPlay, st, onChannel }) {
   const [nm, setNm] = useState(""); const [show, setShow] = useState(false); const [open, setOpen] = useState(null);
   const pl = open && st.pls.find((p) => p.id === open);
   if (pl) return (
@@ -1303,7 +2388,7 @@ function PLPage({ onPlay, st }) {
         <div className="lib-title">{pl.name}</div><span className="lib-cnt">{pl.videos.length}</span>
       </div>
       {pl.videos.length === 0 ? <LibEmpty ico="📋" title="Playlist khali hai" sub="Videos save karke isme add karein" /> : (
-        <div className="vgrid">{pl.videos.map((v, i) => <div key={v.videoId} style={{ animationDelay: `${i * 0.03}s` }}><VCard v={v} onPlay={onPlay} st={st} /></div>)}</div>
+        <div className="vgrid">{pl.videos.map((v, i) => <div key={v.videoId} style={{ animationDelay: `${i * 0.03}s` }}><VCard v={v} onPlay={onPlay} st={st} onChannel={onChannel} /></div>)}</div>
       )}
     </div>
   );
@@ -1334,20 +2419,73 @@ function PLPage({ onPlay, st }) {
   );
 }
 
+/* ── subscription manager + OPML (RSS standard) ───────────────────────────── */
+function SubManager({ st, onAddSub }) {
+  const exportOpml = () => {
+    const body = st.subs
+      .map((s) => `    <outline type="rss" text="${(s.name || s.channelId).replace(/"/g, "&quot;")}" title="${(s.name || s.channelId).replace(/"/g, "&quot;")}" xmlUrl="https://www.youtube.com/feeds/videos.xml?channel_id=${s.channelId}" htmlUrl="https://www.youtube.com/channel/${s.channelId}"/>`)
+      .join("\n");
+    const opml = `<?xml version="1.0" encoding="UTF-8"?>\n<opml version="2.0">\n<head><title>StreamVoid subscriptions</title></head>\n<body>\n  <outline text="YouTube" title="YouTube">\n${body}\n  </outline>\n</body>\n</opml>\n`;
+    const blob = new Blob([opml], { type: "text/x-opml" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "streamvoid-subscriptions.opml";
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  };
+  const importOpml = async (file) => {
+    const text = await file.text();
+    const ids = [...text.matchAll(/channel_id=(UC[\w-]{10,})/g)].map((m) => m[1]);
+    const extra = [...text.matchAll(/youtube\.com\/channel\/(UC[\w-]{10,})/g)].map((m) => m[1]);
+    const all = [...new Set([...ids, ...extra])];
+    if (!all.length) return alert("OPML me koi YouTube channel nahi mila");
+    st.setSubsRaw([...st.subs, ...all.filter((id) => !st.isSub(id)).map((channelId) => ({ channelId, name: channelId, avatar: "", addedAt: Date.now() }))]);
+    alert(`${all.length} channel import hue — names pehli RSS fetch par aa jayenge`);
+  };
+  return (
+    <div>
+      <div className="set-blk-title" style={{ fontSize: 15, marginBottom: 8 }}>Subscriptions ({st.subs.length})</div>
+      <div className="set-blk-desc" style={{ marginBottom: 10 }}>
+        Videos channel ke <b>public feed</b> se aati hain — YouTube ka RSS endpoint Oct 2026 se 404 deta hai, to worker chupchaap channel ke Videos tab (InnerTube) se wahi data laata hai, aur feed wapas aate hi RSS use karne lagta hai. Koi account, koi Google login nahi.
+      </div>
+      {st.subs.map((s) => (
+        <div key={s.channelId} className="sub-row">
+          <Av name={s.name} src={s.avatar} size={40} />
+          <div style={{ minWidth: 0 }}>
+            <div className="sr-name">{s.name || s.channelId}</div>
+            <div className="sr-id">{s.channelId}</div>
+          </div>
+          <div className="sr-actions">
+            <a className="sub-chip" href={`https://www.youtube.com/channel/${s.channelId}`} target="_blank" rel="noreferrer">Channel ↗</a>
+            <button className="sub-chip" onClick={() => st.removeSub(s.channelId)}>Remove</button>
+          </div>
+        </div>
+      ))}
+      <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
+        <button className="sub-chip pri" onClick={onAddSub}>＋ Subscribe</button>
+        <button className="sub-chip" onClick={exportOpml}>⬇ Export OPML</button>
+        <label className="sub-chip" style={{ display: "inline-flex", alignItems: "center", cursor: "pointer" }}>
+          ⬆ Import OPML
+          <input type="file" accept=".opml,.xml,text/xml,text/x-opml" style={{ display: "none" }}
+            onChange={(e) => e.target.files && e.target.files[0] && importOpml(e.target.files[0])} />
+        </label>
+      </div>
+    </div>
+  );
+}
+
 /* ════════════════════════════════════════════════════════════════════════════
    SETTINGS
    ════════════════════════════════════════════════════════════════════════════ */
-function SetPage({ st, engine, onCheck }) {
+function SetPage({ st, engine, onCheck, onAddSub }) {
   const [url, setUrl] = useState(st.cfg.engineUrl || "");
+  const [accessKey, setAccessKey] = useState(st.cfg.accessKey || "");
   const [saved, setSaved] = useState(false);
   const [copied, setCopied] = useState("");
   const upd = (patch) => { st.updCfg(patch); setSaved(true); setTimeout(() => setSaved(false), 1800); };
   const copyWorker = async () => {
-    try {
-      const r = await fetch("./worker.js");
-      await navigator.clipboard.writeText(await r.text());
-      setCopied("worker.js copied ✓");
-    } catch { setCopied("copy fail — file manually kholein"); }
+    try { const r = await fetch("./worker.js"); await navigator.clipboard.writeText(await r.text()); setCopied("worker.js copied ✓"); }
+    catch { setCopied("copy fail — file manually kholein"); }
   };
   return (
     <div className="set-pg">
@@ -1358,14 +2496,17 @@ function SetPage({ st, engine, onCheck }) {
 
       <div className="set-blk">
         <div className="set-blk-title">🧩 YouTube engine <span className="badge-mini">serverless</span></div>
-        <div className="set-blk-desc">
-          StreamVoid khud YouTube se baat nahi kar sakta (CORS + IP-bound URLs). Ek Cloudflare Worker ye kaam karta hai.
-          Free tier, koi Piped/Invidious nahi.
-        </div>
+        <div className="set-blk-desc">Search, streams aur subscriptions — sab aapke Cloudflare Worker se.</div>
         <div className="set-api-row">
           <input placeholder="https://your-worker.workers.dev" value={url} onChange={(e) => setUrl(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter") { upd({ engineUrl: url.trim() }); onCheck(); } }} />
           <button className="set-api-btn" onClick={() => { upd({ engineUrl: url.trim() }); onCheck(); }}>Save &amp; test</button>
+        </div>
+        <div className="set-api-row">
+          <input type="password" placeholder="Access key (only if SV_KEY set)" value={accessKey}
+            onChange={(e) => setAccessKey(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") upd({ accessKey: accessKey.trim() }); }} />
+          <button className="set-api-btn" onClick={() => upd({ accessKey: accessKey.trim() })}>Save key</button>
         </div>
         <div className="engine-status">
           <span className={"dot " + (engine === "ok" ? "ok" : engine === "checking" ? "wait" : "bad")} />
@@ -1374,27 +2515,43 @@ function SetPage({ st, engine, onCheck }) {
           <button className="setup-link" style={{ marginLeft: 4 }} onClick={copyWorker}>Copy worker.js</button>
           {copied && <span style={{ color: "#7ee787", marginLeft: 6 }}>{copied}</span>}
         </div>
-        <div className="set-hint">
-          <strong style={{ color: "var(--t2)" }}>Setup:</strong><br />
-          1. <a href="https://dash.cloudflare.com/?to=/:account/workers-and-pages" target="_blank" rel="noreferrer">Cloudflare dashboard</a> → Workers &amp; Pages → Create Worker<br />
-          2. <b>Copy worker.js</b> → paste → Deploy<br />
-          3. Worker URL upar daalein → Save &amp; test
+      </div>
+
+      <div className="set-blk"><SubManager st={st} onAddSub={onAddSub} /></div>
+
+      <div className="set-blk">
+        <div className="set-blk-title">⚡ Playback</div>
+        {[["Autoplay", "Video khulte hi play + next auto", "autoplay"], ["Show related videos", "Watch page par Up next + recommendations", "showRelated"], ["Theater mode", "Player ko wide karein", "theater"], ["Preserve pitch", "Speed badhne par awaaz natural rahe (varispeed off)", "pitch"]].map(([l, s, k]) => (
+          <div key={k} className="tog-row" onClick={() => upd({ [k]: k === "pitch" ? !(st.cfg.pitch !== false) : !st.cfg[k] })}>
+            <div><div className="tog-lbl">{l}</div><div className="tog-sub">{s}</div></div>
+            <div className={"toggle" + ((k === "pitch" ? st.cfg.pitch !== false : st.cfg[k]) ? " on" : "")}><div className="tok" /></div>
+          </div>
+        ))}
+
+        <div className="set-sub-h">Default speed</div>
+        <div className="set-chip-row">
+          {SPEEDS.map((r) => (
+            <button key={r} className={"set-chip" + ((st.cfg.rate || 1) === r ? " on" : "")} onClick={() => upd({ rate: r })}>{r}×</button>
+          ))}
+        </div>
+
+        <div className="set-sub-h">Default zoom</div>
+        <div className="set-chip-row">
+          {ZOOM_LIST.map((z) => (
+            <button key={z.k} className={"set-chip" + ((st.cfg.zoom || "fit") === z.k ? " on" : "")} onClick={() => upd({ zoom: z.k })}>{z.l}</button>
+          ))}
+        </div>
+
+        <div className="set-sub-h">Player shortcuts</div>
+        <div className="keys-grid">
+          {[["space / k", "play · pause"], ["j / l", "±10s"], ["← / →", "±5s"], ["↑ / ↓", "volume"], ["< / >", "speed step"], ["z", "zoom / fit"], ["m", "mute"], ["f", "fullscreen"], ["t", "theater"], ["n", "next video"], ["0–9", "jump to %"]].map(([k, d]) => (
+            <div key={k} className="key-row"><kbd>{k}</kbd><span>{d}</span></div>
+          ))}
         </div>
       </div>
 
       <div className="set-blk">
-        <div className="set-blk-title">⚡ Playback</div>
-        {[["Autoplay", "Video khulte hi play + next video auto", "autoplay"], ["Show related videos", "Watch page par Up next sidebar", "showRelated"], ["Theater mode", "Player ko wide karein", "theater"]].map(([l, s, k]) => (
-          <div key={k} className="tog-row" onClick={() => upd({ [k]: !st.cfg[k] })}>
-            <div><div className="tog-lbl">{l}</div><div className="tog-sub">{s}</div></div>
-            <div className={"toggle" + (st.cfg[k] ? " on" : "")}><div className="tok" /></div>
-          </div>
-        ))}
-      </div>
-
-      <div className="set-blk">
         <div className="set-blk-title">🌍 Region</div>
-        <div className="set-blk-desc">Trending feed kis country ka dikhe.</div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           {[["IN", "India"], ["US", "United States"], ["GB", "UK"], ["JP", "Japan"]].map(([c, n]) => (
             <button key={c} onClick={() => upd({ region: c })}
@@ -1407,14 +2564,14 @@ function SetPage({ st, engine, onCheck }) {
 
       <div className="set-blk">
         <div className="set-blk-title">🔒 Privacy</div>
-        {[["Apna custom player", "YouTube ka iframe/embed load nahi hota — sirf <video> tag."], ["Koi API key nahi", "Na Google key, na account, na login."], ["Data local", "History, likes, playlists sirf browser me."]].map(([t, d]) => (
+        {[["Custom player", "YouTube iframe/embed load nahi hota — sirf <video>."], ["No API key, no login", "Channel feeds + InnerTube, sab bina account."], ["Data local", "Subscriptions, history, likes browser me."]].map(([t, d]) => (
           <div key={t} className="priv-item"><span className="priv-ico">✓</span><div><div className="priv-name">{t}</div><div className="priv-sub">{d}</div></div></div>
         ))}
         <button className="danger-btn" onClick={() => window.confirm("Watch history clear karein?") && st.clrHist()}>Clear watch history</button>
       </div>
 
       <div style={{ textAlign: "center", padding: "16px 0", fontSize: 13, color: "var(--t3)" }}>
-        StreamVoid v4 · serverless · custom player · Made for India 🇮🇳
+        StreamVoid v7.3 · channel-feed subscriptions · Shorts · recommendations · custom player · Made for India 🇮🇳
       </div>
     </div>
   );
@@ -1423,7 +2580,7 @@ function SetPage({ st, engine, onCheck }) {
 /* ════════════════════════════════════════════════════════════════════════════
    CHROME
    ════════════════════════════════════════════════════════════════════════════ */
-function Sidebar({ page, nav, st, open, mini }) {
+function Sidebar({ page, nav, st, open, mini, onAddSub, onChannel }) {
   const item = (key, ico, lbl, badge, onClick) => (
     <button className={"s-item" + (page === key ? " act" : "")} onClick={onClick || (() => nav(key))}>
       <span className="s-ico">{ico}</span><span className="s-lbl">{lbl}</span>
@@ -1434,7 +2591,8 @@ function Sidebar({ page, nav, st, open, mini }) {
     <aside className={"sidebar" + (mini ? " mini" : "") + (!open && !mini ? " closed" : "")}>
       <div className="s-group">
         {item("home", "🏠", "Home")}
-        {item("shorts", "⚡", "Shorts", 0, () => nav("search", "shorts"))}
+        {item("shorts", "⚡", "Shorts")}
+        {item("subscriptions", "📡", "Subscriptions", st.subs.length)}
         {item("trending", "🔥", "Trending")}
       </div>
       <div className="s-divider" />
@@ -1447,6 +2605,23 @@ function Sidebar({ page, nav, st, open, mini }) {
       </div>
       <div className="s-divider" />
       <div className="s-group">
+        <div className="s-label" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <span>Subscriptions</span>
+          <button onClick={onAddSub} title="Add channel" style={{ color: "var(--t2)", fontSize: 16, padding: "0 6px" }}>＋</button>
+        </div>
+        {st.subs.slice(0, 8).map((s) => (
+          <button key={s.channelId} className="s-item side-sub" onClick={() => onChannel(s.channelId, s.name)}>
+            <span className="s-av">{s.avatar ? <img src={s.avatar} alt="" onError={(e) => { e.currentTarget.remove(); }} /> : (s.name || "?")[0].toUpperCase()}</span>
+            <span className="s-lbl" style={{ flex: 1, minWidth: 0 }}>{s.name || s.channelId}</span>
+          </button>
+        ))}
+        {st.subs.length === 0 && <div className="subs-empty">Channel add karein → feed</div>}
+        {st.subs.length > 8 && (
+          <button className="s-item" onClick={() => nav("subscriptions")}><span className="s-ico">⋯</span><span className="s-lbl">All {st.subs.length}</span></button>
+        )}
+      </div>
+      <div className="s-divider" />
+      <div className="s-group">
         <div className="s-label">Explore</div>
         {[["🎵", "Music"], ["🎮", "Gaming"], ["📰", "News"], ["🏏", "Cricket"], ["🎬", "Movies"], ["🎙", "Podcasts"]].map(([ico, lbl]) => (
           <button key={lbl} className="s-item" onClick={() => nav("search", lbl.toLowerCase())}>
@@ -1456,12 +2631,12 @@ function Sidebar({ page, nav, st, open, mini }) {
       </div>
       <div className="s-divider" />
       <div className="s-group">{item("settings", "⚙️", "Settings")}</div>
-      <div className="side-foot">Custom player · no ads · no key</div>
+      <div className="side-foot">Custom player · RSS subs · no ads · no login</div>
     </aside>
   );
 }
 
-function Topbar({ onSearch, onNav, open, setOpen, engine }) {
+function Topbar({ onSearch, onNav, open, setOpen, engine, st, onAddSub }) {
   const [q, setQ] = useState("");
   const ref = useRef();
   const go = (e) => { e && e.preventDefault(); if (q.trim()) { onSearch(q.trim()); ref.current?.blur(); } };
@@ -1470,9 +2645,7 @@ function Topbar({ onSearch, onNav, open, setOpen, engine }) {
       <div className="tb-left">
         <button className="tb-menu-btn" onClick={() => setOpen(!open)} aria-label="Menu">☰</button>
         <button className="tb-logo" onClick={() => onNav("home")}>
-          <span className="tb-logo-icon">▶</span>
-          <span className="tb-logo-name">StreamVoid</span>
-          <span className="tb-logo-in">IN</span>
+          <span className="tb-logo-icon">▶</span><span className="tb-logo-name">StreamVoid</span><span className="tb-logo-in">IN</span>
         </button>
       </div>
       <div className="tb-search-wrap">
@@ -1485,7 +2658,8 @@ function Topbar({ onSearch, onNav, open, setOpen, engine }) {
       </div>
       <div className="tb-right">
         <span className={"engine-dot " + (engine === "ok" ? "ok" : engine === "checking" ? "wait" : "bad")} title={"engine: " + engine} />
-        <button className="tb-icon-btn" title="Notifications">🔔</button>
+        <button className="tb-icon-btn" title="Subscriptions" onClick={() => onNav("subscriptions")}><Icon d={I.rss} size={20} /></button>
+        <button className="tb-icon-btn" title="Add channel" onClick={onAddSub}>＋</button>
         <button className="tb-icon-btn" style={{ background: "var(--red)", color: "#fff", fontSize: 14, fontWeight: 700 }}>U</button>
       </div>
     </header>
@@ -1500,17 +2674,20 @@ function App() {
   const [page, setPage] = useState("home");
   const [searchQ, setSearchQ] = useState("");
   const [curVid, setCurVid] = useState(null);
+  const [curChannel, setCurChannel] = useState(null);
   const [open, setOpen] = useState(true);
   const [mini, setMini] = useState(false);
   const [engine, setEngine] = useState("checking");
   const [busy, setBusy] = useState(false);
+  const [subModal, setSubModal] = useState(false);
+  const [subsKey, setSubsKey] = useState(0);
 
   const checkEngine = useCallback(async () => {
     setEngine("checking"); setBusy(true);
     try { const d = await apiHealth(st.cfg); setEngine(d && d.ok ? "ok" : "down"); }
     catch { setEngine("down"); }
     setBusy(false);
-  }, [st.cfg.engineUrl]);
+  }, [st.cfg.engineUrl, st.cfg.accessKey]);
 
   useEffect(() => { checkEngine(); }, [st.cfg.engineUrl]);
 
@@ -1533,32 +2710,47 @@ function App() {
   };
   const onSearch = (q) => { setSearchQ(q); setPage("search"); window.scrollTo({ top: 0 }); };
   const onPlay = (v) => { setCurVid(v); setPage("watch"); window.scrollTo({ top: 0 }); };
+  const onChannel = (id, name) => { if (!id) return; setCurChannel({ id, name }); setPage("channel"); window.scrollTo({ top: 0 }); };
+  const openSubModal = () => setSubModal(true);
+  const afterSubAdd = () => { setSubsKey((k) => k + 1); };
 
   const mainClass = "main" + (mini ? " mini-margin" : "") + (!open && !mini ? " no-margin" : "");
-  const needsSetup = engine === "down" && page === "home" && st.hist.length + st.favs.length + st.wl.length === 0;
+  const needsSetup = engine === "down" && !st.cfg.engineUrl;
 
   return (
     <div className="layout">
-      <Topbar onSearch={onSearch} onNav={nav} open={open} setOpen={setOpen} engine={engine} />
-      <Sidebar page={page} nav={nav} st={st} open={open} mini={mini} />
+      <Topbar onSearch={onSearch} onNav={nav} open={open} setOpen={setOpen} engine={engine} st={st} onAddSub={openSubModal} />
+      <Sidebar page={page} nav={nav} st={st} open={open} mini={mini} onAddSub={openSubModal} onChannel={onChannel} />
       <div className={mainClass}>
         <div className="main-wrap">
-          {needsSetup && <SetupGate st={st} onRetry={checkEngine} busy={busy} />}
-          {!needsSetup && (
+          {needsSetup ? <SetupGate st={st} onRetry={checkEngine} busy={busy} /> : (
             <>
-              {page === "home" && <HomePage onPlay={onPlay} st={st} engine={engine} />}
-              {page === "trending" && <HomePage onPlay={onPlay} st={st} engine={engine} initChip="Recently uploaded" />}
-              {page === "search" && <SearchPage query={searchQ} onPlay={onPlay} st={st} engine={engine} />}
-              {page === "watch" && curVid && <WatchPage video={curVid} onPlay={onPlay} st={st} engine={engine} />}
-              {page === "history" && <HistPage onPlay={onPlay} st={st} />}
-              {page === "favorites" && <FavsPage onPlay={onPlay} st={st} />}
-              {page === "watchlater" && <WLPage onPlay={onPlay} st={st} />}
-              {page === "playlists" && <PLPage onPlay={onPlay} st={st} />}
-              {page === "settings" && <SetPage st={st} engine={engine} onCheck={checkEngine} />}
+              <EngineBar status={engine} onSetup={() => nav("settings")} />
+              {page === "home" && <HomePage onPlay={onPlay} st={st} engine={engine} onChannel={onChannel} onShorts={() => nav("shorts")} />}
+              {page === "trending" && <HomePage onPlay={onPlay} st={st} engine={engine} onChannel={onChannel} onShorts={() => nav("shorts")} />}
+              {page === "shorts" && (
+                <ShortsPage st={st} engine={engine} onPlay={onPlay} onChannel={onChannel} onAddSub={openSubModal} />
+              )}
+              {page === "subscriptions" && (
+                <SubsPage st={st} engine={engine} onPlay={onPlay} onChannel={onChannel} onAddSub={openSubModal} refreshKey={subsKey} />
+              )}
+              {page === "channel" && curChannel && (
+                <ChannelPage channelId={curChannel.id} name={curChannel.name} st={st} engine={engine} onPlay={onPlay} onChannel={onChannel} />
+              )}
+              {page === "search" && <SearchPage query={searchQ} onPlay={onPlay} st={st} engine={engine} onChannel={onChannel} />}
+              {page === "watch" && curVid && (
+                <WatchPage video={curVid} onPlay={onPlay} st={st} engine={engine} onChannel={onChannel} onAddSub={openSubModal} />
+              )}
+              {page === "history" && <HistPage onPlay={onPlay} st={st} onChannel={onChannel} />}
+              {page === "favorites" && <FavsPage onPlay={onPlay} st={st} onChannel={onChannel} />}
+              {page === "watchlater" && <WLPage onPlay={onPlay} st={st} onChannel={onChannel} />}
+              {page === "playlists" && <PLPage onPlay={onPlay} st={st} onChannel={onChannel} />}
+              {page === "settings" && <SetPage st={st} engine={engine} onCheck={checkEngine} onAddSub={openSubModal} />}
             </>
           )}
         </div>
       </div>
+      {subModal && <AddSubModal st={st} engine={engine} onClose={() => setSubModal(false)} onAdded={afterSubAdd} />}
     </div>
   );
 }
