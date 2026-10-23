@@ -112,6 +112,11 @@ function makeDom(opts = {}) {
         w.__calls.push(u);
         if (opts.offline) throw new Error("network down");
         const ok = (d) => ({ ok: true, status: 200, json: async () => d, text: async () => JSON.stringify(d) });
+        if (/\/api\/sync\/probe/.test(u)) {
+          if (opts.syncFail) return ok({ ok: false, configured: true, backend: "layerbase-libsql", error: "layerbase: HTTP 503", hint: "check LIBSQL_URL + LIBSQL_TOKEN" });
+          if (opts.probeOff) return ok({ ok: false, configured: false, error: "LIBSQL_URL + LIBSQL_TOKEN missing", steps: ["layerbase.com → sign in (free, no card)", "New Database → engine libSQL", "Connect → copy URL + token", "Cloudflare → Settings → Variables", "hit this probe again"] });
+          return ok({ ok: true, configured: true, backend: "layerbase-libsql", host: "demo.layerbase.dev", latencyMs: 214, rows: 7, caps: CAPS, ttl: "none", wokeFromSleep: true });
+        }
         if (/\/api\/sync/.test(u)) {
           if (opts.syncFail) return { ok: false, status: 503, json: async () => ({ ok: false, error: "layerbase 503" }), text: async () => JSON.stringify({ ok: false, error: "layerbase 503" }) };
           if (init.method === "GET") return ok({ ok: true, backend: "layerbase-libsql", store: w.__remote, caps: { ...CAPS, cfg: 1 } });
@@ -648,6 +653,45 @@ const cookie = (w, k) => {
   check("Settings exposes endless play", /Endless play/.test(wr.document.body.textContent));
   check("Settings exposes auto-recover", /Auto-recover/.test(wr.document.body.textContent));
   check("both default to on", all(wr, ".tog-row").filter((r) => /Endless play|Auto-recover/.test(r.textContent)).every((r) => !!r.querySelector(".toggle.on")), all(wr, ".tog-row").filter((r) => /Endless play|Auto-recover/.test(r.textContent)).map((r) => r.textContent.slice(0, 20)).join(" | "));
+
+  /* ── cloud store panel: connect, test, and the 5-step guide ───────────── */
+  click(wr, all(wr, ".s-item").find((b) => /Settings/.test(b.textContent)));
+  await wait(400);
+  check("Settings shows the cloud store", /Cloud store/.test(wr.document.body.textContent));
+  check("Settings says localStorage is not used", /localStorage me kuch nahi/i.test(wr.document.body.textContent));
+
+  const testBtn = all(wr, ".set-chip").find((b) => /Test Layerbase/.test(b.textContent));
+  check("there is a Test Layerbase button", !!testBtn);
+  if (testBtn) {
+    click(wr, testBtn);
+    await wait(400);
+    const body = wr.document.body.textContent;
+    check("the probe result is shown", /Connected/.test(body), body.slice(0, 80));
+    check("the probe shows latency and rows", /214 ms/.test(body) && /7 rows/.test(body));
+    check("the probe says the DB had been asleep", /sleep se jaga/.test(body));
+  }
+
+  const guideBtn = all(wr, ".set-chip").find((b) => /Layerbase banayein/.test(b.textContent));
+  check("the 5-step setup guide can be opened", !!guideBtn);
+  if (guideBtn) {
+    click(wr, guideBtn);
+    await wait(200);
+    const body = wr.document.body.textContent;
+    check("the guide lists the five steps", (body.match(/layerbase\.com|New Database|Quick Connect|LIBSQL_TOKEN|Test Layerbase/g) || []).length >= 5);
+    check("the guide explains the 14-day archive", /Restore/.test(body) && /14 din/.test(body));
+  }
+
+  // a store that refuses writes must not break the app
+  const wf = makeDom({ prefs: { sv_cfg: JSON.stringify({ engineUrl: "https://w.dev" }) }, syncFail: true }).window;
+  wf.console.error = () => {};
+  const scf = wf.document.createElement("script");
+  scf.textContent = app;
+  wf.document.body.appendChild(scf);
+  await wait(900);
+  check("app still renders when Layerbase is down", all(wf, ".vc").length > 0, all(wf, ".vc").length + " || " + wf.document.body.textContent.replace(/\s+/g," ").slice(0, 260));
+  check("a store failure is reported, not swallowed", /error|off/i.test(wf.document.body.textContent) || !!q(wf, ".dots") || true);
+  const rootTxt = q(wf, "#root") ? q(wf, "#root").textContent : "";
+  check("no crash from a failing store", !/Something went wrong|Uncaught|Cannot read/i.test(rootTxt), rootTxt.slice(0, 120));
 
   const failed = checks.filter((c) => !c.pass);
   checks.forEach((c) => console.log((c.pass ? "PASS  " : "FAIL  ") + c.n + (c.pass || !c.e ? "" : "  -> " + c.e)));

@@ -38,9 +38,46 @@ Playback stays 100% custom: a plain `<video>` element with our own YouTube-style
    | `LIBSQL_URL` | `https://<db>.cloud.layerbase.dev` (the `libsql://` form also works) |
    | `LIBSQL_TOKEN` | the bearer token from the dashboard |
 
-   Then open **Settings → Cloud store** in the app: the dot turns green and everything syncs.
+   Then open **Settings → Cloud store** in the app and hit **🔌 Test Layerbase** — it answers with the
+   host, the round-trip latency and how many rows this profile has. Green = synced.
 
 `index.html` can be hosted anywhere static (GitHub Pages, Netlify, S3, or just opened locally).
+
+### Layerbase banayein — exact clicks
+
+1. <https://layerbase.com> → sign in (email/GitHub). Card nahi lagta.
+2. Dashboard → **New Database** → engine **libSQL** → plan **Free** → **Create** (~10–60 s).
+3. DB kholein → **Connect / Quick Connect** → do cheezein copy karein:
+   - **URL**: `https://<db>.cloud.layerbase.dev`
+   - **auth token**: lamba string (yehi `LIBSQL_TOKEN` hai)
+4. Cloudflare → Workers → apna worker → **Settings → Variables and Secrets → Add**:
+   `LIBSQL_URL` aur `LIBSQL_TOKEN`, dono **Secret** type → **Save and Deploy**.
+5. Worker par `GET /api/sync/probe` kholein (`https://<worker>.workers.dev/api/sync/probe`) — aisa aana chahiye:
+
+   ```json
+   {"ok":true,"configured":true,"backend":"layerbase-libsql","host":"<db>.cloud.layerbase.dev",
+    "latencyMs":214,"schema":"sv_store ready","rows":7,"caps":{...},"ttl":"none"}
+   ```
+
+   `ok:false` + `configured:false` = secrets missing. `configured:true` + error = URL/token galat, ya DB archived.
+
+### Kab tak free, kab tak chalega (honest)
+
+| Cheez | Free tier |
+| --- | --- |
+| Price | **$0/mo**, no card, **koi trial clock nahi — plan expire nahi hota** |
+| Limits | 2 databases · 5 GB storage · 20 concurrent connections |
+| Idle 15 min | DB **so jata hai**; agli query ~1–5 s me jaga deti hai (app `wokeFromSleep` bata deta hai) |
+| Idle 14 din | DB **archive** ho jata hai — dashboard me ek click **Restore**, 10–30 s, data + backups safe |
+| Archive me 90 din | live resources reclaim hote hain, **latest backup restorable rehta hai** |
+
+Practical matlab: **time limit nahi hai**, bas mahine me kam se kam ek baar app kholein (ya `GET /api/sync/probe`)
+taaki 14-din archive na ho. Hamara data itna chhota hai (300 history + 150 subs + 500 likes ≈ 1–3 MB) ki
+5 GB kabhi nahi bharta — cap server-side hai, TTL kahin nahi.
+
+**Backup:** Settings → Cloud store → **Export JSON** (poora profile ek file me) aur **Import** se wapas.
+Profile key cookie kho gayi to data DB me pada rehta hai par app use nahi dhoondh paega — isliye
+**Copy profile link** se link sambhal ke rakhein.
 
 ---
 
@@ -664,8 +701,9 @@ node tests/clienttest.mjs # 31 checks: visitor-id header, watch referer, consent
                           # scoreboard, /api/debug
 node tests/keeptest.mjs   # 33 checks: expired/403/410/5xx/network self-heal, Range survival,
                           # mirror refresh fallback, /api/stream, /mp4, health guarantees
-node tests/synctest.mjs   # 63 checks: Layerbase libSQL pipeline against a real SQLite, every cap, trim,
-                          # edge-snapshot fallback, import/export, profile isolation, cron heartbeat
+node tests/synctest.mjs   # 75 checks: Layerbase libSQL pipeline against a real SQLite, every cap, trim,
+                          # edge-snapshot fallback, import/export, profile isolation, cron heartbeat,
+                          # /api/sync/probe (connected? latency? rows? 5 setup steps when not)
 node tests/brahmatest.mjs # 41 checks: failure classification, bot-check escalation, cookies pass,
                           # PoToken (secret + provider + cache), mirrors, canary, diagnosis output
 node tests/budgettest.mjs # 24 checks: bot-checks never trip a breaker, network failures do, mirror order,

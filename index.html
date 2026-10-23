@@ -847,6 +847,7 @@ const apiSyncGet = (cfg, p) => ep(cfg, "/api/sync?p=" + encodeURIComponent(p), 1
 const apiSyncPush = (cfg, p, ops) => ep(cfg, "/api/sync?p=" + encodeURIComponent(p), 16000, { method: "POST", body: { ops } });
 const apiSyncImport = (cfg, p, store) => ep(cfg, "/api/sync/import?p=" + encodeURIComponent(p), 20000, { method: "POST", body: { store } });
 const apiSyncClear = (cfg, p, kind) => ep(cfg, "/api/sync?p=" + encodeURIComponent(p) + "&kind=" + encodeURIComponent(kind), 16000, { method: "DELETE" });
+const apiStoreProbe = (cfg, p) => ep(cfg, "/api/sync/probe?p=" + encodeURIComponent(p || ""), 20000);
 
 
 /* ════════════════════════════════════════════════════════════════════════════
@@ -1220,7 +1221,7 @@ function useStore() {
   return {
     hist, addHist, clrHist, rmHist, favs, togFav, isFav, wl, togWL, isWL, pls, mkPL, rmPL,
     subs, addSub, removeSub, isSub, setSubsRaw, cfg, updCfg,
-    sync, reload, snapshot, restore, wipeAll, profileKey, profileLink, caps: CAPS,
+    sync, reload, snapshot, restore, wipeAll, profileKey, profileLink, caps: CAPS, cfg,
   };
 }
 
@@ -3055,6 +3056,8 @@ function CloudStore({ st }) {
   const [copied, setCopied] = useState("");
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState("");
+  const [probe, setProbe] = useState(null);
+  const [open, setOpen] = useState(false);
   const sync = st.sync || { state: "boot", caps: CAPS };
   const key = st.profileKey ? st.profileKey() : "";
   const masked = key ? key.slice(0, 6) + "…" + key.slice(-4) : "—";
@@ -3083,6 +3086,12 @@ function CloudStore({ st }) {
       const r = await st.restore(data);
       setNote("Restore ✓ " + (r && r.imported ? r.imported + " items" : ""));
     } catch (e) { setNote("Import fail: " + e.message); }
+    finally { setBusy(false); }
+  };
+  const testStore = async () => {
+    setBusy(true); setProbe(null);
+    try { setProbe(await apiStoreProbe(st.cfg, key)); }
+    catch (e) { setProbe({ ok: false, error: e.message }); }
     finally { setBusy(false); }
   };
   const clearAll = async () => {
@@ -3126,6 +3135,39 @@ function CloudStore({ st }) {
         </div>
       )}
       {sync.stale && <div style={{ color: "#ffd479", fontSize: 12.5, marginTop: 6 }}>Edge snapshot se load hua — {sync.warning || "Layerbase abhi jaga nahi"}.</div>}
+
+      <div className="set-chip-row" style={{ marginTop: 10 }}>
+        <button className="set-chip" disabled={busy} onClick={testStore}>{busy ? "Testing…" : "🔌 Test Layerbase"}</button>
+        <button className="set-chip" onClick={() => setOpen(!open)}>{open ? "▾ Setup chhupaein" : "▸ Layerbase banayein (5 steps)"}</button>
+      </div>
+      {probe && (
+        <div style={{ fontSize: 12.5, marginTop: 8, lineHeight: 1.7, color: probe.ok ? "#7ee787" : "#ff8a80" }}>
+          {probe.ok
+            ? <>Connected ✓ <span style={{ color: "var(--t3)" }}>· {probe.host} · {probe.latencyMs} ms · sv_store {probe.rows === null ? "ready" : "· " + probe.rows + " rows"} · expiry none{probe.wokeFromSleep ? " · (sleep se jaga)" : ""}</span></>
+            : <>✕ {probe.error || "not connected"}</>}
+          {!probe.ok && probe.hint && <div style={{ color: "var(--t3)", marginTop: 3 }}>{probe.hint}</div>}
+          {!probe.ok && Array.isArray(probe.steps) && (
+            <ol style={{ margin: "6px 0 0 18px", color: "var(--t2)" }}>{probe.steps.map((x) => <li key={x}>{x}</li>)}</ol>
+          )}
+        </div>
+      )}
+
+      {open && (
+        <div style={{ marginTop: 10, fontSize: 12.5, lineHeight: 1.8, color: "var(--t2)" }}>
+          <ol style={{ margin: "0 0 0 18px" }}>
+            <li><b>layerbase.com</b> → sign in (free, card nahi chahiye)</li>
+            <li><b>New Database</b> → engine <b>libSQL</b> → Free plan → Create (10–60 s me ready)</li>
+            <li>DB kholein → <b>Connect / Quick Connect</b> → <code>https://…cloud.layerbase.dev</code> URL aur auth token copy karein</li>
+            <li>Cloudflare → Workers → apna worker → <b>Settings → Variables → Add</b>: <code>LIBSQL_URL</code> = wahi URL, <code>LIBSQL_TOKEN</code> = token (dono <b>Secret</b> rakhein) → Save &amp; Deploy</li>
+            <li>Yahan <b>Test Layerbase</b> dabaein → "Connected ✓" aana chahiye</li>
+          </ol>
+          <div style={{ color: "var(--t3)", marginTop: 6 }}>
+            Free tier: ₹0, koi expiry nahi, 2 database · 5 GB · 20 connections. 15 min idle par DB so jata hai
+            (agli query ~1–5 s me jaga deti hai), 14 din bilkul idle rahe to archive hota hai — dashboard me ek click
+            <b> Restore</b>, data safe. Isliye app mahine me kam se kam ek baar kholein.
+          </div>
+        </div>
+      )}
 
       <div className="set-sub-h">Caps (server-side, client badha nahi sakta)</div>
       <div className="set-chip-row">
