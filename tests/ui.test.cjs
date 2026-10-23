@@ -441,6 +441,28 @@ const cookie = (w, k) => {
   await wait(800);
   check("keyboard ArrowDown advances", w.__calls.some((u) => u.includes("id=sh100000003")), q(w, ".shorts-h-count").textContent);
 
+  /* ══ 6b. ShortsFire embedded inside Shorts ══════════════════════════════ */
+  const fireTab = all(w, ".sf-seg-btn").find((b) => /ShortsFire/.test(b.textContent));
+  check("shorts has a ShortsFire tab", !!fireTab, all(w, ".sf-seg-btn").map((b) => b.textContent).join(" | "));
+  click(w, fireTab);
+  await wait(400);
+  const frame = q(w, "iframe.sf-frame");
+  check("ShortsFire is embedded in the page", !!frame && /yt\.sanjeettiwari205\.workers\.dev/.test(frame.getAttribute("src") || ""), frame && frame.getAttribute("src"));
+  check("embed allows autoplay + fullscreen", /autoplay/.test(frame.getAttribute("allow") || "") && /fullscreen/.test(frame.getAttribute("allow") || ""));
+  check("embed has an open-in-new-tab escape hatch", all(w, ".sf-bar a").some((a) => /workers\.dev/.test(a.getAttribute("href") || "")), all(w, ".sf-bar a").map((a) => a.getAttribute("href")).join(","));
+  check("embed has its own reload", all(w, ".sf-bar .cp-pill").some((b) => /Reload/.test(b.textContent)));
+  check("streamvoid feed is hidden while embedded", !q(w, ".shorts-feed"));
+  check("embed is not the YouTube player iframe", !/youtube\.com|ytimg/.test(frame.getAttribute("src") || ""));
+  click(w, all(w, ".sf-seg-btn").find((b) => /StreamVoid/.test(b.textContent)));
+  await wait(400);
+  check("toggle returns to the real feed", !!q(w, ".shorts-feed") && !q(w, "iframe.sf-frame"));
+
+  // the URL is configurable, and it persists as a setting
+  click(w, all(w, ".s-item").find((b) => /Settings/.test(b.textContent)));
+  await wait(400);
+  const sfInput = all(w, ".set-api-row input").find((i) => /workers\.dev/.test(i.value || ""));
+  check("settings exposes the ShortsFire URL", !!sfInput, all(w, ".set-api-row input").map((i) => i.value).join(" | ").slice(0, 120));
+
   click(w, all(w, ".s-item").find((b) => /Home/.test(b.textContent)));
   await wait(600);
   check("home shows a Shorts shelf", !!q(w, ".shorts-shelf") && all(w, ".shelf-card").length === 3, all(w, ".shelf-card").length);

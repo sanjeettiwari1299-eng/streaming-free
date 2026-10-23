@@ -2,7 +2,7 @@
 
 `index.html` (whole app, one file) + `worker.js` (Cloudflare Worker, free tier).
 **No API key. No Google login. No Piped/Invidious. No server/VPS. No YouTube iframe. No localStorage.**
-Search · Trending · **Shorts** · **RSS subscriptions** · watch page · hand-built player.
+Search · Trending · **Shorts** (+ **ShortsFire** embed) · **RSS subscriptions** · watch page · hand-built player.
 
 ---
 
@@ -40,6 +40,66 @@ Playback stays 100% custom: a plain `<video>` element with our own YouTube-style
    Then open **Settings → Cloud store** in the app: the dot turns green and everything syncs.
 
 `index.html` can be hosted anywhere static (GitHub Pages, Netlify, S3, or just opened locally).
+
+---
+
+## Secrets cheat-sheet (exact values)
+
+Cloudflare → your Worker → **Settings → Variables and Secrets** → *Add* (type **Secret** for all of these).
+
+| Name | Required? | What to paste |
+| --- | --- | --- |
+| `SV_KEY` | recommended once cookies are used | any random string, e.g. `sv-9f3c1a77`. The app must send the same value: **Settings → YouTube engine → Access key** |
+| `YT_COOKIES` | the big one | a YouTube cookie string from a signed-in (throwaway) account — formats below |
+| `PO_TOKEN` | optional | one static token, or `VISITOR_DATA:TOKEN` |
+| `POTOKEN_URL` | optional | HTTP endpoint of a bgutil-style provider, e.g. `http://192.168.1.20:4416/get_potoken` |
+| `EMERGENCY_MIRRORS` | optional | extra Invidious-compatible bases, comma separated |
+| `MIRRORS` | optional | `off` disables the built-in mirror list |
+| `LIBSQL_URL` + `LIBSQL_TOKEN` | for the app's memory | Layerbase libSQL HTTPS URL + bearer token |
+| `APP_URL` | optional | link put on the worker's status page |
+
+### `YT_COOKIES` — four accepted shapes
+
+1. **Cookie header string** (easiest):
+   ```
+   SID=g.a000...; HSID=AbC...; SSID=AxY...; SAPISID=9f2...; APISID=x1...; __Secure-1PSID=g.a000...; __Secure-3PSID=g.a000...; __Secure-1PAPISID=9f2...; __Secure-3PAPISID=9f2...; LOGIN_INFO=AFmmF2...; VISITOR_INFO1_LIVE=abcd1234; PREF=tz=Asia.Calcutta
+   ```
+2. **JSON** exported by a cookie extension: `[{"name":"SID","value":"..."}, …]` (or `{"cookies":[…]}`).
+3. **Netscape `cookies.txt`** (7 tab-separated columns, e.g. from *Get cookies.txt LOCALLY*).
+4. **`key=value` lines**, one per line — converted to a single header.
+
+The ones that matter: `SID`, `HSID`, `SSID`, `SAPISID` (+ `APISID`) — plus `__Secure-1PSID`,
+`__Secure-3PSID`, `__Secure-1PAPISID`, `__Secure-3PAPISID` for the web clients. `SAPISIDHASH` is computed by the
+worker from `SAPISID`, so never paste an authorization header.
+
+**How to get them:** open an incognito window → sign in to the throwaway account → `youtube.com` →
+DevTools → **Network** → click any request to `youtube.com` → **Request Headers → cookie** → copy the whole
+value. (Or DevTools → **Application → Cookies → https://www.youtube.com**, copy name/value pairs.)
+
+**Gotcha:** if `SV_KEY` is set and the app does not send it, cookies are **ignored on purpose**. Check
+`/api/health` → `cookies.used` must be `true`, otherwise it says `"SV_KEY mismatch → cookies NOT used"`.
+
+### `PO_TOKEN`
+
+- Value A: the raw token (long `base64url`-ish string, 100+ chars).
+- Value B: `VISITOR_DATA:TOKEN` — use this when you know which visitor the token was minted for; the worker
+  sends that visitorData with the token.
+- Or skip `PO_TOKEN` and set `POTOKEN_URL` to a running
+  [bgutil provider](https://github.com/Brainicism/bgutil-ytdlp-pot-provider). The worker calls
+  `…?visitor_data=<vd>` and expects `{"poToken":"…","visitorData":"…"}`, caching the pair for 30 min.
+
+Honest limits: a **static token dies within hours** and is tied to its visitor data, and Cloudflare Workers
+forbid `eval`, so BotGuard cannot be solved inside the worker. Cookies last weeks/months and fix the same
+bot-check — so **cookies first, PoToken as a bonus**, both can be set at once.
+
+Never commit these values, never paste them in chat, and use a throwaway account: a cookie string is a full
+session (password-equivalent).
+
+### Verify in 30 seconds
+
+1. `/api/health` → `cookies.configured` + `cookies.used` (and `SV_KEY` badge on the status page).
+2. `/api/canary?n=3&key=<SV_KEY>` → `rate` + per-video `pass` (1 = anonymous, 2 = cookie pass, 4 = mirror).
+3. `/api/selftest?id=dQw4w9WgXcQ&key=<SV_KEY>` → `cookiesUsed`, `poTokenUsed`, `poTokenSource`, `reason` if it fails.
 
 ---
 
@@ -277,6 +337,26 @@ In the app:
 
 Refreshing is on demand (pull-to-refresh / the refresh button): 1 request per channel, so a 20-channel
 check costs 20 of your 100k daily worker requests. There is no background polling to burn quota.
+
+---
+
+## ShortsFire — your second site, inside Shorts
+
+`https://yt.sanjeettiwari205.workers.dev/` (ShortsFire) is a separate app. The Shorts page has a two-way toggle:
+
+**⚡ StreamVoid** — our own Shorts feed and player (YouTube data, proxied streams).
+**🔥 ShortsFire** — the whole ShortsFire site embedded in an iframe, in place of the feed.
+
+The embedded view gets its own status bar: `Reload` (remounts the frame), `Open ↗` (new tab) and back to
+StreamVoid. Switching tabs pauses the hidden Shorts, and the global Shorts shortcuts (↑ ↓ / j k / m) are disabled
+while the frame owns the keyboard.
+
+The URL is a setting, not a constant: **Settings → 🔥 ShortsFire → Save URL** (stored in your cloud profile like
+every other setting), default `https://yt.sanjeettiwari205.workers.dev/`.
+
+**Honest limit:** if that site ever sends `X-Frame-Options` / a CSP `frame-ancestors` rule, browsers will refuse
+to render it inside the page — the frame stays blank and `Open ↗` is the way in. Nothing on our side can override
+that, and the toggle is built so it degrades to a plain link rather than looking broken.
 
 ---
 
