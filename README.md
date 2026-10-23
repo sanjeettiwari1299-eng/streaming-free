@@ -79,6 +79,20 @@ Live worker par aaj yahi dikh raha tha: `ANDROID_VR 1.65.10`, `IOS 21.26.4`, `AN
 
 Honest: ye sab **probability** badhata hai, guarantee nahi. Asli jump `YT_COOKIES` / `POTOKEN_URL` se aata hai.
 
+### v8.0 — teen live bugs (jo khud worker ne pakde)
+
+v7.9 live chal raha tha (`selftest` = 130 ms, `android_vr`), par usi ke `canary?n=3` ne **0%** dikhaya jabki
+video chal raha tha. Wajah teen:
+
+| Bug | Kya ho raha tha | Fix |
+| --- | --- | --- |
+| **Breaker poisoning** | bot-check / private / region wall par bhi `noteFail()` chalta tha → **ek** gated video poore ladder ko 5 min ke liye thanda kar deta tha, aur `canary` loop me `player()` har client "cooling" dekhkar turant `reason:"unknown"`, `ms:0` lauta deta tha → **jhoota 0%** | breaker sirf **network / timeout / no-formats** (client ki galti) par trip hota hai. `bot`, `login`, `age`, `region`, `unavailable` **video ki** sachchai hai, client ki nahi — breaker ko chhua bhi nahi jaata |
+| **Mirror order ulta** | jo mirror mar rahe the wo pehle: `inv.nadeko.net` 403, `nerdvpn` 401, `melmac` 526 — aur jo chalta tha (`invidious.f5.si`) **sabse last** | order ab: `f5.si` → `melmac` → `nerdvpn` → `nadeko` |
+| **Subrequest budget** | Cloudflare free tier: **50 subrequests per request**. Ek `player()` ~30 kharch karta hai; `canary?n=3` ek hi request me teen chalata tha → cap cross, saare aage ke fetch instant fail → fake 0% | ladder ek explicit budget par chalta hai (`SUB_CAP 46`, `SUB_RESERVE 8` mirrors/media ke liye): budget khatam = ladder rukta hai, mirror pass phir bhi chalta hai, aur `canary` jo video **test hi nahi hui** use `skipped` bolta hai — `passed`/`rate` me jhooth nahi |
+
+Ab `canary` default **ek** video leta hai (`?n=3` tabhi jab aapko pata ho ki budget hai), aur response me
+`skipped`, `budgetLeft` aur `note` aata hai. `player` response me bhi `budgetLeft` hai.
+
 ---
 
 ## Secrets cheat-sheet (exact values)
@@ -273,8 +287,11 @@ the grouped failure counts and the last 14 attempts.
 
 ### Canary
 
-`GET /api/canary?n=3` runs playback over three of today's trending videos and returns `passed`, `rate` and a
+`GET /api/canary` runs playback over **one** of today's trending videos and returns `passed`, `rate` and a
 per-video reason. One click tells you whether the whole setup is healthy or which layer broke.
+
+`?n=3` bhi chalta hai par ek hi request me Cloudflare ka **50 subrequest** cap hai — tab `skipped` aur
+`budgetLeft` dekhna: jo video `skipped` hai wo **fail nahi hui**, bas test nahi hui. Isi liye default `n=1` hai.
 
 `MIRRORS=off` disables the built-in extractor list; `EMERGENCY_MIRRORS=https://a,https://b` adds your own.
 
@@ -649,8 +666,10 @@ node tests/keeptest.mjs   # 33 checks: expired/403/410/5xx/network self-heal, Ra
                           # mirror refresh fallback, /api/stream, /mp4, health guarantees
 node tests/synctest.mjs   # 63 checks: Layerbase libSQL pipeline against a real SQLite, every cap, trim,
                           # edge-snapshot fallback, import/export, profile isolation, cron heartbeat
-node tests/brahmatest.mjs # 39 checks: failure classification, bot-check escalation, cookies pass,
+node tests/brahmatest.mjs # 41 checks: failure classification, bot-check escalation, cookies pass,
                           # PoToken (secret + provider + cache), mirrors, canary, diagnosis output
+node tests/budgettest.mjs # 24 checks: bot-checks never trip a breaker, network failures do, mirror order,
+                          # subrequest budget (ladder stops, reserve kept, mirrors still run), honest canary
 node tests/shortstest.mjs # Shorts: both renderer shapes, dedupe, view parsing, 3-step ladder, route
 
 npm i jsdom react react-dom @babel/core @babel/preset-react

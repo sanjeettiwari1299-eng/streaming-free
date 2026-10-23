@@ -21,7 +21,7 @@
  */
 
 // bump this when the worker changes, so /api/health tells you which code is live
-const BUILD = "7.9.0";
+const BUILD = "8.0.0";
 
 const INNERTUBE_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8";
 const UA = {
@@ -294,7 +294,12 @@ const breakerCooling = (c) => {
   return !!(b && b.until > Date.now() / 1000);
 };
 const noteOk = (c) => BREAKER.delete(breakerKey(c));
-const noteFail = (c) => {
+// hard = this client+version is broken (network, timeout, no formats) → cool it.
+// soft = the *video* was rejected (bot wall, private, region, removed). Those are
+// per-video, so cooling the client would poison the whole ladder for every other
+// video — that exact bug pushed healthy videos onto the mirrors.
+const noteFail = (c, hard = true) => {
+  if (!hard) return;
   const k = breakerKey(c);
   const b = BREAKER.get(k) || { fails: 0, until: 0 };
   b.fails += 1;
@@ -968,11 +973,13 @@ async function getPoToken(env, visitorData) {
 }
 
 // built-in last-resort extractors (Invidious-compatible API). Set MIRRORS=off to disable.
+// ordered by what actually answered on 2026-10-23: f5.si ok, melmac 526,
+// nerdvpn 401, nadeko 403 — dead ones stay last, never first
 const DEFAULT_MIRRORS = [
-  "https://inv.nadeko.net",
-  "https://invidious.nerdvpn.de",
-  "https://iv.melmac.space",
   "https://invidious.f5.si",
+  "https://iv.melmac.space",
+  "https://invidious.nerdvpn.de",
+  "https://inv.nadeko.net",
 ];
 
 // per-isolate scoreboard: which client actually delivers, per failure kind
@@ -1014,7 +1021,8 @@ async function tryClient(client, videoId, opts, attempts, tag) {
     attempts.push(`${label}: ${status} ${reason}`.trim() + (kind !== "unknown" ? ` [${kind}]` : ""));
     bumpStat(client.id, kind === "bot" ? "bot" : kind === "login" || kind === "age" ? "login" : "other");
     bumpStat(client.id, "fail");
-    noteFail(client);
+    // bot/login/age/region/unavailable are facts about the video, not the client
+    noteFail(client, !["bot", "login", "age", "region", "unavailable"].includes(kind));
     return null;
   }
   const assets =
@@ -1092,8 +1100,13 @@ function emergencyMirrors(env) {
   return [...new Set([...custom, ...(off ? [] : DEFAULT_MIRRORS)])];
 }
 
-async function mirrorStream(videoId, mirrors, attempts = []) {
+async function mirrorStream(videoId, mirrors, attempts = [], budget = null) {
   for (const base of mirrors) {
+    if (budget && budget.left <= 0) {
+      attempts.push("mirror: subrequest budget reached");
+      break;
+    }
+    if (budget) budget.left -= 1;
     try {
       const r = await fetchRetry(`${base}/api/v1/videos/${encodeURIComponent(videoId)}?fields=title,author,authorId,viewCount,lengthSeconds,published,description,formatStreams,recommendedVideos`, {
         headers: { "user-agent": WEB_UA, accept: "application/json" },
@@ -1144,14 +1157,25 @@ async function mirrorStream(videoId, mirrors, attempts = []) {
  *   3. authenticated pass with cookies (only if the caller proved SV_KEY)
  *   4. emergency mirrors (only if EMERGENCY_MIRRORS is configured)
  */
+// Cloudflare Workers (free) allow 50 subrequests per invocation; exceeding it
+// makes *every* later fetch fail instantly with an opaque error. One player call
+// can burn 20+ on its own, so the ladder runs on an explicit budget.
+const SUB_CAP = 46;
+const SUB_RESERVE = 8;          // never spent by the ladder: mirrors + media need it
+const SUB_MIN_PER_VIDEO = 8;    // canary won't start a video with less than this
+
 async function player(videoId, opts = {}) {
   const env = opts.env || {};
   const attempts = [];
   const failures = [];
   const started = Date.now();
   const deadline = started + 26000;
+  const budget = opts.budget || { left: SUB_CAP };
+  const spend = (n = 1) => { budget.left = Math.max(0, budget.left - n); };
+  const budgetLeft = () => budget.left;
 
   let { versions, source, visitorData } = await discoverVersions(env);
+  spend(2);
   let ladder = buildClients(versions, opts.region || "IN");
 
   // PoToken (static secret or external provider) + the visitorData it belongs to
@@ -1164,15 +1188,27 @@ async function player(videoId, opts = {}) {
 
   const runPass = async (clients, extraOpts, tag, useBreakers = true) => {
     let needAuthEarly = false;
+    const seen = new Set();
     for (const client of clients) {
       if (Date.now() > deadline) {
         attempts.push(`${tag || "pass"} stopped: time budget reached`);
         break;
       }
+      if (budgetLeft() <= SUB_RESERVE) {
+        attempts.push(`${tag || "pass"} stopped: subrequest budget (${budgetLeft()} left, ${SUB_RESERVE} reserved for mirrors)`);
+        break;
+      }
+      // tight budget → skip the second version of a client we already asked
+      if (budgetLeft() < SUB_RESERVE + 12 && seen.has(client.id)) {
+        attempts.push(`${client.id}@${client.ctx.clientVersion}: skipped (tight subrequest budget)`);
+        continue;
+      }
+      seen.add(client.id);
       if (useBreakers && breakerCooling(client)) {
         attempts.push(`${client.id}@${client.ctx.clientVersion}: skipped (cooling down)`);
         continue;
       }
+      spend(1);
       const res = await tryClient(
         client,
         videoId,
@@ -1251,9 +1287,11 @@ async function player(videoId, opts = {}) {
 
   // pass 4 — independent extractors (Invidious-compatible), proxied through /api/media
   const mirrors = emergencyMirrors(env);
-  if (mirrors.length) {
-    const m = await mirrorStream(videoId, mirrors, attempts);
+  if (mirrors.length && budgetLeft() > 0) {
+    const m = await mirrorStream(videoId, mirrors, attempts, budget);
     if (m) return finish(m, 4, { authed: false, healed: false });
+  } else if (mirrors.length) {
+    attempts.push("mirrors skipped: subrequest budget exhausted");
   }
 
   // ── nothing worked: explain exactly why ───────────────────────────────────
@@ -1280,6 +1318,7 @@ async function player(videoId, opts = {}) {
     versions,
     versionSource: source,
     breakers: breakerSnapshot(),
+    budgetLeft: budgetLeft(),
   };
 }
 
@@ -1946,9 +1985,13 @@ async function resolveChannel(input) {
 
 // canary: run playback over a few live videos and report the pass rate
 async function canary(u, env) {
-  const n = Math.max(1, Math.min(5, Number(u.searchParams.get("n") || 3)));
+  // one video per call by default: three player calls inside one invocation blow
+  // through Cloudflare's 50-subrequest cap and report a fake 0%.
+  const n = Math.max(1, Math.min(5, Number(u.searchParams.get("n") || 1)));
   const region = (u.searchParams.get("region") || "IN").toUpperCase();
   const cookieHeader = cookieAuth(env, u);
+  const capAsked = Number(u.searchParams.get("budget") || 0);
+  const budget = { left: capAsked > 0 ? Math.max(SUB_MIN_PER_VIDEO, Math.min(SUB_CAP, capAsked)) : SUB_CAP };
   let ids = [];
   try {
     const t = await trending(region, env, u);
@@ -1961,8 +2004,13 @@ async function canary(u, env) {
   const results = [];
   for (const id of ids) {
     const t0 = Date.now();
+    if (budget.left < SUB_MIN_PER_VIDEO) {
+      // honest: this video was not tested, it was not a failure
+      results.push({ id, ok: false, skipped: "subrequest budget", ms: 0, pass: 0, client: null, reason: null, formats: [] });
+      continue;
+    }
     try {
-      const r = await player(id, { env, cookieHeader, region });
+      const r = await player(id, { env, cookieHeader, region, budget });
       results.push({
         id,
         ok: !!r.ok,
@@ -1971,17 +2019,22 @@ async function canary(u, env) {
         client: r.client || null,
         reason: r.reason || null,
         formats: (r.formats || []).map((f) => f.quality),
+        budgetLeft: r.budgetLeft,
       });
     } catch (e) {
       results.push({ id, ok: false, ms: Date.now() - t0, error: e.message });
     }
   }
-  const passed = results.filter((r) => r.ok).length;
+  const tested = results.filter((r) => !r.skipped);
+  const passed = tested.filter((r) => r.ok).length;
   return {
     ok: passed > 0,
-    checked: results.length,
+    checked: tested.length,
+    skipped: results.length - tested.length,
     passed,
-    rate: Math.round((passed / results.length) * 100) + "%",
+    rate: tested.length ? Math.round((passed / tested.length) * 100) + "%" : "n/a",
+    budgetLeft: budget.left,
+    note: results.length > tested.length ? "some videos were not tested — Cloudflare caps subrequests per request; call canary again" : undefined,
     cookiesUsed: !!cookieHeader,
     results,
   };
@@ -2059,7 +2112,7 @@ const ROUTE_LIST = [
   "/api/health",
   "/api/debug",
   "/api/probe?q=lofi",
-  "/api/canary?n=3",
+  "/api/canary?n=1",
   "/api/selftest?id=",
   "/api/player?id=",
   "/api/search?q=",
@@ -2469,7 +2522,8 @@ const ROUTES = [
             "independent extractors (Invidious API, proxied)",
           ],
           escalateOnBotCheck: true,
-          canary: "/api/canary?n=3",
+          breakerScope: "network/format failures only — bot-check and private videos never cool a client",
+          canary: "/api/canary?n=1",
           clientIq: {
             headers: ["x-goog-visitor-id", "referer: watch?v=<id>", "x-origin"],
             consentCookies: consentCookies(env) ? "SOCS=CAI; CONSENT=YES+cb" : "off (CONSENT=off)",
