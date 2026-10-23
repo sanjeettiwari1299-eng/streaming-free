@@ -883,7 +883,7 @@ async function listCall(env, url, endpoint, extra, callOpts = {}) {
   const region = (url.searchParams.get("region") || "IN").toUpperCase();
   const cookieHeader = cookieAuth(env, url);
 
-  const attemptWith = async (force) => {
+  const attemptWith = async (force, bypassBreakers = false) => {
     const { versions, visitorData } = await discoverVersions(env, force);
     const ladder = buildClients(versions, region);
     const order = [
@@ -904,8 +904,9 @@ async function listCall(env, url, endpoint, extra, callOpts = {}) {
     let lastError = null;
     for (const { client, opts } of candidates) {
       if (!client) continue;
-      // ignoreCooling: last-resort fallbacks still try even when other sources just tripped the breakers
-      if (!callOpts.ignoreCooling && breakerCooling(client)) continue;
+      // ignoreCooling: last-resort fallbacks and the self-heal round still try even when
+      // other calls just tripped the breakers (a warm breaker must not blank the page)
+      if (!bypassBreakers && !callOpts.ignoreCooling && breakerCooling(client)) continue;
       try {
         const data = await innertube(client, endpoint, extra, { ...opts, retries: 0, timeout: 8000 });
         noteOk(client);
@@ -923,7 +924,9 @@ async function listCall(env, url, endpoint, extra, callOpts = {}) {
   try {
     return await attemptWith(false);
   } catch {
-    return await attemptWith(true); // self-heal: refresh versions, one more round
+    // self-heal: re-discover versions and this time ignore breaker cooldowns — a cooldown
+    // tripped by another endpoint must not turn into a blank list
+    return await attemptWith(true, true);
   }
 }
 

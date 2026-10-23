@@ -56,7 +56,11 @@ globalThis.fetch = async (url, opts = {}) => {
       },
     }), { status: 200 });
   }
-  if (u.includes("/youtubei/v1/search") || u.includes("/youtubei/v1/browse") || u.includes("/youtubei/v1/next"))
+  if (u.includes("/youtubei/v1/search")) {
+    if (mode.search === "fail") return new Response(JSON.stringify({ error: { code: 400 } }), { status: 200 });
+    return new Response(SEARCH, { status: 200 });
+  }
+  if (u.includes("/youtubei/v1/browse") || u.includes("/youtubei/v1/next"))
     return new Response(SEARCH, { status: 200 });
   if (u.includes("googlevideo.com")) return new Response("bytes", { status: 206, headers: { "content-range": "bytes 0-4/100", "content-type": "video/mp4" } });
   throw new Error("unexpected " + u);
@@ -114,6 +118,18 @@ const st = await (await W.default.fetch(new Request("https://w.dev/api/selftest?
 check("selftest ok", st.ok === true && typeof st.ms === "number", JSON.stringify(st).slice(0, 80));
 const mp4 = await W.default.fetch(new Request("https://w.dev/mp4/happyVid001.mp4", { headers: { Range: "bytes=0-4" } }), {});
 check("mp4 route", mp4.status === 206 && mp4.headers.get("content-type") === "video/mp4", mp4.status);
+/* a warm breaker must not blank a primary list call: self-heal round bypasses cooldowns */
+W.resetBreakers();
+mode.search = "fail";
+const h1 = await W.default.fetch(new Request("https://w.dev/api/health"), {});
+await W.default.fetch(new Request("https://w.dev/api/search?q=breaker"), {}).catch(() => {});
+const cooling = W.breakerSnapshot();
+check("failed list call trips breakers", cooling.length > 0, JSON.stringify(cooling).slice(0, 80));
+mode.search = "ok";
+const recovered = await (await W.default.fetch(new Request("https://w.dev/api/search?q=hello"), {})).json();
+check("self-heal bypasses breaker cooldown", (recovered.items || []).length > 0, JSON.stringify(recovered).slice(0, 90));
+W.resetBreakers();
+
 const nf = await W.default.fetch(new Request("https://w.dev/nope"), {});
 check("404 unknown", nf.status === 404);
 const nfBody = await nf.json();

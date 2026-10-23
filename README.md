@@ -183,6 +183,7 @@ In the app:
 
 | Breaks over time | How the worker handles it |
 | --- | --- |
+| **Breakers tripped by one endpoint** | The first attempt honours a cooldown; the self-heal round **ignores** cooldowns (and re-discovers versions), so a warm breaker from another route can't blank search/trending/RSS. |
 | **Client versions go stale** (the #1 cause of breakage) | `discoverVersions()` fetches `youtube.com`'s HTML for the current `INNERTUBE_CLIENT_VERSION` and yt-dlp's `_base.py` for the mobile/TV versions — cached 6h (Cache API, falls back to a plain fetch). Every client is tried **twice**: discovered version, then the baked-in fallback. |
 | **Signature / `n` algorithm changes** | `buildDecipher()` extracts the functions from the *current* `base.js` at runtime — nothing hardcoded. |
 | **Renderer JSON reshuffles** | `collect()` walks the tree recursively instead of relying on fixed paths. |
