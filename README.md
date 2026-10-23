@@ -25,7 +25,8 @@ Playback stays 100% custom: a plain `<video>` element with our own YouTube-style
 
 1. <https://dash.cloudflare.com> → **Workers & Pages** → **Create Worker** → Deploy.
 2. Open **Edit code**, paste all of `worker.js`, **Deploy**.
-3. Open `https://<your-worker>.workers.dev/api/health` → `{"ok":true,...}`
+3. Open `https://<your-worker>.workers.dev/` → worker ka status page (saari routes ki list), ya
+   `https://<your-worker>.workers.dev/api/health` → `{"ok":true,...}`
 4. Open StreamVoid → **Settings → YouTube engine** → paste the worker URL → **Save & test**.
    The dot turns green and full search/trending/playback goes live.
 
@@ -37,6 +38,7 @@ Playback stays 100% custom: a plain `<video>` element with our own YouTube-style
 
 | Route | Purpose |
 | --- | --- |
+| `GET /` | status page: worker running, links to every route (`?format=json` for machines). Never a 404 |
 | `GET /api/health` | connection check, discovered client versions, cookie state |
 | `GET /api/debug` | full client ladder + version sources (`?refresh=1` re-discovers) |
 | `GET /api/selftest?id=` | end-to-end check: which pass/client worked, ms, breaker state |
@@ -51,6 +53,10 @@ Playback stays 100% custom: a plain `<video>` element with our own YouTube-style
 | `GET /api/media?u=` | **Range-aware** byte proxy for `googlevideo.com` (host allowlist) |
 | `GET /mp4/<id>.mp4` | direct file endpoint: resolves the best muxed stream and serves it as `video/mp4` (Range/HEAD supported). `?itag=` picks a quality, `?dl=1` forces a download |
 | `GET /api/file/<id>.mp4` | same as above (alias) |
+
+Unknown paths return a JSON 404 that tells you *what* you asked for and lists every valid route
+(`{error:"not found", detail:{path, routes, hint, didYouMean}}`). A trailing slash is tolerated
+(`/api/health/` works), and `/favicon.ico` is a quiet 204.
 
 Signature handling: if a format comes back as `signatureCipher`, the worker fetches the video's `base.js`,
 extracts the sig and `n` transform functions and applies them (`buildDecipher`). Plain `url` formats skip all of that.

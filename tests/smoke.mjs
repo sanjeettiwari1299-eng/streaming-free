@@ -116,6 +116,23 @@ const mp4 = await W.default.fetch(new Request("https://w.dev/mp4/happyVid001.mp4
 check("mp4 route", mp4.status === 206 && mp4.headers.get("content-type") === "video/mp4", mp4.status);
 const nf = await W.default.fetch(new Request("https://w.dev/nope"), {});
 check("404 unknown", nf.status === 404);
+const nfBody = await nf.json();
+check("404 explains itself", nfBody.detail && Array.isArray(nfBody.detail.routes) && nfBody.detail.routes.includes("/api/rss?channels=UC..,UC.."), JSON.stringify(nfBody.detail || {}).slice(0, 90));
+check("404 includes path + hint", nfBody.detail.path === "/nope" && !!nfBody.detail.hint);
+
+/* root = status page, not a 404 */
+const root = await W.default.fetch(new Request("https://w.dev/"), {});
+const rootHtml = await root.text();
+check("root serves status page", root.status === 200 && /StreamVoid worker is running/.test(rootHtml), root.status);
+check("root page lists every route", W.ROUTE_LIST.every((r) => rootHtml.includes(r)), W.ROUTE_LIST.filter((r) => !rootHtml.includes(r)).join(" | "));
+check("root page shows health link", rootHtml.includes('href="/api/health"'));
+const rootJson = await W.default.fetch(new Request("https://w.dev/?format=json"), {});
+const rootJsonBody = await rootJson.json();
+check("root ?format=json", rootJsonBody.ok === true && rootJsonBody.routes.length === W.ROUTE_LIST.length);
+const rootSlash = await W.default.fetch(new Request("https://w.dev/api/health/"), {});
+check("trailing slash tolerated", rootSlash.status === 200, rootSlash.status);
+const fav = await W.default.fetch(new Request("https://w.dev/favicon.ico"), {});
+check("favicon 204", fav.status === 204, fav.status);
 const opt = await W.default.fetch(new Request("https://w.dev/api/health", { method: "OPTIONS" }), {});
 check("OPTIONS", opt.status === 204);
 

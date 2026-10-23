@@ -1335,6 +1335,98 @@ async function resolveChannel(input) {
   return { channelId, name: title.replace(/\s*-\s*YouTube$/, ""), avatar, source: target };
 }
 
+// one list, used by the landing page and the 404 body (no drift)
+const ROUTE_LIST = [
+  "/api/health",
+  "/api/debug",
+  "/api/selftest?id=",
+  "/api/player?id=",
+  "/api/search?q=",
+  "/api/searchmore?q=&token=",
+  "/api/trending?region=IN",
+  "/api/shorts?region=IN",
+  "/api/related?id=",
+  "/api/rss?channels=UC..,UC..",
+  "/api/channel?q=@handle",
+  "/api/media?u=",
+  "/mp4/{id}.mp4",
+];
+
+function landingPage(env) {
+  const cookies = !!(env && env.YT_COOKIES);
+  const keyed = !!(env && env.SV_KEY);
+  const app = (env && env.APP_URL) || "";
+  const rows = ROUTE_LIST.map(
+    (r) => `<a class="r" href="${r.replace(/\{id\}|\.\.|@handle|=$|UC\.\./g, "")}"><code>${r}</code></a>`
+  ).join("\n      ");
+  return `<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>StreamVoid worker · running</title>
+<style>
+:root{color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;background:#0f0f0f;color:#f1f1f1;font:15px/1.6 system-ui,-apple-system,Roboto,sans-serif;padding:32px 20px}
+.w{max-width:760px;margin:0 auto}
+h1{font-size:22px;margin:0 0 4px;display:flex;align-items:center;gap:10px}
+.dot{width:10px;height:10px;border-radius:50%;background:#2ecc71;box-shadow:0 0 10px #2ecc71}
+.sub{color:#aaa;margin:0 0 24px}
+.card{background:#181818;border:1px solid #303030;border-radius:14px;padding:16px 18px;margin-bottom:16px}
+.card h2{font-size:13px;text-transform:uppercase;letter-spacing:.7px;color:#9a9a9a;margin:0 0 10px}
+.r{display:block;padding:7px 10px;border-radius:8px;color:#3ea6ff;text-decoration:none}
+.r:hover{background:#212121}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;color:#e8e8e8}
+.badges{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}
+.b{font-size:12px;padding:3px 10px;border-radius:999px;background:#212121;color:#bbb;border:1px solid #303030}
+.b.ok{color:#7ee2a8;border-color:#2b5a3f}
+.b.off{color:#f0b27a;border-color:#5a452b}
+a.btn{display:inline-block;padding:10px 16px;border-radius:10px;background:#fff;color:#0f0f0f;font-weight:600;text-decoration:none;margin:0 8px 8px 0}
+a.btn.ghost{background:#272727;color:#eee}
+p{margin:8px 0}
+.muted{color:#9a9a9a;font-size:13px}
+</style></head><body><div class="w">
+  <h1><span class="dot"></span>StreamVoid worker is running</h1>
+  <p class="sub">Serverless YouTube engine — InnerTube + media proxy + RSS. No API key.</p>
+
+  <div class="card">
+    <h2>Status</h2>
+    <div class="badges">
+      <span class="b ok">engine: innertube</span>
+      <span class="b ${cookies ? "ok" : ""}">cookies: ${cookies ? "configured" : "not set"}</span>
+      <span class="b ${keyed ? "ok" : ""}">SV_KEY: ${keyed ? "set (cookies need ?key=)" : "not set"}</span>
+    </div>
+    <p style="margin-top:14px"><a class="btn" href="/api/health">/api/health</a><a class="btn ghost" href="/?format=json">same as JSON</a>${app ? `<a class="btn ghost" href="${app}">Open the app</a>` : ""}</p>
+    <p class="muted">App me Settings → Engine URL me is worker ka URL daalo, phir search/trending/shorts/playback chalu ho jayega.</p>
+  </div>
+
+  <div class="card">
+    <h2>Routes</h2>
+    ${rows}
+  </div>
+
+  <div class="card">
+    <h2>Quick test</h2>
+    <p class="muted">In links ko kholke dekho — sab JSON aana chahiye:</p>
+    <p><a class="btn ghost" href="/api/selftest?id=dQw4w9WgXcQ">/api/selftest?id=dQw4w9WgXcQ</a><a class="btn ghost" href="/api/trending?region=IN">/api/trending</a><a class="btn ghost" href="/api/shorts?region=IN">/api/shorts</a></p>
+    <p class="muted">Direct file: <code>/mp4/dQw4w9WgXcQ.mp4</code> · <code>?dl=1</code> download · <code>?itag=18</code> quality</p>
+  </div>
+
+  <p class="muted">This page is only shown at the root — every real endpoint lives under <code>/api/*</code> or <code>/mp4/*</code>.</p>
+</div></body></html>`;
+}
+
+function notFound(url) {
+  const path = url.pathname.replace(/\/+$/, "") || "/";
+  const near = ROUTE_LIST
+    .map((r) => r.split("?")[0].replace(/\{id\}|\/.*\{.*\}/, ""))
+    .filter((r) => r.startsWith(path) || path.startsWith(r));
+  return err("not found", 404, {
+    path: url.pathname,
+    routes: ROUTE_LIST,
+    hint: path === "/" ? "Open / for the status page, or /api/health for JSON." : "Check the route spelling — no trailing slash needed.",
+    didYouMean: [...new Set(near)].slice(0, 6),
+  });
+}
+
 const ROUTES = [
   [
     "/api/health",
@@ -1431,19 +1523,31 @@ export default {
         },
       });
     }
+    // tolerate a single trailing slash: /api/health/ === /api/health
+    const path = url.pathname.replace(/\/+$/, "") || "/";
     try {
-      if (url.pathname === "/api/media" || url.pathname === "/api/thumb") {
+      if (path === "/") {
+        // human-friendly status page; ?format=json / Accept: application/json for machines
+        const wantJson = url.searchParams.get("format") === "json" || /application\/json/.test(request.headers.get("accept") || "");
+        if (wantJson) {
+          return json({ ok: true, service: "streamvoid-worker", routes: ROUTE_LIST, health: "/api/health" });
+        }
+        return new Response(landingPage(env), {
+          status: 200,
+          headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
+        });
+      }
+      if (path === "/favicon.ico") return new Response(null, { status: 204 });
+      if (path === "/api/media" || path === "/api/thumb") {
         return media(url.searchParams.get("u") || "", request, env);
       }
       // pretty direct-file endpoints: /mp4/<id>.mp4 and /api/file/<id>.mp4
-      const mp4 = url.pathname.match(/^\/(?:api\/)?(?:file|mp4)\/([A-Za-z0-9_-]{6,15})\.mp4$/);
+      const mp4 = path.match(/^\/(?:api\/)?(?:file|mp4)\/([A-Za-z0-9_-]{6,15})\.mp4$/);
       if (mp4) return directMp4(mp4[1], request, env);
-      for (const [path, handler] of ROUTES) {
-        if (url.pathname === path) return json(await handler(url, env));
+      for (const [route, handler] of ROUTES) {
+        if (path === route) return json(await handler(url, env));
       }
-      return err("not found", 404, {
-        routes: ["/api/health", "/api/debug", "/api/player?id=", "/api/search?q=", "/api/trending?region=IN", "/api/shorts?region=IN", "/api/related?id=", "/api/rss?channels=", "/api/channel?q=", "/api/media?u=", "/mp4/{id}.mp4"],
-      });
+      return notFound(url);
     } catch (e) {
       return err(e && e.message ? e.message : "worker error", 502);
     }
@@ -1491,6 +1595,9 @@ export {
   rss,
   resolveChannel,
   shorts,
+  landingPage,
+  notFound,
+  ROUTE_LIST,
   parseShorts,
   shortFromReel,
   shortFromLockup,
