@@ -21,7 +21,7 @@
  */
 
 // bump this when the worker changes, so /api/health tells you which code is live
-const BUILD = "7.8.0";
+const BUILD = "7.9.0";
 
 const INNERTUBE_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8";
 const UA = {
@@ -75,6 +75,21 @@ const CLIENT_SPECS = [
     ctx: { clientName: "ANDROID_TESTSUITE", clientVersion: "1.9", androidSdkVersion: 30, osName: "Android", osVersion: "11", hl: "en", gl: "IN" },
     uaFn: UA_ANDROID,
   },
+  // Studio / creator client — only meaningful with cookies (it is an account client)
+  {
+    id: "web_creator",
+    num: "62",
+    needsAuth: true,
+    ctx: { clientName: "WEB_CREATOR", clientVersion: "1.20250101.00.00", hl: "en", gl: "IN" },
+    ua: UA.web,
+  },
+  // visionOS app — a mobile-style client that is not part of the usual ladders
+  {
+    id: "visionos",
+    num: "101",
+    ctx: { clientName: "VISIONOS", clientVersion: "1.02", deviceMake: "Apple", deviceModel: "RealityDevice14,1", osName: "visionOS", osVersion: "2.0.21O209", hl: "en", gl: "IN" },
+    ua: UA_IOS("1.02"),
+  },
 ];
 
 // Baked-in fallbacks — only used when discovery fails.
@@ -88,6 +103,8 @@ const FALLBACK_VERSIONS = {
   WEB_EMBEDDED_PLAYER: "2.20241202.07.00",
   TVHTML5: "7.20250101.10.00",
   ANDROID_TESTSUITE: "1.9",
+  WEB_CREATOR: "1.20250101.00.00",
+  VISIONOS: "1.02",
 };
 
 const VERSION_TTL = 6 * 3600; // seconds
@@ -212,6 +229,7 @@ function buildClients(versions, region = "IN") {
       out.push({
         id: spec.id,
         num: spec.num,
+        needsAuth: !!spec.needsAuth,
         versionRoll: ver,
         ctx: { ...spec.ctx, clientVersion: ver, gl: region },
         ua: spec.uaFn ? spec.uaFn(ver) : spec.ua,
@@ -365,6 +383,11 @@ function innertubeBody(client, extra) {
   return { context: { client: client.ctx }, ...extra };
 }
 
+// A signed-out browser still carries these two cookies. Without them YouTube
+// treats the request as a bot on consent/age walls — the exact errors we saw.
+const consentCookies = (env) =>
+  String((env && env.CONSENT) || "").toLowerCase() === "off" ? "" : "SOCS=CAI; CONSENT=YES+cb";
+
 async function innertube(client, endpoint, extra, opts = {}) {
   const headers = {
     "content-type": "application/json",
@@ -372,10 +395,20 @@ async function innertube(client, endpoint, extra, opts = {}) {
     "x-youtube-client-name": client.num,
     "x-youtube-client-version": client.ctx.clientVersion,
     origin: "https://www.youtube.com",
+    "x-origin": "https://www.youtube.com",
     "accept-language": "en-US,en;q=0.9",
   };
-  if (opts.cookies) {
-    headers.cookie = opts.cookies;
+  // YouTube's own clients send the visitor id in the header as well as the body;
+  // a body-only visitor id is a known bot signal.
+  if (opts.visitorData) headers["x-goog-visitor-id"] = opts.visitorData;
+  // the watch page URL is the referer a real client would have sent
+  if (opts.referer) headers.referer = opts.referer;
+  if (endpoint === "player" && extra && extra.videoId) {
+    headers.referer = `https://www.youtube.com/watch?v=${encodeURIComponent(extra.videoId)}`;
+  }
+  const cookies = opts.cookies || consentCookies(opts.env);
+  if (cookies) {
+    headers.cookie = cookies;
     headers["x-goog-authuser"] = "0";
     if (opts.authorization) headers.authorization = opts.authorization;
   }
@@ -942,6 +975,13 @@ const DEFAULT_MIRRORS = [
   "https://invidious.f5.si",
 ];
 
+// per-isolate scoreboard: which client actually delivers, per failure kind
+const CLIENT_STATS = {};
+const bumpStat = (id, field) => {
+  const row = (CLIENT_STATS[id] = CLIENT_STATS[id] || { ok: 0, fail: 0, bot: 0, login: 0, other: 0 });
+  row[field] = (row[field] || 0) + 1;
+};
+
 async function tryClient(client, videoId, opts, attempts, tag) {
   const label = `${client.id}@${client.versionRoll || client.ctx.clientVersion}${tag ? "(" + tag + ")" : ""}`;
   let data;
@@ -949,12 +989,19 @@ async function tryClient(client, videoId, opts, attempts, tag) {
     data = await innertube(
       client,
       "player",
-      { videoId, contentCheckOk: true, racyCheckOk: true },
+      {
+        videoId,
+        contentCheckOk: true,
+        racyCheckOk: true,
+        // what the web player itself sends; some clients refuse without it
+        playbackContext: { contentPlaybackContext: { html5Preference: "HTML5_PREF_WANTS" } },
+      },
       { ...opts, retries: 0, timeout: 7000 }
     );
   } catch (e) {
     if (opts.onFail) opts.onFail("unknown", client);
     attempts.push(`${label}: ${e.message}`);
+    bumpStat(client.id, "fail");
     noteFail(client);
     return null;
   }
@@ -965,6 +1012,8 @@ async function tryClient(client, videoId, opts, attempts, tag) {
     const kind = classifyFailure(status, reason);
     if (opts.onFail) opts.onFail(kind, client);
     attempts.push(`${label}: ${status} ${reason}`.trim() + (kind !== "unknown" ? ` [${kind}]` : ""));
+    bumpStat(client.id, kind === "bot" ? "bot" : kind === "login" || kind === "age" ? "login" : "other");
+    bumpStat(client.id, "fail");
     noteFail(client);
     return null;
   }
@@ -1005,6 +1054,7 @@ async function tryClient(client, videoId, opts, attempts, tag) {
 
   const vd = data.videoDetails || {};
   noteOk(client);
+  bumpStat(client.id, "ok");
   return {
     ok: true,
     client: client.id,
@@ -1128,11 +1178,13 @@ async function player(videoId, opts = {}) {
         videoId,
         {
           ...extraOpts,
+          env,
           poToken: pt.poToken,
           onFail: (kind) => {
             noteFailKind(kind);
-            // a bot-check is not client-specific: stop burning the ladder, escalate instead
-            if (kind === "bot" && !extraOpts.cookies) needAuthEarly = true;
+            // a bot-check is not client-specific: stop burning the ladder, escalate instead.
+            // pass 3 opts out on purpose — that pass exists to try *every* client.
+            if (kind === "bot" && !extraOpts.cookies && !extraOpts.keepGoingOnBot) needAuthEarly = true;
           },
         },
         attempts,
@@ -1158,9 +1210,12 @@ async function player(videoId, opts = {}) {
     ...extra,
   });
 
+  // anonymous passes never touch account-only clients (they can only answer LOGIN_REQUIRED)
+  const anonLadder = ladder.filter((c) => !c.needsAuth);
+
   // pass 1 — fast anonymous subset (android_vr / ios / tv_embedded / android)
-  const fast = ladder.filter((c) => ["android_vr", "ios", "tv_embedded", "android"].includes(c.id));
-  let out = await runPass(fast.length ? fast : ladder.slice(0, 4), { visitorData }, "");
+  const fast = anonLadder.filter((c) => ["android_vr", "ios", "tv_embedded", "android", "visionos"].includes(c.id));
+  let out = await runPass(fast.length ? fast : anonLadder.slice(0, 4), { visitorData }, "");
   if (out.res) return finish(out.res, 1);
   const sawBotCheck = out.needAuthEarly || failures.includes("bot");
 
@@ -1168,7 +1223,7 @@ async function player(videoId, opts = {}) {
   const cookieHeader = opts.cookieHeader || "";
   if (cookieHeader) {
     const auth = await sapisidHash(cookieHeader);
-    const authClients = ladder.filter((c) => ["android_vr", "android", "ios", "web", "mweb", "tv_embedded", "web_embedded"].includes(c.id));
+    const authClients = ladder.filter((c) => ["android_vr", "android", "ios", "web", "mweb", "tv_embedded", "web_embedded", "web_creator"].includes(c.id));
     out = await runPass(
       authClients,
       { visitorData, cookies: cookieHeader, authorization: auth },
@@ -1184,7 +1239,14 @@ async function player(videoId, opts = {}) {
   source = fresh.source;
   visitorData = pt.poToken ? pt.visitorData || fresh.visitorData || visitorData : fresh.visitorData || visitorData;
   ladder = buildClients(versions, opts.region || "IN");
-  out = await runPass(ladder, { visitorData }, cookieHeader ? "auth+" : "retry", false);
+  // pass 3 keeps the cookies if we have them — it used to lose them right here
+  const healAuth = cookieHeader ? await sapisidHash(cookieHeader) : "";
+  out = await runPass(
+    cookieHeader ? ladder : anonLadder,
+    { visitorData, cookies: cookieHeader || undefined, authorization: healAuth || undefined, keepGoingOnBot: true },
+    cookieHeader ? "auth+" : "retry",
+    false
+  );
   if (out.res) return finish(out.res, 3, { healed: true, authed: !!cookieHeader });
 
   // pass 4 — independent extractors (Invidious-compatible), proxied through /api/media
@@ -2408,6 +2470,14 @@ const ROUTES = [
           ],
           escalateOnBotCheck: true,
           canary: "/api/canary?n=3",
+          clientIq: {
+            headers: ["x-goog-visitor-id", "referer: watch?v=<id>", "x-origin"],
+            consentCookies: consentCookies(env) ? "SOCS=CAI; CONSENT=YES+cb" : "off (CONSENT=off)",
+            playbackContext: "html5Preference=HTML5_PREF_WANTS",
+            accountOnly: CLIENT_SPECS.filter((c) => c.needsAuth).map((c) => c.id),
+            selfHealWalksEveryClient: true,
+            scoreboard: "/api/debug → clientStats",
+          },
         },
         keepPlaying: {
           mediaSelfHeal: "expired/gone signature is re-resolved before and after the fetch",
@@ -2435,9 +2505,17 @@ const ROUTES = [
         ok: true,
         versions,
         source,
-        ladder: ladder.map((c) => ({ id: c.id, version: c.ctx.clientVersion })),
+        ladder: ladder.map((c) => ({ id: c.id, version: c.ctx.clientVersion, needsAuth: !!c.needsAuth })),
         cookieHeaderPresent: !!(env && env.YT_COOKIES),
         keyProtectsCookies: !!(env && env.SV_KEY),
+        // who is actually delivering on this worker's IP (per isolate, resets on redeploy)
+        clientStats: CLIENT_STATS,
+        headers: {
+          visitorId: "x-goog-visitor-id + body",
+          referer: "https://www.youtube.com/watch?v=<id> on player calls",
+          consentCookies: consentCookies(env) ? "SOCS=CAI; CONSENT=YES+cb" : "off (CONSENT=off)",
+          playbackContext: "html5Preference=HTML5_PREF_WANTS",
+        },
       };
     },
   ],
@@ -2608,6 +2686,8 @@ export {
   refreshedUrl,
   directMp4,
   media,
+  CLIENT_STATS,
+  consentCookies,
   parseFeed,
   rss,
   resolveChannel,
