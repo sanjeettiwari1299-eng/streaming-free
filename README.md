@@ -73,15 +73,34 @@ https://<worker>/mp4/dQw4w9WgXcQ.mp4?itag=18      → pick a specific quality
 
 ---
 
-## Subscriptions = RSS (no account, no login)
+## Subscriptions = channel feeds (no account, no login)
 
-Subscribe to a channel once and its uploads come straight from YouTube's public feed:
-`https://www.youtube.com/feeds/videos.xml?channel_id=UC…`. No Google account, no OAuth, no API key.
+Subscribe to a channel once and its uploads show up in your Subscriptions page. No Google account, no OAuth,
+no API key.
 
-Why the worker has to proxy it: the feed sends no CORS header, so a page can't read it directly.
-`/api/rss?channels=A,B,C` fetches all of them **in parallel** (8s timeout each), merges, dedupes by
-video id, sorts newest-first and caps the result. If one channel fails you still get the rest — the
-failure is listed in `errors[]` and the UI shows a small warning instead of an empty page.
+**Heads-up (Oct 2026): YouTube retired its RSS endpoint.** `https://www.youtube.com/feeds/videos.xml?channel_id=UC…`
+now returns **404** for every channel (`?playlist_id=` too). So the worker tries the feed first, and when it is
+gone it reads the channel's **Videos tab through InnerTube** and rebuilds the exact same shape — same fields,
+same sorting, no login, still keyless. The feed is retried every 6 hours, so the moment YouTube brings it back
+the worker goes back to real RSS without a code change. `/api/rss` reports which path was used per channel:
+
+```json
+{ "items": [...], "channels": [...], "errors": [],
+  "sources": { "UCxxxx": "feed", "UCyyyy": "innertube" },
+  "feedDead": true }
+```
+
+Only one 404 retires the feed *after* the channel listing proves the channel exists — a typo'd channel id can't
+fool it. The InnerTube path costs 1 request per channel (the feed path is 1 too), so the quota math is unchanged.
+
+Why the worker has to proxy all of this: the feed sends no CORS header, and InnerTube has no CORS at all, so a
+page can't read either directly. `/api/rss?channels=A,B,C` fetches everything **in parallel** (8s timeout each),
+merges, dedupes by video id, sorts newest-first and caps the result. If one channel fails you still get the rest —
+the failure is listed in `errors[]` and the UI shows a small warning instead of an empty page.
+
+One trade-off on the InnerTube path: it gives *"2 hours ago"* instead of a real timestamp, so the worker parses
+the relative text and stores an approximate epoch (it keeps YouTube's order), which is what the day-grouping in
+the Subscriptions page uses.
 
 In the app:
 
@@ -91,8 +110,10 @@ In the app:
   with a channel rail on the left showing avatars and a per-channel filter.
 - **Channel page** — banner, avatar, handle, subscriber line, subscribe/unsubscribe, and its uploads.
 - **Manage** — Settings → Subscriptions: remove individual channels, **Export OPML**
-  (`streamvoid-subscriptions.opml`, imports into Feedly/Inoreader/any RSS reader) and **Import OPML**
-  (drops the file in, it pulls the `channel_id`s out and subscribes).
+  (`streamvoid-subscriptions.opml`) and **Import OPML** (drops the file in, it pulls the `channel_id`s out and
+  subscribes). OPML stays as the standard interchange format — note that reading the exported feeds in a
+  third-party RSS reader depends on YouTube's endpoint coming back, which is why this app fetches through the
+  worker instead.
 - Subscriptions live in `localStorage` (`sv_subs`) — nothing about you leaves the browser.
 
 Refreshing is on demand (pull-to-refresh / the refresh button): 1 request per channel, so a 20-channel
@@ -269,6 +290,8 @@ click through the whole UI and player. It is a preview tool only — production 
   YouTube can change the cipher/player flow in a way that needs a code patch. What this setup does give you is
   graceful degradation (a dead client is skipped, playback self-heals, mirrors are the last resort) instead of
   a blank screen.
+- Subscriptions: YouTube killed `feeds/videos.xml` in Oct 2026. The worker now falls back to the channel's
+  Videos tab (InnerTube), which gives relative dates ("2 hours ago") — day grouping uses an approximation.
 - Shorts: `/api/shorts` returns one page (up to 40). There is no endless scroll yet — hit Refresh for more,
   and YouTube's `FEshorts` tab is region/algorithm dependent, which is why the two fallbacks exist.
 - Cloudflare free tier: 100k requests/day. Media proxying costs bandwidth — fine for personal use.

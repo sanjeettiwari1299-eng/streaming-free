@@ -1000,18 +1000,25 @@ function shortFromLockup(m) {
   const cmd = m.onTap?.innertubeCommand || m.rendererContext?.commandContext?.onTap?.innertubeCommand || {};
   const id = String(m.entityId || "").replace(/^shorts-shelf-item-/, "") ||
     cmd.reelWatchEndpoint?.videoId || cmd.watchEndpoint?.videoId || "";
-  const sources = m.thumbnail?.sources || m.thumbnailViewModel?.image?.sources || [];
+  let sources = m.thumbnail?.sources || m.thumbnailViewModel?.image?.sources || [];
+  if (!sources.length) {
+    // the shape moves around: pick the biggest image + the first UC channel ref anywhere in the node
+    const anySources = collect(m, ["sources"]).flat().filter((x) => x && x.url);
+    sources = anySources.length ? anySources : [];
+  }
   const sorted = sources.slice().sort((a, b) => (b.width || 0) - (a.width || 0));
   const primary = m.overlayMetadata?.primaryText;
   const secondary = m.overlayMetadata?.secondaryText;
   const viewsText = textOf(secondary) || textOf(m.viewCountText);
-  const author = textOf(m.overlayMetadata?.bylineText) || textOf(m.channelTitle) || "";
+  const browseHit = collect(m, ["browseEndpoint"]).find((b) => /^UC[\w-]{10,}$/.test(b.browseId || ""));
+  const author =
+    textOf(m.overlayMetadata?.bylineText) || textOf(m.channelTitle) || textOf(browseHit?.browseEndpointContextSupportedConfigs?.noop) || "";
   return makeShort({
     videoId: id,
     title: textOf(primary) || textOf(m.accessibilityText),
     views: viewsText,
     author,
-    authorId: cmd.browseEndpoint?.browseId || "",
+    authorId: cmd.browseEndpoint?.browseId || browseHit?.browseId || "",
     thumb: sorted.length ? sorted[0].url : "",
   });
 }
@@ -1272,23 +1279,114 @@ function parseFeed(xml) {
   };
 }
 
-async function rss(env, ids) {
+// YouTube retired https://www.youtube.com/feeds/videos.xml (404 since Oct 2026), so the
+// feed is only a *first try*: if it is gone we read the channel's Videos tab through
+// InnerTube and rebuild the same shape. Kept for the day the feed comes back.
+const FEED_STATE = { deadUntil: 0, lastError: "", fails: 0 };
+const FEED_RETRY_MS = 6 * 3600 * 1000;
+
+const REL_UNITS = {
+  second: 1, sec: 1, minute: 60, min: 60, hour: 3600, hr: 3600,
+  day: 86400, week: 604800, month: 2592000, year: 31536000,
+};
+
+// "2 hours ago" / "Streamed 3 days ago" / "Premiered 1 month ago" -> epoch seconds
+function parseRelDate(text, now = Date.now() / 1000) {
+  const t = String(text || "").toLowerCase().replace(/,/g, "");
+  const m = t.match(/(\d+)\s*(second|sec|minute|min|hour|hr|day|week|month|year)s?\s+ago/);
+  if (!m) return 0;
+  const unit = REL_UNITS[m[2]] || 0;
+  if (!unit) return 0;
+  return Math.round(now - Number(m[1]) * unit);
+}
+
+const CHANNEL_VIDEOS_PARAMS = [
+  "EgZ2aWRlb3PyBgQKAjoA", // Videos tab, default (newest first)
+  "EgZ2aWRlb3M%3D", // Videos tab, plain
+  "", // no params: the channel home (still lists uploads)
+];
+
+async function channelBrowse(env, url, channelId, limit = 15) {
+  let lastError = null;
+  for (const params of CHANNEL_VIDEOS_PARAMS) {
+    try {
+      const extra = { browseId: channelId };
+      if (params) extra.params = params;
+      const data = await listCall(env, url, "browse", extra, { ignoreCooling: true });
+      const raw = normalizeList(data, limit);
+      const meta = collect(data, ["channelMetadataRenderer"])[0] || null;
+      const header = collect(data, ["pageHeaderRenderer"])[0] || null;
+      const headerTitle = textOf(header?.pageTitle);
+      const avatar =
+        meta?.avatar?.thumbnails?.slice(-1)[0]?.url ||
+        collect(data, ["avatar"])[0]?.thumbnails?.slice(-1)[0]?.url ||
+        "";
+      if (raw.length) {
+        const now = Date.now() / 1000;
+        const items = raw.map((v, i) => ({
+          ...v,
+          // browse gives relative text, not a timestamp: approximate, keep order
+          published: parseRelDate(v.publishedText, now) || Math.round(now - i * 1800),
+          publishedAt: v.publishedText || "",
+          description: "",
+        }));
+        return {
+          items,
+          channel: { channelId, name: headerTitle || textOf(meta?.title) || "", avatar },
+          source: "innertube",
+        };
+      }
+      lastError = new Error("empty channel listing");
+    } catch (e) {
+      lastError = e;
+    }
+  }
+  throw lastError || new Error("channel listing failed");
+}
+
+async function channelFeed(env, url, channelId) {
+  // 1. the (now usually dead) XML feed, until it 404s once — then skip for 6h
+  if (Date.now() > FEED_STATE.deadUntil) {
+    try {
+      const r = await fetchRetry(
+        `https://www.youtube.com/feeds/videos.xml?channel_id=${channelId}`,
+        { headers: { "user-agent": WEB_UA, "accept-language": "en-US,en;q=0.9" } },
+        { retries: 0, timeout: 6000 }
+      );
+      if (r.ok) {
+        const parsed = parseFeed(await r.text());
+        if (parsed.items.length) {
+          FEED_STATE.fails = 0;
+          return { ...parsed, source: "feed" };
+        }
+      }
+      // a 404 here may just mean "this channel is wrong", so only retire the feed
+      // once the channel listing proves the channel *does* exist (see below)
+      FEED_STATE.lastError = "HTTP " + r.status;
+      FEED_STATE.fails = (FEED_STATE.fails || 0) + 1;
+    } catch (e) {
+      FEED_STATE.deadUntil = Date.now() + FEED_RETRY_MS;
+      FEED_STATE.lastError = String((e && e.message) || e);
+    }
+  }
+  // 2. InnerTube channel Videos tab
+  const viaBrowse = await channelBrowse(env, url, channelId, 15);
+  // channel exists (we just listed its videos) but the feed did not serve it → retire the feed
+  if (viaBrowse.items.length && FEED_STATE.fails) FEED_STATE.deadUntil = Date.now() + FEED_RETRY_MS;
+  return viaBrowse;
+}
+
+async function rss(env, ids, url = new URL("https://x/")) {
   const list = [...new Set(String(ids || "").split(",").map((x) => x.trim()).filter((x) => /^UC[\w-]{10,}$/.test(x)))].slice(0, 30);
-  if (!list.length) return { items: [], channels: [], errors: [] };
+  if (!list.length) return { items: [], channels: [], errors: [], sources: {} };
 
   const results = await Promise.all(
     list.map(async (id) => {
       try {
-        const r = await fetchRetry(
-          `https://www.youtube.com/feeds/videos.xml?channel_id=${id}`,
-          { headers: { "user-agent": WEB_UA, "accept-language": "en-US,en;q=0.9" } },
-          { retries: 1, timeout: 8000 }
-        );
-        if (!r.ok) throw new Error("HTTP " + r.status);
-        const parsed = parseFeed(await r.text());
-        return { id, ...parsed };
+        const got = await channelFeed(env, url, id);
+        return { id, ...got };
       } catch (e) {
-        return { id, items: [], channel: null, error: e.message };
+        return { id, items: [], channel: null, error: String((e && e.message) || e) };
       }
     })
   );
@@ -1304,10 +1402,18 @@ async function rss(env, ids) {
   }
   items.sort((a, b) => b.published - a.published);
 
+  const sources = {};
+  for (const r of results) if (r.source) sources[r.id] = r.source;
+
   return {
     items: items.slice(0, 120),
-    channels: results.filter((r) => r.channel).map((r) => r.channel),
+    channels: results
+      .filter((r) => r.channel || r.items.length)
+      .map((r) => ({ channelId: r.id, name: r.channel?.name || r.items[0]?.author || "", avatar: r.channel?.avatar || "" })),
     errors: results.filter((r) => r.error).map((r) => ({ id: r.id, error: r.error })),
+    sources,
+    feedDead: Date.now() < FEED_STATE.deadUntil,
+    note: "YouTube's RSS endpoint (feeds/videos.xml) returns 404 since Oct 2026 — the channel Videos tab is used instead; same data, no login.",
   };
 }
 
@@ -1505,7 +1611,7 @@ const ROUTES = [
   ["/api/trending", async (u, env) => trending((u.searchParams.get("region") || "IN").toUpperCase(), env, u)],
   ["/api/related", async (u, env) => related(u.searchParams.get("id") || "", env, u)],
   ["/api/shorts", async (u, env) => shorts((u.searchParams.get("region") || "IN").toUpperCase(), env, u)],
-  ["/api/rss", async (u, env) => rss(env, u.searchParams.get("channels") || "")],
+  ["/api/rss", async (u, env) => rss(env, u.searchParams.get("channels") || "", u)],
   ["/api/channel", async (u) => resolveChannel(u.searchParams.get("q") || u.searchParams.get("id") || "")],
 ];
 
@@ -1595,6 +1701,10 @@ export {
   rss,
   resolveChannel,
   shorts,
+  channelBrowse,
+  channelFeed,
+  parseRelDate,
+  FEED_STATE,
   landingPage,
   notFound,
   ROUTE_LIST,
