@@ -93,7 +93,15 @@ check("failure carries a human label + hint", /bot-check/i.test(botFail.reasonLa
 check("needAuth is set so the UI can offer cookies", botFail.needAuth === true);
 check("botCheck flag", botFail.botCheck === true);
 check("escalation stops the anonymous ladder early", botFail.attempts.some((a) => /escalating to authenticated pass/.test(a)), botFail.attempts.slice(0, 3).join(" | "));
-check("fewer attempts than the full ladder", posts.length <= 6, posts.length);
+// the FIRST pass stops at the wall (that is the point), but the self-heal pass is
+// allowed to walk every client once — a different client may not be walled at all
+check("the first pass stops at the wall instead of burning the ladder",
+  (botFail.attempts || []).indexOf(botFail.attempts.find((a) => /escalating to authenticated pass/.test(a))) <= 2,
+  JSON.stringify(botFail.attempts.slice(0, 3)));
+check("a bounded number of requests overall", posts.length <= 26, posts.length);
+check("the self-heal pass is the one that walks everything",
+  (botFail.attempts || []).filter((a) => /\(retry\)/.test(a)).length >= 4,
+  (botFail.attempts || []).slice(-4).join(" | "));
 check("failure counts are grouped", botFail.failures && botFail.failures.bot >= 1, JSON.stringify(botFail.failures));
 
 /* ── 3. cookies unlock the same video (pass 2) ────────────────────────────── */

@@ -44,6 +44,43 @@ Playback stays 100% custom: a plain `<video>` element with our own YouTube-style
 
 ---
 
+## "Clients auto-update hote hain na?" — kya khud chalta hai, kya nahi
+
+Teen cheezein **live** update hoti hain, bina redeploy:
+
+| Kya | Kahan se | Kitni der me |
+| --- | --- | --- |
+| Client **versions** (`ANDROID_VR`, `IOS`, `WEB`, `VISIONOS`, …) | `youtube.com` ka page + yt-dlp ki `_base.py` table | 6 ghante (cache), `?refresh=1` se turant |
+| **signatureTimestamp** (web clients) | player JS se, per video | har resolve par |
+| **nsig** transform (`n` param) | player JS ko parse karke, live | har resolve par |
+
+Live worker par aaj yahi dikh raha tha: `ANDROID_VR 1.65.10`, `IOS 21.26.4`, `ANDROID 21.26.364`,
+`MWEB/WEB 2.20261022.01.00` (aaj ka), source `youtube.com` + `yt-dlp`.
+
+**Par version auto-update ≠ bot-check ka ilaaj.** Do cheezein khud update **nahi** hoti hain:
+
+1. **Attestation** — PoToken (BotGuard) / Play Integrity / DeviceCheck. Ye token hi decide karta hai ki
+   "bot" milega ya stream, aur worker me `eval` banned hai. Isliye `POTOKEN_URL` / `YT_COOKIES` chahiye.
+2. **Client list + request shape** — YouTube naya client add kare, ya header/referer/consent badle, to code
+   update karna padta hai. Isi liye v7.9 me request ko asli client jaisa banaya gaya:
+
+### v7.9 — client IQ
+
+| Change | Why |
+| --- | --- |
+| `x-goog-visitor-id` header (body ke saath match) | body-only visitor id ek known bot signal hai |
+| `referer: https://www.youtube.com/watch?v=<id>` + `x-origin` | asli client yahi bhejta hai |
+| consent cookies `SOCS=CAI; CONSENT=YES+cb` (bina login) | EU consent / "sign in to confirm your age" wall, `CONSENT=off` se band |
+| `playbackContext.html5Preference = HTML5_PREF_WANTS` | web player khud bhejta hai |
+| **`visionOS`** + **`WEB_CREATOR`** clients | inke versions pehle se discover ho rahe the par ladder me use hi nahi hote the; Studio client sirf cookies ke saath |
+| account-only clients anonymous pass se hatae | `LOGIN_REQUIRED` par time waste nahi |
+| pass 3 (self-heal) **poora ladder** chalta hai aur **cookies retain** karta hai | pehle bot par wahi pe ruk jata tha, aur pass 3 cookies kho deta tha |
+| `/api/debug → clientStats` | kaun actually deliver kar raha hai — andaza nahi, scoreboard |
+
+Honest: ye sab **probability** badhata hai, guarantee nahi. Asli jump `YT_COOKIES` / `POTOKEN_URL` se aata hai.
+
+---
+
 ## Secrets cheat-sheet (exact values)
 
 Cloudflare → your Worker → **Settings → Variables and Secrets** → *Add* (type **Secret** for all of these).
@@ -605,6 +642,9 @@ tests/           regression suites (worker: node tests/smoke.mjs etc; UI: see be
 node tests/smoke.mjs      # worker core: decipher, list calls, breakers, media, routes
 node tests/rsstest.mjs    # feeds: parsing, merge/dedupe/sort, resolveChannel, /api/rss + /api/channel
 node tests/mptest.mjs     # /mp4 endpoint: Range/206, HEAD, content-type, ?itag, ?dl
+node tests/clienttest.mjs # 31 checks: visitor-id header, watch referer, consent cookies (on/off),
+                          # playbackContext, visionOS/Studio in the right pass, cookies kept in pass 3,
+                          # scoreboard, /api/debug
 node tests/keeptest.mjs   # 33 checks: expired/403/410/5xx/network self-heal, Range survival,
                           # mirror refresh fallback, /api/stream, /mp4, health guarantees
 node tests/synctest.mjs   # 63 checks: Layerbase libSQL pipeline against a real SQLite, every cap, trim,
