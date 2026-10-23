@@ -45,9 +45,21 @@ Playback stays 100% custom: a plain `<video>` element with our own YouTube-style
 | `GET /api/player?id=` | InnerTube `player` with a client ladder (android_vr → ios → tv_embedded → android → mweb → web), picks muxed MP4, rewrites URLs to the proxy |
 | `GET /api/related?id=` | InnerTube `next` → Up next list |
 | `GET /api/media?u=` | **Range-aware** byte proxy for `googlevideo.com` (host allowlist) |
+| `GET /mp4/<id>.mp4` | direct file endpoint: resolves the best muxed stream and serves it as `video/mp4` (Range/HEAD supported). `?itag=` picks a quality, `?dl=1` forces a download |
+| `GET /api/file/<id>.mp4` | same as above (alias) |
 
 Signature handling: if a format comes back as `signatureCipher`, the worker fetches the video's `base.js`,
 extracts the sig and `n` transform functions and applies them (`buildDecipher`). Plain `url` formats skip all of that.
+
+**Why isn't the player handed a raw `.mp4` link?** Because `googlevideo.com` URLs are signed for the IP that
+requested them — a link minted by the worker 403s in your browser. So `/api/player` returns
+`/api/media?u=…` (the proxy) and there is a separate human-friendly `/mp4/<id>.mp4` endpoint for the same bytes:
+
+```
+https://<worker>/mp4/dQw4w9WgXcQ.mp4              → inline video/mp4 (works in a tab, <video>, VLC, ffmpeg)
+https://<worker>/mp4/dQw4w9WgXcQ.mp4?dl=1         → attachment download
+https://<worker>/mp4/dQw4w9WgXcQ.mp4?itag=18      → pick a specific quality
+```
 
 ---
 

@@ -975,6 +975,42 @@ async function refreshedUrl(videoId, itag, env) {
   }
 }
 
+// ── direct .mp4 endpoint ──────────────────────────────────────────────────────
+// /mp4/<videoId>.mp4 (also /api/file/<id>.mp4) resolves the best muxed stream and
+// streams it through the proxy with a real video/mp4 content-type, so the URL works
+// in a browser tab, <video>, VLC, ffmpeg, etc. Add ?dl=1 for an attachment download.
+async function directMp4(videoId, request, env) {
+  if (!/^[A-Za-z0-9_-]{6,15}$/.test(videoId)) return err("bad video id", 400);
+  const urlObj = new URL(request.url);
+  const p = await player(videoId, {
+    env,
+    cookieHeader: cookieAuth(env, urlObj),
+    region: (urlObj.searchParams.get("region") || "IN").toUpperCase(),
+  });
+  if (!p.ok || !p.formats || !p.formats.length) {
+    return json({ error: p.error || "no playable stream", attempts: (p.attempts || []).slice(-8) }, 502);
+  }
+  const want = urlObj.searchParams.get("itag");
+  const pick = (want && p.formats.find((f) => String(f.itag) === String(want))) || p.formats[0];
+  const upstream = decodeURIComponent(pick.url.split("u=")[1].split("&")[0]);
+
+  const res = await media(upstream, request, env);
+  const headers = new Headers(res.headers);
+  const safeTitle = String(p.video.title || videoId)
+    .replace(/[^\w\s.-]/g, "")
+    .trim()
+    .slice(0, 60) || videoId;
+  const disp = urlObj.searchParams.get("dl") === "1" ? "attachment" : "inline";
+  headers.set("content-type", "video/mp4");
+  headers.set("content-disposition", `${disp}; filename="${safeTitle}.mp4"`);
+  headers.set("x-sv-video-id", videoId);
+  headers.set("x-sv-quality", pick.quality || "");
+  headers.set("x-sv-client", p.client || "");
+  headers.set("access-control-allow-origin", "*");
+  headers.set("access-control-expose-headers", "content-length, content-range, accept-ranges, x-sv-quality, x-sv-client");
+  return new Response(res.body, { status: res.status, headers });
+}
+
 async function media(url, request, env = {}) {
   let target;
   try {
@@ -1145,11 +1181,14 @@ export default {
       if (url.pathname === "/api/media" || url.pathname === "/api/thumb") {
         return media(url.searchParams.get("u") || "", request, env);
       }
+      // pretty direct-file endpoints: /mp4/<id>.mp4 and /api/file/<id>.mp4
+      const mp4 = url.pathname.match(/^\/(?:api\/)?(?:file|mp4)\/([A-Za-z0-9_-]{6,15})\.mp4$/);
+      if (mp4) return directMp4(mp4[1], request, env);
       for (const [path, handler] of ROUTES) {
         if (url.pathname === path) return json(await handler(url, env));
       }
       return err("not found", 404, {
-        routes: ["/api/health", "/api/debug", "/api/player?id=", "/api/search?q=", "/api/trending?region=IN", "/api/related?id=", "/api/media?u="],
+        routes: ["/api/health", "/api/debug", "/api/player?id=", "/api/search?q=", "/api/trending?region=IN", "/api/related?id=", "/api/media?u=", "/mp4/{id}.mp4"],
       });
     } catch (e) {
       return err(e && e.message ? e.message : "worker error", 502);
@@ -1193,4 +1232,5 @@ export {
   emergencyMirrors,
   mirrorStream,
   refreshedUrl,
+  directMp4,
 };
