@@ -21,7 +21,7 @@
  */
 
 // bump this when the worker changes, so /api/health tells you which code is live
-const BUILD = "8.6.0";
+const BUILD = "8.7.0";
 
 const INNERTUBE_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8";
 const UA = {
@@ -272,7 +272,11 @@ async function fetchRetry(url, init = {}, { retries = 1, timeout = 9000 } = {}) 
     const t = setTimeout(() => ac.abort(), timeout);
     try {
       const r = await fetch(url, { ...init, signal: ac.signal });
-      if (r.status === 429 || r.status >= 500) throw new Error("HTTP " + r.status);
+      if (r.status === 429 || r.status >= 500) {
+        const e = new Error("HTTP " + r.status);
+        e.status = r.status;
+        throw e;
+      }
       return r;
     } catch (e) {
       lastErr = e;
@@ -283,6 +287,69 @@ async function fetchRetry(url, init = {}, { retries = 1, timeout = 9000 } = {}) 
   }
   throw lastErr || new Error("fetch failed");
 }
+
+/* ── YouTube-wide gate ───────────────────────────────────────────────────────
+   429/403 from InnerTube is not client-specific: every other client on this IP
+   will get the same answer. Without this the ladder burns 20-40 subrequests
+   (all 4xx in the Cloudflare metrics) and the user waits 20s for nothing.
+   One strike → short cool-off, which the app honours via `retryAfter`. */
+const YT_GATE = { until: 0, strikes: 0, status: 0, last: 0 };
+const YT_GATE_MAX = 120000;
+const ytGated = () => YT_GATE.until > Date.now();
+const ytGateInfo = () => ({
+  cooling: ytGated(),
+  retryAfter: Math.max(0, Math.ceil((YT_GATE.until - Date.now()) / 1000)),
+  strikes: YT_GATE.strikes,
+  status: YT_GATE.status || 0,
+});
+const ytStrike = (status) => {
+  const now = Date.now();
+  // a single 429 is enough; successive ones back off exponentially
+  YT_GATE.strikes = now - YT_GATE.last < 120000 ? YT_GATE.strikes + 1 : 1;
+  YT_GATE.last = now;
+  YT_GATE.status = status || 429;
+  const wait = Math.min(YT_GATE_MAX, 20000 * Math.pow(2, YT_GATE.strikes - 1));
+  YT_GATE.until = now + wait;
+  return Math.ceil(wait / 1000);
+};
+const ytClear = () => {
+  if (!YT_GATE.strikes && !YT_GATE.until) return;
+  YT_GATE.strikes = 0;
+  YT_GATE.until = 0;
+  YT_GATE.status = 0;
+};
+
+// Which client actually delivered last time — retry it first instead of
+// re-walking the whole ladder on every play (this is the main subrequest saver).
+const WINNER = { id: "", version: "", ts: 0 };
+const WINNER_TTL = 15 * 60 * 1000;
+const winnerClient = () => (WINNER.id && Date.now() - WINNER.ts < WINNER_TTL ? WINNER : null);
+const noteWinner = (c) => {
+  if (!c || !c.id) return;
+  WINNER.id = c.id;
+  WINNER.version = String((c.ctx && c.ctx.clientVersion) || "");
+  WINNER.ts = Date.now();
+};
+
+// Dead mirrors stay dead for a while: two 4xx/5xx answers → park the host.
+const MIRROR_BREAKER = new Map(); // host -> { fails, until }
+const mirrorCooling = (base) => {
+  const b = MIRROR_BREAKER.get(base);
+  return !!(b && b.until > Date.now());
+};
+const noteMirrorFail = (base) => {
+  const b = MIRROR_BREAKER.get(base) || { fails: 0, until: 0 };
+  b.fails += 1;
+  b.until = Date.now() + Math.min(30 * 60 * 1000, 2 * 60 * 1000 * Math.pow(2, b.fails - 1));
+  MIRROR_BREAKER.set(base, b);
+};
+const noteMirrorOk = (base) => MIRROR_BREAKER.delete(base);
+const mirrorSnapshot = () =>
+  [...MIRROR_BREAKER.entries()].map(([base, b]) => ({
+    host: base.replace(/^https?:\/\//, "").split("/")[0],
+    fails: b.fails,
+    cooling: Math.max(0, Math.round((b.until - Date.now()) / 1000)),
+  }));
 
 // Per client+version circuit breaker: stop hammering a combination YouTube just rejected.
 const BREAKER = new Map(); // key -> { fails, until }
@@ -307,7 +374,16 @@ const noteFail = (c, hard = true) => {
   BREAKER.set(k, b);
   if (BREAKER.size > 60) BREAKER.delete(BREAKER.keys().next().value);
 };
-const resetBreakers = () => BREAKER.clear();
+const resetBreakers = () => {
+  BREAKER.clear();
+  MIRROR_BREAKER.clear();
+  YT_GATE.until = 0;
+  YT_GATE.strikes = 0;
+  YT_GATE.status = 0;
+  YT_GATE.last = 0;
+  WINNER.id = "";
+  WINNER.ts = 0;
+};
 const breakerSnapshot = () =>
   [...BREAKER.entries()].map(([key, b]) => ({
     key,
@@ -514,17 +590,44 @@ async function innertube(client, endpoint, extra, opts = {}) {
   if (opts.poToken) body.serviceIntegrityDimensions = { poToken: opts.poToken };
 
   const url = `https://www.youtube.com/youtubei/v1/${endpoint}?key=${INNERTUBE_KEY}&prettyPrint=false`;
-  const res = await fetchRetry(
-    url,
-    { method: "POST", headers, body: JSON.stringify(body) },
-    { retries: opts.retries ?? 1, timeout: opts.timeout ?? 9000 }
-  );
-  const text = await res.text();
+  let res;
   try {
-    return JSON.parse(text);
+    res = await fetchRetry(
+      url,
+      { method: "POST", headers, body: JSON.stringify(body) },
+      { retries: opts.retries ?? 1, timeout: opts.timeout ?? 9000 }
+    );
+  } catch (e) {
+    const st = Number(e && e.status) || 0;
+    if (st === 429 || st === 403) {
+      const wait = ytStrike(st);
+      const err = new Error(`youtube ${st === 429 ? "rate limit (429)" : "refused (403)"} — ${wait}s cooldown`);
+      err.status = st;
+      err.gate = wait;
+      err.fatal = true;
+      throw err;
+    }
+    throw e;
+  }
+  const text = await res.text();
+  // 429 (rate limit) and a bare 403 are answered identically for every client on
+  // this IP — record it once, stop the ladder, tell the app how long to wait.
+  if (res.status === 429 || res.status === 403) {
+    const wait = ytStrike(res.status);
+    const e = new Error(`youtube ${res.status === 429 ? "rate limit (429)" : "refused (403)"} — ${wait}s cooldown`);
+    e.status = res.status;
+    e.gate = wait;
+    e.fatal = true;
+    throw e;
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
   } catch {
     throw new Error(`bad JSON from youtube (${res.status})`);
   }
+  ytClear();
+  return parsed;
 }
 
 const listClient = (ladder) => ladder.find((c) => c.id === "mweb") || ladder[0];
@@ -976,6 +1079,11 @@ async function playableUrl(f) {
 // One player request for one client. Returns null when this client can't serve it.
 // ── why did it fail? (drives the UI panel + the escalation order) ────────────
 const REASONS = {
+  ratelimit: {
+    label: "YouTube rate limit",
+    needAuth: false,
+    hint: "YouTube ne is IP se aayi request 429 se rok di. Worker khud kuch second ruk kar dobara koshish karega — PoToken (POTOKEN_URL) ya cookies lagane se ye kam hota hai.",
+  },
   bot: {
     label: "YouTube bot-check",
     needAuth: true,
@@ -1076,7 +1184,7 @@ const DEFAULT_MIRRORS = [
 // per-isolate scoreboard: which client actually delivers, per failure kind
 const CLIENT_STATS = {};
 const bumpStat = (id, field) => {
-  const row = (CLIENT_STATS[id] = CLIENT_STATS[id] || { ok: 0, fail: 0, bot: 0, login: 0, other: 0 });
+  const row = (CLIENT_STATS[id] = CLIENT_STATS[id] || { ok: 0, fail: 0, bot: 0, login: 0, other: 0, ratelimit: 0 });
   row[field] = (row[field] || 0) + 1;
 };
 
@@ -1097,6 +1205,12 @@ async function tryClient(client, videoId, opts, attempts, tag) {
       { ...opts, retries: 0, timeout: 7000 }
     );
   } catch (e) {
+    if (e && e.fatal) {
+      attempts.push(`${label}: ${e.message} [ratelimit]`);
+      bumpStat(client.id, "ratelimit");
+      if (opts.onFatal) opts.onFatal("ratelimit", e);
+      return null;
+    }
     if (opts.onFail) opts.onFail("unknown", client);
     attempts.push(`${label}: ${e.message}`);
     bumpStat(client.id, "fail");
@@ -1192,12 +1306,25 @@ function emergencyMirrors(env) {
 }
 
 async function mirrorStream(videoId, mirrors, attempts = [], budget = null) {
+  // two hosts per resolve is plenty: with five defaults every failed resolve was
+  // burning five subrequests (and five 4xx in the metrics) for the same answer
+  let tried = 0;
   for (const base of mirrors) {
+    if (tried >= 2) {
+      attempts.push(`mirror: ${mirrors.length - tried} more skipped (tried ${tried})`);
+      break;
+    }
+    // parked after repeated failures — mirror hosts do not recover in seconds
+    if (mirrorCooling(base)) {
+      attempts.push(`mirror ${base}: skipped (cooling down)`);
+      continue;
+    }
     if (budget && budget.left <= 0) {
       attempts.push("mirror: subrequest budget reached");
       break;
     }
     if (budget) budget.left -= 1;
+    tried += 1;
     try {
       const r = await fetchRetry(`${base}/api/v1/videos/${encodeURIComponent(videoId)}?fields=title,author,authorId,viewCount,lengthSeconds,published,description,formatStreams,recommendedVideos`, {
         headers: { "user-agent": WEB_UA, accept: "application/json" },
@@ -1208,6 +1335,7 @@ async function mirrorStream(videoId, mirrors, attempts = [], budget = null) {
       if (!streams.length) throw new Error("no formatStreams");
       streams.sort((a, b) => parseInt(b.resolution || b.quality || 0) - parseInt(a.resolution || a.quality || 0));
       const local = (u) => (/local=true/.test(u) ? u : `${base}${u.startsWith("/") ? "" : "/"}${u}${u.includes("?") ? "&" : "?"}local=true`);
+      noteMirrorOk(base);
       return {
         ok: true,
         client: "emergency-mirror",
@@ -1235,6 +1363,7 @@ async function mirrorStream(videoId, mirrors, attempts = [], budget = null) {
         attempts: [...attempts, `mirror ${base}: ok`],
       };
     } catch (e) {
+      noteMirrorFail(base);
       attempts.push(`mirror ${base}: ${e.message}`);
     }
   }
@@ -1265,6 +1394,32 @@ async function player(videoId, opts = {}) {
   const spend = (n = 1) => { budget.left = Math.max(0, budget.left - n); };
   const budgetLeft = () => budget.left;
 
+  /* A recent 429/403 means every client will answer the same on this IP. Fail
+     fast (one subrequest saved: none) and tell the app exactly how long to wait,
+     instead of burning the whole ladder against a wall. */
+  if (!opts.ignoreGate && ytGated()) {
+    const gate = ytGateInfo();
+    attempts.push(`youtube cooldown active — ${gate.retryAfter}s left (${gate.strikes} strike${gate.strikes === 1 ? "" : "s"}, HTTP ${gate.status})`);
+    return {
+      ok: false,
+      error: "YouTube rate limit: thodi der baad khud try hoga",
+      reason: "ratelimit",
+      reasonLabel: REASONS.ratelimit.label,
+      hint: REASONS.ratelimit.hint,
+      needAuth: false,
+      botCheck: false,
+      cookiesUsed: !!opts.cookieHeader,
+      poTokenUsed: false,
+      attempts,
+      failures: { ratelimit: 1 },
+      retryAfter: gate.retryAfter,
+      gate,
+      ms: Date.now() - started,
+      subrequests: 0,
+      budgetLeft: budget.left,
+    };
+  }
+
   let { versions, source, visitorData } = await discoverVersions(env);
   spend(2);
   let ladder = buildClients(versions, opts.region || "IN");
@@ -1277,10 +1432,16 @@ async function player(videoId, opts = {}) {
     failures.push(kind);
   };
 
+  let fatalReason = "";
   const runPass = async (clients, extraOpts, tag, useBreakers = true) => {
     let needAuthEarly = false;
     const seen = new Set();
     for (const client of clients) {
+      if (ytGated()) {
+        attempts.push(`${tag || "pass"} stopped: youtube cooldown (${ytGateInfo().retryAfter}s)`);
+        fatalReason = "ratelimit";
+        break;
+      }
       if (Date.now() > deadline) {
         attempts.push(`${tag || "pass"} stopped: time budget reached`);
         break;
@@ -1307,6 +1468,10 @@ async function player(videoId, opts = {}) {
           ...extraOpts,
           env,
           poToken: pt.poToken,
+          onFatal: (kind) => {
+            fatalReason = kind;
+            noteFailKind(kind);
+          },
           onFail: (kind) => {
             noteFailKind(kind);
             // a bot-check is not client-specific: stop burning the ladder, escalate instead.
@@ -1326,7 +1491,9 @@ async function player(videoId, opts = {}) {
     return { res: null, needAuthEarly };
   };
 
-  const finish = (hit, pass, extra) => ({
+  const finish = (hit, pass, extra) => {
+    noteWinner(ladder.find((c) => c.id === hit.client));
+    return ({
     ...hit,
     versions,
     versionSource: source,
@@ -1334,21 +1501,28 @@ async function player(videoId, opts = {}) {
     ms: Date.now() - started,
     poToken: !!pt.poToken,
     poTokenSource: pt.source,
+    subrequests: SUB_CAP - budgetLeft(),
     ...extra,
   });
+  };
 
   // anonymous passes never touch account-only clients (they can only answer LOGIN_REQUIRED)
   const anonLadder = ladder.filter((c) => !c.needsAuth);
 
-  // pass 1 — fast anonymous subset (android_vr / ios / tv_embedded / android)
-  const fast = anonLadder.filter((c) => ["android_vr", "ios", "tv_embedded", "android", "visionos"].includes(c.id));
+  // pass 1 — fast anonymous subset (android_vr / ios / tv_embedded / android),
+  // with whatever client delivered last time moved to the front
+  const win = winnerClient();
+  const fastBase = anonLadder.filter((c) => ["android_vr", "ios", "tv_embedded", "android", "visionos"].includes(c.id));
+  const fast = win
+    ? [...fastBase.filter((c) => c.id === win.id), ...fastBase.filter((c) => c.id !== win.id)]
+    : fastBase;
   let out = await runPass(fast.length ? fast : anonLadder.slice(0, 4), { visitorData }, "");
   if (out.res) return finish(out.res, 1);
   const sawBotCheck = out.needAuthEarly || failures.includes("bot");
 
   // pass 2 — cookies (bot-checks and login-required videos land here)
   const cookieHeader = opts.cookieHeader || "";
-  if (cookieHeader) {
+  if (cookieHeader && !ytGated()) {
     const auth = await sapisidHash(cookieHeader);
     const authClients = ladder.filter((c) => ["android_vr", "android", "ios", "web", "mweb", "tv_embedded", "web_embedded", "web_creator"].includes(c.id));
     out = await runPass(
@@ -1361,6 +1535,9 @@ async function player(videoId, opts = {}) {
   }
 
   // pass 3 — self-heal: re-discover versions, full ladder, breakers bypassed
+  if (ytGated()) {
+    attempts.push("self-heal pass skipped: youtube cooldown");
+  } else {
   const fresh = await discoverVersions(env, true);
   versions = fresh.versions;
   source = fresh.source;
@@ -1375,6 +1552,7 @@ async function player(videoId, opts = {}) {
     false
   );
   if (out.res) return finish(out.res, 3, { healed: true, authed: !!cookieHeader });
+  }
 
   // pass 4 — independent extractors (Invidious-compatible), proxied through /api/media
   const mirrors = emergencyMirrors(env);
@@ -1389,7 +1567,8 @@ async function player(videoId, opts = {}) {
   const counts = {};
   for (const k of failures) counts[k] = (counts[k] || 0) + 1;
   const top = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
-  const kind = top ? top[0] : "unknown";
+  // a cooldown is the most actionable reason there is — it wins over counts
+  const kind = ytGated() || fatalReason === "ratelimit" ? "ratelimit" : top ? top[0] : "unknown";
   const info = REASONS[kind] || REASONS.unknown;
 
   return {
@@ -1409,6 +1588,10 @@ async function player(videoId, opts = {}) {
     versions,
     versionSource: source,
     breakers: breakerSnapshot(),
+    mirrors: mirrorSnapshot(),
+    gate: ytGateInfo(),
+    retryAfter: ytGateInfo().retryAfter || undefined,
+    subrequests: SUB_CAP - budgetLeft(),
     budgetLeft: budgetLeft(),
   };
 }
@@ -3096,6 +3279,10 @@ const ROUTES = [
         versionCacheAge: Math.round(Date.now() / 1000 - VERSION_CACHE.ts) + "s",
         resilience: {
           visitorData: !!VERSION_CACHE.visitorData,
+          gate: ytGateInfo(),
+          mirrors: mirrorSnapshot(),
+          winner: winnerClient() ? { client: WINNER.id, version: WINNER.version, ageSec: Math.round((Date.now() - WINNER.ts) / 1000) } : null,
+          subrequestCap: SUB_CAP,
           breakers: breakerSnapshot(),
           emergencyMirrors: emergencyMirrors(env).length,
           poToken: !!(env && env.PO_TOKEN),
@@ -3202,6 +3389,14 @@ const ROUTES = [
       const ck = cookieReport(env, u);
       const verdict = (() => {
         if (!res.ok) {
+          if (res.reason === "ratelimit") {
+            return {
+              code: "ratelimit",
+              hi: "YouTube is IP ki requests rate-limit kar raha hai (429/403). " +
+                (res.retryAfter ? res.retryAfter + " second me app khud dobara try karegi — aapko kuch karne ki zarurat nahi. " : "") +
+                "Permanent fix: worker me POTOKEN_URL (bgutil provider) ya YT_COOKIES add karein, taaki requests allowed client jaisi lagein.",
+            };
+          }
           if (res.botCheck || res.needAuth) {
             // "cookies laga diye par bot-check phir bhi" — yahi wajah hoti hai
             if (!ck.configured) {
@@ -3247,6 +3442,9 @@ const ROUTES = [
         breakers: breakerSnapshot(),
         stream,
         cookies: ck,
+        retryAfter: res.retryAfter || 0,
+        gate: res.gate || ytGateInfo(),
+        subrequests: res.subrequests,
         verdict,
       };
     },
@@ -3389,6 +3587,10 @@ export {
   fetchRetry,
   breakerSnapshot,
   resetBreakers,
+  ytGateInfo,
+  mirrorSnapshot,
+  winnerClient,
+  YT_GATE,
   noteFail,
   noteOk,
   storeProbe,

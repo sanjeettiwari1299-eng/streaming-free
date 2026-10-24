@@ -59,7 +59,7 @@ error panel me **Engine doctor**) — video id daalo, ek click me resolve + byte
 Sabse pehle ye confirm karein ki deploy naya hai:
 
 ```
-GET https://<your-worker>.workers.dev/api/health      → build: "8.6.0"
+GET https://<your-worker>.workers.dev/api/health      → build: "8.7.0"
 ```
 
 Purana build dikhe to Cloudflare → Workers → apna worker → Edit code → **poora `worker.js` paste** → Deploy.
@@ -99,6 +99,26 @@ aur **bot-check** (worker me `YT_COOKIES` ya `POTOKEN_URL`). Wahan panel asli re
 me chalta rehta hai, to cookie lagane ke baad bina reload video chal padti hai.
 
 ---
+
+## "Aadhi se zyada request block hai" — 429 storm (worker 8.7.0)
+
+Cloudflare → Workers → Metrics me `www.youtube.com` par **4xx ~= 2xx** aur mirrors par `4xx 91` dikhna ka matlab:
+YouTube is IP ko **rate-limit (429/403)** kar raha hai, aur pehle worker har resolve par poora ladder (5 clients +
+2 version-discovery + 5 mirrors ≈ 20–40 subrequest) pee raha tha. Ab teen niyam hain:
+
+| Rule | Effect |
+| --- | --- |
+| **Ek 429/403 = ek strike** → `20s × 2^(n-1)` cooldown (max 2 min) | ladder turant rukta hai; app ko `retryAfter` milta hai aur wahi waqt wait karta hai — 1 subrequest, na ki 20 |
+| **Sticky winner** — jo client pichhli baar chala, wahi pehle try hota hai (15 min) | normal play: 1–2 subrequests instead of 6+ |
+| **Mirror breaker** — 2 fail par host 2–30 min park, aur ek resolve me max 2 mirror | `inv.nadeko.net` / `invidious.nerdvpn.de` jaise dead hosts dobara hit nahi hote |
+
+Cooldown ke waqt `/api/health` ka `resilience.gate` dekho (`cooling`, `retryAfter`, `strikes`, `status`),
+`resilience.mirrors` parked hosts, aur `/api/selftest` ka `verdict.code = "ratelimit"` + `retryAfter` + `subrequests`.
+App 20s tak ke cooldown ka **khud intezaar** karti hai (spinner: "Khud theek kar raha hoon…"), usse lamba ho to panel
+batata hai ki YouTube ne IP rok di hai aur har 15s par chupchap retry chalta rehta hai.
+
+Permanent fix (429 kam karne ke liye): worker me **`POTOKEN_URL`** (bgutil-verify-token provider) ya **`YT_COOKIES`** —
+allowed client jaisi requests jaati hain, to limit lagti hi nahi.
 
 ## "Cookies set kar diye, bot-check phir bhi aa raha hai"
 

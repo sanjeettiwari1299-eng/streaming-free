@@ -184,6 +184,13 @@ function makeDom(opts = {}) {
         if (/\/api\/search/.test(u)) return ok({ items: TRENDING, continuation: null });
         if (/\/api\/player/.test(u)) {
           const id = decodeURIComponent(u.split("id=")[1].split("&")[0]);
+          if (opts.rateLimited) {
+            w.__limited = (w.__limited || 0) + 1;
+            if (w.__limited <= (opts.rateLimitedCount || 99)) {
+              return ok({ ok: false, error: "YouTube rate limit: thodi der baad khud try hoga", reason: "ratelimit", reasonLabel: "YouTube rate limit", retryAfter: opts.rateLimitedLong ? 45 : 2, gate: { cooling: true, retryAfter: opts.rateLimitedLong ? 45 : 2, strikes: 1, status: 429 }, attempts: ["android_vr@1: youtube rate limit (429) — 20s cooldown [ratelimit]"] });
+            }
+            return ok(PLAYER);
+          }
           if (opts.playerFailFirst) {
             w.__playerCalls = (w.__playerCalls || 0) + 1;
             if (w.__playerCalls <= opts.playerFailFirst) {
@@ -1167,6 +1174,45 @@ const cookie = (w, k) => {
     setVal(wf, box, "SID=aaa; HSID=bbb; SSID=ccc; SAPISID=ddd");
     await wait(150);
     check("checker explains the Cloudflare step", /YT_COOKIES/.test(out()) && /Deploy/.test(out()), out());
+  }
+
+  /* ══ 19. YouTube rate limit: wait exactly as long as the worker says ═════ */
+  {
+    /* first resolve is rate-limited with retryAfter: the app must wait that long
+       (not hammer), then play — with no error shown to the user */
+    const dm = makeDom({ rateLimited: true, rateLimitedCount: 1 });
+    const wf = dm.window;
+    wf.console.error = () => {};
+    const sc12 = wf.document.createElement("script");
+    sc12.textContent = app;
+    wf.document.body.appendChild(sc12);
+    await wait(900);
+    const before = (wf.__calls || []).filter((u) => /\/api\/player/.test(u)).length;
+    click(wf, all(wf, ".vc")[0]);
+    await wait(600);
+    check("rate limit shows progress, not an error", !q(wf, ".cp-err"), (q(wf, ".cp-err") || {}).textContent);
+    check("progress mentions the self-heal", /theek kar raha hoon/i.test(wf.document.body.textContent), wf.document.body.textContent.slice(-120));
+    await wait(3200);
+    const after = (wf.__calls || []).filter((u) => /\/api\/player/.test(u)).length;
+    check("it waited and retried once by itself", after === before + 2, before + " → " + after);
+    check("the video plays after the wait", !!q(wf, ".cp video") && !q(wf, ".cp-err"), (q(wf, ".cp-err") || {}).textContent);
+  }
+  {
+    /* a long rate limit must not be hammered: the panel appears and explains */
+    const dm = makeDom({ rateLimited: true, rateLimitedLong: true });
+    const wf = dm.window;
+    wf.console.error = () => {};
+    const sc13 = wf.document.createElement("script");
+    sc13.textContent = app;
+    wf.document.body.appendChild(sc13);
+    await wait(900);
+    click(wf, all(wf, ".vc")[0]);
+    await wait(2500);
+    const errBox = q(wf, ".cp-err");
+    check("a long rate limit ends in an explained panel", !!errBox, wf.document.body.textContent.slice(-140));
+    check("the panel names YouTube, not the app", /YouTube ne is IP/i.test(wf.document.body.textContent), (errBox || {}).textContent);
+    check("the panel says it keeps retrying", /dobara try karta rahega/i.test(wf.document.body.textContent));
+    check("requests were not spammed while limited", (wf.__calls || []).filter((u) => /\/api\/player/.test(u)).length <= 1, (wf.__calls || []).filter((u) => /player/.test(u)).length);
   }
 
   const failed = checks.filter((c) => !c.pass);

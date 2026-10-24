@@ -2359,7 +2359,7 @@ function CPlayer({ video, formats, st, onNext, poster, onRefresh }) {
   const fmtErr = (el) => {
     const c = el && el.error;
     if (!c) return "Playback error";
-    if (c.code === 4) return "Stream ne playable response nahi diya (403 / galat format) — URL refresh karke dobara try karein";
+    if (c.code === 4) return "Stream ne playable response nahi diya — agla stream khud try ho raha hai";
     if (c.code === 2) return "Stream load hote waqt network error";
     if (c.code === 3) return "Stream decode error (codec/format)";
     return "Playback error (" + c.code + ")";
@@ -3783,6 +3783,18 @@ function WatchPage({ video, onPlay, st, engine, onChannel, onAddSub }) {
         if (dead) return;
         if (d) {
           last = d;
+          /* the worker knows exactly when YouTube will answer again — wait that
+             long instead of guessing (this is what stops the retry storm) */
+          if (!d.ok && d.reason === "ratelimit" && d.retryAfter > 0) {
+            last = { ...d, error: d.error || "YouTube rate limit" };
+            if (d.retryAfter <= 20 && i < 5) {
+              setRetrying(i + 1);
+              await new Promise((r) => setTimeout(r, Math.min(20000, d.retryAfter * 1000 + 400)));
+              if (dead) return;
+              continue;
+            }
+            break;                     // too long to wait here: the panel retries itself
+          }
           if (d.ok && (d.formats || []).length) {
             const v = await verifyStream(st.cfg, d, video.videoId);
             if (dead) return;
@@ -3941,7 +3953,16 @@ function WatchPage({ video, onPlay, st, engine, onChannel, onAddSub }) {
                     : (diag && diag.hint) || err}
                 </div>
 
-                {err !== "engine-offline" && (
+                {diag && diag.reason === "ratelimit" && (
+                  <div className="pl-note">
+                    <b>YouTube ne is IP ki requests thodi der ke liye rok di hain (429).</b> Ye app ki galti nahi —
+                    worker har 15 second me chupchap dobara try karta rahega, video khud chal padegi.
+                    Permanent fix: Cloudflare → Worker → Settings me <code>POTOKEN_URL</code> (bgtool token provider) ya
+                    <code>YT_COOKIES</code> add karein.
+                  </div>
+                )}
+
+                {err !== "engine-offline" && (!diag || diag.reason !== "ratelimit") && (
                   <div className="pl-note">
                     <b>Khud retry chal raha hai</b> — 15 second me dobara try hoga, aapko page refresh karne ki zarurat nahi.
                   </div>
@@ -4713,6 +4734,7 @@ const VERDICT_META = {
   "bot-cookies": { t: "Cookie export adhoora", c: "#f1c40f", i: I.warn },
   "bot-ip": { t: "IP-level bot block", c: "#ff8a65", i: I.warn },
   "bot-potoken": { t: "PoToken chahiye", c: "#f1c40f", i: I.warn },
+  ratelimit: { t: "YouTube rate limit (429)", c: "#f1c40f", i: I.warn },
   proxy: { t: "Bytes block ho rahe hain", c: "#ff8a65", i: I.warn },
   resolve: { t: "Player resolve nahi hua", c: "#ff8a65", i: I.warn },
   geo: { t: "Region block", c: "#f1c40f", i: I.warn },
@@ -4794,6 +4816,8 @@ function EngineDoctor({ st, videoId, compact }) {
             <span>client</span><b>{res.client || "—"} {res.clientVersion || ""}</b>
             <span>pass</span><b>{res.pass != null ? res.pass : "—"} · {res.ms != null ? res.ms + " ms" : ""}</b>
             <span>formats</span><b>{(res.formats || []).join(", ") || "—"}</b>
+            <span>subrequests</span><b>{res.subrequests != null ? res.subrequests + " / 46" : "—"}</b>
+            {res.retryAfter > 0 && <><span>retry in</span><b>{res.retryAfter}s</b></>}
             <span>stream</span>
             <b>{res.stream ? (res.stream.ok ? "bytes ✓ " : "fail ") + (res.stream.status || 0) + (res.stream.bytes ? " · " + res.stream.bytes + "B" : "") : "probe nahi chala"}</b>
             {res.stream && res.stream.note && <><span>note</span><b style={{ fontWeight: 400 }}>{res.stream.note}</b></>}
