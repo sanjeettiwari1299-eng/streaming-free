@@ -136,6 +136,17 @@ function makeDom(opts = {}) {
           applyOps(body.ops);
           return ok({ ok: true, written: (body.ops || []).reduce((n, o) => n + ((o.upsert || []).length), 0) });
         }
+        if (/\/api\/debug/.test(u)) return ok({ ok: true, clients: [{ id: "android_vr" }, { id: "web" }], versions: {} });
+        if (/\/api\/canary/.test(u)) return ok({ ok: true, videos: [{ id: "x", ok: true }] });
+        if (/\/api\/media/.test(u) || /\/mp4\//.test(u)) {
+          return {
+            ok: true, status: 206,
+            headers: { get: (k) => ({ "content-type": "video/mp4", "content-range": "bytes 0-2047/9999" }[String(k).toLowerCase()] || null) },
+            arrayBuffer: async () => new ArrayBuffer(2048),
+            text: async () => "bytes",
+            json: async () => ({}),
+          };
+        }
         if (/\/api\/selftest/.test(u)) {
           if (opts.oldWorker) return ok({ ok: true, video: "tr000000001", ms: 747, pass: 1, client: "android_vr", clientVersion: "1.65.10", formats: ["360p"], attempts: [] });
           if (opts.doctorFail) return { ok: false, status: 500, json: async () => ({ error: "boom" }), text: async () => "not json" };
@@ -825,7 +836,6 @@ const cookie = (w, k) => {
     check("doctor shows the verdict", !!q(wv, ".doctor-card") && /Sab theek/i.test(q(wv, ".doctor-card").textContent), (q(wv, ".doctor-card") || {}).textContent);
     check("doctor shows resolve + stream bytes", /resolve/i.test(q(wv, ".doctor-card").textContent) && /bytes/i.test(q(wv, ".doctor-card").textContent) && /206/.test(q(wv, ".doctor-card").textContent), (q(wv, ".doctor-card") || {}).textContent.slice(0, 160));
     check("doctor shows the delivering client", /android_vr/.test(q(wv, ".doctor-card").textContent));
-    check("no JS errors in the shell pass", errs12.filter((e) => !/Not implemented|scrollTo|navigate|Warning: Each child/.test(e)).length === 0, errs12.slice(0, 2).join(" | "));
   }
 
   /* ══ 13. mobile shell: bottom nav + full-screen search ═══════════════════ */
@@ -848,6 +858,37 @@ const cookie = (w, k) => {
     click(wm, all(wm, ".mnav-item").find((b) => /Shorts/.test(b.textContent)));
     await wait(700);
     check("mobile nav switches pages", !!q(wm, ".shorts-wrap"), wm.document.body.textContent.slice(0, 60));
+  }
+
+
+  /* ══ 14. engine test suite (runs from the browser against a real worker) ══ */
+  {
+    const dm = makeDom({ prefs: { sv_cfg: JSON.stringify({ engineUrl: "https://w.dev", autoplay: true, showRelated: true }) } });
+    const ws = dm.window;
+    const errs14 = [];
+    ws.console.error = (...a) => errs14.push(a.join(" "));
+    const sc4 = ws.document.createElement("script");
+    sc4.textContent = app;
+    ws.document.body.appendChild(sc4);
+    await wait(900);
+
+    click(ws, all(ws, ".s-item").find((b) => /Settings/.test(b.textContent)));
+    await wait(500);
+    const runAllBtn = all(ws, ".suite-bar .set-api-btn").find((b) => /Run all tests/.test(b.textContent));
+    check("settings has a run-all-tests button", !!runAllBtn, all(ws, ".suite-bar .set-api-btn").map((b) => b.textContent).join(","));
+    click(ws, runAllBtn);
+    await wait(5000);
+    const suiteRows = all(ws, ".suite-row");
+    check("suite lists every route", suiteRows.length >= 15, suiteRows.length);
+    const suiteStates = suiteRows.map((r) => (r.className.match(/suite-(pass|fail|warn)/) || [])[1]);
+    check("suite finishes (no rows left waiting)", !suiteStates.includes(undefined), suiteStates.join(","));
+    check("suite checks player + bytes", all(ws, ".suite-name").some((n) => /Stream resolve/.test(n.textContent)) && all(ws, ".suite-name").some((n) => /Stream bytes/.test(n.textContent)));
+    check("suite checks comments and store", all(ws, ".suite-name").some((n) => /Comments/.test(n.textContent)) && all(ws, ".suite-name").some((n) => /Cloud store/.test(n.textContent)));
+    check("healthy worker passes the suite", suiteStates.filter((x) => x === "pass").length >= 12, suiteStates.join(","));
+    check("suite offers a copyable report", all(ws, ".suite-bar .set-chip").some((b) => /Copy report/.test(b.textContent)));
+    check("suite has a summary line", /pass/.test((q(ws, ".suite-sum") || {}).textContent || ""), (q(ws, ".suite-sum") || {}).textContent);
+    check("suite calls the real routes", ["/api/health", "/api/search?q=", "/api/trending", "/api/shorts", "/api/player", "/api/comments", "/api/sync/probe"].every((frag) => ws.__calls.some((u) => u.includes(frag))), ws.__calls.filter((u) => /api\//.test(u)).slice(0, 6).join(" "));
+    check("no JS errors in the suite", errs14.filter((e) => !/Not implemented|scrollTo|navigate|Warning: Each child/.test(e)).length === 0, errs14.slice(0, 2).join(" | "));
   }
 
   const failed = checks.filter((c) => !c.pass);

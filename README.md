@@ -48,6 +48,11 @@ GET https://<your-worker>.workers.dev/api/selftest?id=dQw4w9WgXcQ&probe=1
 | `resolve` | player hi fail | `/api/debug?refresh=1` kholein, `clientStats` dekhein; `?refresh=1` se client versions dobara discover hote hain |
 | `geo` / `age` | region block / age wall | Settings → Region badlein, ya `YT_COOKIES` daalein |
 
+**Poora test suite (17 checks):** Settings → YouTube engine → **▶ Run all tests**. Ye tumhare browser se worker ke
+saare routes hit karta hai — health/build, debug, search (+page 2), trending, shorts, channel, rss, player,
+**stream bytes (2 KB proxy)**, related, comments, `/mp4/<id>.mp4`, canary, cloud store probe, CORS — aur har row par
+pass/warn/fail + ms deta hai. **Copy report** se poora text copy ho jata hai (issue bhejne ke liye).
+
 App ke andar bhi wahi doctor hai: **Settings → YouTube engine → Run engine doctor** (ya video fail hone par
 error panel me **Engine doctor**) — video id daalo, ek click me resolve + bytes + client + attempts dikh jate hain.
 

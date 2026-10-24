@@ -1077,6 +1077,31 @@ a.cp-pill{text-decoration:none;display:inline-flex;align-items:center}
 .doctor-attempts ol{margin:6px 0 0 18px;line-height:1.7;word-break:break-word}
 .pl-doctor{width:100%;max-width:560px;margin:10px auto 4px;text-align:left;background:rgba(255,255,255,.04);border-radius:10px;padding:10px 12px}
 .doctor-compact .doctor-grid{grid-template-columns:78px 1fr}
+
+/* engine test suite */
+.suite{margin-top:2px}
+.suite-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.suite-sum{font-size:13px}
+.suite-list{margin-top:10px;border:1px solid var(--border);border-radius:10px;overflow:hidden;background:var(--bg2)}
+.suite-row{display:flex;align-items:center;gap:10px;padding:8px 12px;font-size:13px;border-bottom:1px solid var(--border);min-height:38px}
+.suite-row:last-child{border-bottom:none}
+.suite-dot{width:9px;height:9px;border-radius:50%;flex-shrink:0;background:var(--bg4)}
+.suite-pass .suite-dot{background:#2ecc71;box-shadow:0 0 6px rgba(46,204,113,.6)}
+.suite-warn .suite-dot{background:#f1c40f}
+.suite-fail .suite-dot{background:#ff5252;box-shadow:0 0 6px rgba(255,82,82,.6)}
+.suite-run .suite-dot{background:#3ea6ff;animation:cp-pulse 1s infinite}
+.suite-name{flex:0 0 auto;color:var(--t1);font-weight:500;min-width:190px}
+.suite-detail{flex:1;min-width:0;color:var(--t2);font-size:12.5px;word-break:break-word}
+.suite-fail .suite-detail{color:#ff9b9b}
+.suite-warn .suite-detail{color:#e8c96a}
+.suite-ms{color:var(--t3);font-size:11.5px;font-variant-numeric:tabular-nums;flex-shrink:0}
+.suite-hint{margin-top:10px;font-size:12.5px;color:var(--t2);line-height:1.7;background:var(--bg3);border-radius:8px;padding:10px 12px}
+.suite-hint b{color:var(--t1)}
+@media(max-width:656px){
+  .suite-name{min-width:0;flex:1}
+  .suite-detail{flex:1 0 100%;order:3;padding-left:19px}
+  .suite-row{flex-wrap:wrap}
+}
 </style>
 </head>
 <body>
@@ -3969,6 +3994,317 @@ function SubManager({ st, onAddSub }) {
 /* ════════════════════════════════════════════════════════════════════════════
    CLOUD STORE PANEL — profile key, sync state, caps, export/import
    ════════════════════════════════════════════════════════════════════════════ */
+/* ── Engine test suite ────────────────────────────────────────────────────────
+   Har route ko browser se hit karta hai (worker CORS `*` deta hai), assertions
+   ke saath. Report copy karke bhej sakte ho — isse pata chalta hai kaunsa hissa
+   toota hai: resolve, bytes, comments, RSS, cloud store.                        */
+const SUITE_TIMEOUT = 25000;
+
+async function jfetch(url, opts = {}, timeout = SUITE_TIMEOUT) {
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(), timeout);
+  const t0 = Date.now();
+  try {
+    const r = await fetch(url, { ...opts, signal: ac.signal });
+    const text = await r.text();
+    let data = null;
+    try { data = text ? JSON.parse(text) : null; } catch { data = null; }
+    return { status: r.status, ok: r.ok, data, text, ms: Date.now() - t0 };
+  } finally { clearTimeout(t); }
+}
+
+function buildSuite(cfg) {
+  const base = baseOf(cfg);
+  const key = String(cfg.accessKey || "").trim();
+  const u = (path) => base + path + (key ? (path.includes("?") ? "&" : "?") + "key=" + encodeURIComponent(key) : "");
+  const VID = "dQw4w9WgXcQ";
+  const ctx = {};   // shared state between tests (tokens, ids, stream url)
+
+  const tests = [
+    {
+      id: "health", name: "Worker online (/api/health)",
+      run: async () => {
+        const r = await jfetch(u("/api/health"), {}, 10000);
+        if (!r.ok || !r.data || r.data.ok !== true) throw new Error("HTTP " + r.status + " — worker URL galat ya deploy nahi hua");
+        return { pass: true, detail: "build " + (r.data.build || "?") + " · " + r.ms + " ms", ms: r.ms, extra: r.data.build || "" };
+      },
+    },
+    {
+      id: "build", name: "Naya worker build (8.1.0)",
+      run: async () => {
+        const r = await jfetch(u("/api/health"), {}, 10000);
+        const b = (r.data && r.data.build) || "";
+        const fresh = /^8\.[1-9]|^[9-9]\./.test(b);
+        return { pass: fresh, warn: !fresh, detail: fresh ? "build " + b : "build " + (b || "?") + " — purana code chal raha hai, naya worker.js deploy karein", ms: r.ms };
+      },
+    },
+    {
+      id: "debug", name: "Client ladder (/api/debug)",
+      run: async () => {
+        const r = await jfetch(u("/api/debug"), {}, 30000);
+        const clients = (r.data && (r.data.clients || r.data.ladder || r.data.clientStats)) || null;
+        const n = Array.isArray(clients) ? clients.length : (clients && typeof clients === "object" ? Object.keys(clients).length : 0);
+        if (!r.ok || !r.data) throw new Error("HTTP " + r.status);
+        return { pass: true, warn: n === 0, detail: (n ? n + " clients" : "clients list nahi mili") + " · " + r.ms + " ms", ms: r.ms };
+      },
+    },
+    {
+      id: "search", name: "Search (/api/search?q=lofi)",
+      run: async () => {
+        const r = await jfetch(u("/api/search?q=" + encodeURIComponent("lofi songs")));
+        const items = (r.data && r.data.items) || [];
+        ctx.searchToken = (r.data && r.data.continuation) || "";
+        ctx.videoId = (items[0] && items[0].videoId) || VID;
+        if (!r.ok) throw new Error("HTTP " + r.status + (r.data && r.data.error ? " · " + r.data.error : ""));
+        if (!items.length) throw new Error("0 results");
+        return { pass: true, detail: items.length + " results · first: " + String(items[0].title || "").slice(0, 40), ms: r.ms };
+      },
+    },
+    {
+      id: "searchmore", name: "Search page 2 (/api/searchmore)",
+      run: async () => {
+        if (!ctx.searchToken) return { pass: true, warn: true, detail: "continuation token nahi mila — skip" };
+        const r = await jfetch(u("/api/searchmore?q=lofi&token=" + encodeURIComponent(ctx.searchToken)));
+        const items = (r.data && r.data.items) || [];
+        return { pass: r.ok, warn: !items.length, detail: items.length + " more results · " + r.ms + " ms", ms: r.ms };
+      },
+    },
+    {
+      id: "trending", name: "Trending (/api/trending)",
+      run: async () => {
+        const r = await jfetch(u("/api/trending?region=" + (cfg.region || "IN")));
+        const items = (r.data && r.data.items) || [];
+        if (!items.length) throw new Error("0 items (source: " + ((r.data && r.data.source) || "?") + ")");
+        return { pass: true, detail: items.length + " videos · source " + ((r.data && r.data.source) || "?") + " · " + r.ms + " ms", ms: r.ms };
+      },
+    },
+    {
+      id: "shorts", name: "Shorts (/api/shorts)",
+      run: async () => {
+        const r = await jfetch(u("/api/shorts?region=" + (cfg.region || "IN")));
+        const items = (r.data && r.data.items) || [];
+        if (!items.length) throw new Error("0 shorts");
+        return { pass: true, detail: items.length + " shorts · " + r.ms + " ms", ms: r.ms };
+      },
+    },
+    {
+      id: "channel", name: "Channel lookup (/api/channel)",
+      run: async () => {
+        const r = await jfetch(u("/api/channel?q=" + encodeURIComponent("@LofiGirl")));
+        if (!r.data || !r.data.channelId) throw new Error((r.data && r.data.error) || "channelId nahi mila");
+        ctx.channelId = r.data.channelId;
+        return { pass: true, detail: (r.data.name || "?") + " · " + r.data.channelId, ms: r.ms };
+      },
+    },
+    {
+      id: "rss", name: "Subscriptions feed (/api/rss)",
+      run: async () => {
+        if (!ctx.channelId) return { pass: true, warn: true, detail: "channel id nahi mila — skip" };
+        const r = await jfetch(u("/api/rss?channels=" + encodeURIComponent(ctx.channelId)));
+        const items = (r.data && r.data.items) || [];
+        return { pass: r.ok && items.length > 0, warn: items.length === 0, detail: items.length + " videos · " + r.ms + " ms", ms: r.ms };
+      },
+    },
+    {
+      id: "player", name: "Stream resolve (/api/player)",
+      run: async () => {
+        const r = await jfetch(u("/api/player?id=" + VID), {}, 30000);
+        const d = r.data || {};
+        if (!d.ok || !(d.formats || []).length) {
+          const why = d.reasonLabel || d.reason || (d.attempts || []).slice(-1)[0] || ("HTTP " + r.status);
+          throw new Error(why);
+        }
+        ctx.format = d.formats[0];
+        return { pass: true, detail: d.client + " " + (d.clientVersion || "") + " · " + d.formats.map((f) => f.quality).join("/") + " · " + r.ms + " ms", ms: r.ms };
+      },
+    },
+    {
+      id: "bytes", name: "Stream bytes (proxy 2 KB)",
+      run: async () => {
+        if (!ctx.format) throw new Error("player fail hua, bytes test nahi ho sakta");
+        const src = mediaUrl(cfg, ctx.format.url);
+        const ac = new AbortController();
+        const t = setTimeout(() => ac.abort(), 25000);
+        const t0 = Date.now();
+        try {
+          const r = await fetch(src, { headers: { Range: "bytes=0-2047" }, signal: ac.signal });
+          const buf = await r.arrayBuffer();
+          const ok = (r.status === 200 || r.status === 206) && buf.byteLength > 0;
+          return {
+            pass: ok, ms: Date.now() - t0,
+            detail: "HTTP " + r.status + " · " + buf.byteLength + " bytes · " + (r.headers.get("content-type") || "?") +
+              (ok ? "" : " — googlevideo block kar raha hai (IP-bound URL)"),
+          };
+        } catch (e) {
+          throw new Error("proxy fetch fail: " + (e && e.message));
+        } finally { clearTimeout(t); }
+      },
+    },
+    {
+      id: "related", name: "Up next (/api/related)",
+      run: async () => {
+        const r = await jfetch(u("/api/related?id=" + (ctx.videoId || VID)));
+        const items = (r.data && r.data.items) || [];
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return { pass: items.length > 0, warn: items.length === 0, detail: items.length + " related · " + r.ms + " ms", ms: r.ms };
+      },
+    },
+    {
+      id: "comments", name: "Comments (/api/comments)",
+      run: async () => {
+        const r = await jfetch(u("/api/comments?id=" + (ctx.videoId || VID)), {}, 30000);
+        const d = r.data || {};
+        if (!r.ok || d.ok === false) throw new Error(d.error || ("HTTP " + r.status));
+        const n = (d.items || []).length;
+        return {
+          pass: true, warn: n === 0,
+          detail: (n ? n + " comments" : "0 comments") + " · count " + (d.count || 0) + " · " + (d.source || "?") + " · " + r.ms + " ms",
+          ms: r.ms,
+        };
+      },
+    },
+    {
+      id: "mp4", name: "Direct MP4 (/mp4/<id>.mp4)",
+      run: async () => {
+        const ac = new AbortController();
+        const t = setTimeout(() => ac.abort(), 25000);
+        const t0 = Date.now();
+        try {
+          const r = await fetch(base + "/mp4/" + VID + ".mp4" + (key ? "?key=" + encodeURIComponent(key) : ""), {
+            headers: { Range: "bytes=0-1023" }, signal: ac.signal,
+          });
+          const ok = r.status === 200 || r.status === 206;
+          await r.arrayBuffer().catch(() => {});
+          return { pass: ok, ms: Date.now() - t0, detail: "HTTP " + r.status + (ok ? " · mp4 route kaam kar raha hai" : " — route fail"), };
+        } catch (e) {
+          throw new Error("mp4 fetch fail: " + (e && e.message));
+        } finally { clearTimeout(t); }
+      },
+    },
+    {
+      id: "canary", name: "Canary (/api/canary)",
+      run: async () => {
+        const r = await jfetch(u("/api/canary?n=1"), {}, 40000);
+        const d = r.data || {};
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        const okCount = d.ok ? (Array.isArray(d.videos) ? d.videos.filter((v) => v.ok).length : 1) : 0;
+        return { pass: true, warn: d.ok === false, detail: "canary " + (d.ok ? "ok" : "fail") + (okCount ? " · " + okCount + " video(s)" : "") + " · " + r.ms + " ms", ms: r.ms };
+      },
+    },
+    {
+      id: "store", name: "Cloud store (/api/sync/probe)",
+      run: async () => {
+        const r = await jfetch(u("/api/sync/probe?p=" + encodeURIComponent(profileKey())), {}, 25000);
+        const d = r.data || {};
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return {
+          pass: d.ok === true, warn: d.configured === false,
+          detail: d.configured === false
+            ? "Layerbase set nahi (LIBSQL_URL + LIBSQL_TOKEN worker secrets me daalein)"
+            : d.ok ? "connected · " + (d.host || "") + " · " + (d.latencyMs || 0) + " ms · " + (d.rows || 0) + " rows"
+              : (d.error || "probe fail"),
+          ms: r.ms,
+        };
+      },
+    },
+    {
+      id: "cors", name: "CORS (browser se call allowed)",
+      run: async () => {
+        const r = await jfetch(u("/api/health"), { headers: { "x-sv-probe": "1" } }, 10000);
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return { pass: true, detail: "cross-origin read ok · " + r.ms + " ms", ms: r.ms };
+      },
+    },
+  ];
+  return tests;
+}
+
+function EngineTests({ st }) {
+  const [rows, setRows] = useState([]);
+  const [state, setState] = useState("idle");
+  const [copied, setCopied] = useState(false);
+  const base = baseOf(st.cfg);
+
+  const runAll = async () => {
+    if (!base) { setState("error"); setRows([{ id: "cfg", name: "Engine URL", state: "fail", detail: "pehle worker URL save karein" }]); return; }
+    const tests = buildSuite(st.cfg);
+    setState("run");
+    setCopied(false);
+    setRows(tests.map((t) => ({ id: t.id, name: t.name, state: "wait", detail: "" })));
+    for (const t of tests) {
+      setRows((r) => r.map((x) => (x.id === t.id ? { ...x, state: "run", detail: "…" } : x)));
+      try {
+        const out = await t.run();
+        setRows((r) => r.map((x) => (x.id === t.id ? {
+          ...x,
+          state: out.pass ? "pass" : out.warn ? "warn" : "fail",
+          detail: out.detail || "",
+          ms: out.ms,
+        } : x)));
+      } catch (e) {
+        setRows((r) => r.map((x) => (x.id === t.id ? { ...x, state: "fail", detail: String((e && e.message) || e) } : x)));
+      }
+    }
+    setState("done");
+  };
+
+  const counts = useMemo(() => {
+    const c = { pass: 0, warn: 0, fail: 0, total: rows.length };
+    rows.forEach((r) => { if (r.state === "pass") c.pass++; else if (r.state === "warn") c.warn++; else if (r.state === "fail") c.fail++; });
+    return c;
+  }, [rows]);
+
+  const report = () => {
+    const head = "StreamVoid engine tests · " + base + "\n" + new Date().toISOString() + "\n";
+    return head + rows.map((r) => "[" + String(r.state).toUpperCase() + "] " + r.name + " — " + (r.detail || "")).join("\n");
+  };
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(report()); setCopied(true); setTimeout(() => setCopied(false), 2000); } catch {}
+  };
+
+  return (
+    <div className="suite">
+      <div className="suite-bar">
+        <button className="set-api-btn" disabled={state === "run"} onClick={runAll}>
+          {state === "run" ? "Testing… (" + (rows.filter((r) => r.state !== "wait" && r.state !== "run").length) + "/" + rows.length + ")" : "▶ Run all tests"}
+        </button>
+        {rows.length > 0 && state === "done" && (
+          <>
+            <span className="suite-sum">
+              <b style={{ color: "#7ee787" }}>{counts.pass} pass</b>
+              {counts.warn > 0 && <b style={{ color: "#f1c40f" }}> · {counts.warn} warn</b>}
+              {counts.fail > 0 && <b style={{ color: "#ff6b6b" }}> · {counts.fail} fail</b>}
+              <span style={{ color: "var(--t3)" }}> / {counts.total}</span>
+            </span>
+            <button className="set-chip" onClick={copy}>{copied ? "Copied ✓" : "Copy report"}</button>
+            <a className="set-chip" href={base + "/api/health"} target="_blank" rel="noreferrer">health ↗</a>
+          </>
+        )}
+        {!base && <span style={{ color: "var(--t3)", fontSize: 12.5 }}>pehle engine URL save karein</span>}
+      </div>
+
+      {rows.length > 0 && (
+        <div className="suite-list">
+          {rows.map((r) => (
+            <div key={r.id} className={"suite-row suite-" + r.state}>
+              <span className="suite-dot" />
+              <span className="suite-name">{r.name}</span>
+              <span className="suite-detail">{r.detail}</span>
+              {r.ms != null && <span className="suite-ms">{r.ms} ms</span>}
+            </div>
+          ))}
+        </div>
+      )}
+      {state === "done" && counts.fail > 0 && (
+        <div className="suite-hint">
+          Fail hue tests ka matlab: <b>player/bytes</b> = stream block (cookies chahiye) ·{" "}
+          <b>health</b> = URL galat · <b>store</b> = Layerbase secrets missing. Poora report “Copy report” se bhej dein.
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ── Engine doctor ────────────────────────────────────────────────────────────
    Ek hi request me do sawal: "stream resolve hua?" aur "bytes aa rahe hain?".
    Worker ka /api/selftest?probe=1 verdict deta hai (ok / bot / proxy / resolve /
@@ -4277,6 +4613,9 @@ function SetPage({ st, engine, onCheck, onAddSub }) {
         </div>
         <div className="set-sub-h">Koi video nahi chal rahi? Doctor chalayein</div>
         <EngineDoctor st={st} />
+
+        <div className="set-sub-h">Poora test suite (saare routes)</div>
+        <EngineTests st={st} />
       </div>
 
       <div className="set-blk">
