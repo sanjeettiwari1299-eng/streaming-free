@@ -21,7 +21,7 @@
  */
 
 // bump this when the worker changes, so /api/health tells you which code is live
-const BUILD = "8.1.0";
+const BUILD = "8.2.0";
 
 const INNERTUBE_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8";
 const UA = {
@@ -2351,13 +2351,72 @@ const SYNC_SCHEMA = [
 const canonicalKind = (k) => KIND_ALIAS[String(k || "").toLowerCase()] || "";
 const validProfileKey = (k) => /^[A-Za-z0-9_-]{16,64}$/.test(String(k || ""));
 
-const libsqlBase = (env) =>
-  String((env && (env.LIBSQL_URL || env.LAYERBASE_URL)) || "")
-    .trim()
-    .replace(/^libsql:\/\//i, "https://")
-    .replace(/\/+$/, "");
+/* ── LIBSQL_URL normalizer ────────────────────────────────────────────────────
+   Dashboard se jo bhi paste ho, usse ek hi shakal me le aao:
+     https://db-xyz.sage.cloud.layerbase.dev
+   Sab ye chalte hain (aur pehle toot rahe the):
+     db-xyz.sage.cloud.layerbase.dev            (no scheme)
+     libsql://db-xyz…  ·  http://db-xyz…
+     https://db-xyz…/v2/pipeline                (endpoint copy kiya hua)
+     https://db-xyz…/v2  ·  …/pipeline  ·  …/    (trailing bits)
+     "https://db-xyz…"                          (quotes ke saath paste)
+   Hrana endpoint khud add hota hai — isliye base me path kabhi nahi rakhte.  */
+const LIBSQL_SUFFIXES = [/\/v2\/pipeline$/i, /\/v1\/pipeline$/i, /\/v3\/pipeline$/i, /\/pipeline$/i, /\/v2$/i, /\/v1$/i, /\/v3$/i, /\/http$/i, /\/sql$/i];
+const libsqlRaw = (env) => String((env && (env.LIBSQL_URL || env.LAYERBASE_URL)) || "");
 
-const storeConfigured = (env) => !!(libsqlBase(env) && String((env && (env.LIBSQL_TOKEN || env.LAYERBASE_TOKEN)) || "").trim());
+function normalizeLibsqlUrl(raw) {
+  let s = String(raw || "").trim().replace(/^["'`\s]+|["'`\s]+$/g, "");
+  if (!s) return "";
+  s = s.replace(/\s+/g, "");
+  s = s.replace(/^libsql:\/\//i, "https://").replace(/^(wss|ws|http):\/\//i, "https://");
+  if (!/^https?:\/\//i.test(s)) s = "https://" + s;
+  s = s.replace(/[?#].*$/, "");
+  for (let i = 0; i < 4; i++) {
+    const before = s;
+    s = s.replace(/\/+$/, "");
+    for (const re of LIBSQL_SUFFIXES) s = s.replace(re, "");
+    if (s === before) break;
+  }
+  try {
+    const u = new URL(s);
+    if (!u.hostname || !u.hostname.includes(".")) return "";
+    return u.origin;                       // path hamesha drop — endpoint worker khud lagata hai
+  } catch {
+    return "";
+  }
+}
+
+const libsqlBase = (env) => normalizeLibsqlUrl(libsqlRaw(env));
+
+const libsqlToken = (env) =>
+  String((env && (env.LIBSQL_TOKEN || env.LAYERBASE_TOKEN)) || "")
+    .trim()
+    .replace(/^["'`]|["'`]$/g, "")
+    .replace(/^bearer\s+/i, "")
+    .replace(/\s+/g, "");
+
+/* What the worker actually parsed — so a wrong paste is visible, not guessed. */
+function libsqlInfo(env) {
+  const raw = libsqlRaw(env);
+  const base = libsqlBase(env);
+  const token = libsqlToken(env);
+  const hadScheme = /^[a-z]+:\/\//i.test(raw.trim());
+  const hadPath = /^[a-z]+:\/\/.*\//i.test(raw.trim().replace(/\/+$/, "") + "/x") && /\/[^/]+/.test(raw.trim().replace(/^[a-z]+:\/\//i, ""));
+  return {
+    configured: !!(base && token),
+    urlGiven: !!raw.trim(),
+    tokenGiven: !!token,
+    normalized: base,
+    host: base ? base.replace(/^https:\/\//, "") : "",
+    endpoint: base ? base + "/v2/pipeline" : "",
+    changed: !!raw.trim() && base !== raw.trim(),
+    hadScheme,
+    hadPath,
+    tokenPrefix: token ? token.slice(0, 4) + "…" : "",
+  };
+}
+
+const storeConfigured = (env) => !!(libsqlBase(env) && libsqlToken(env));
 
 // Hrana v2 typed values
 const T = (v) => ({ type: "text", value: String(v) });
@@ -2367,7 +2426,7 @@ const SCHEMA_DONE = new Set();
 
 async function libsqlPipeline(env, stmts) {
   const base = libsqlBase(env);
-  const token = String((env && (env.LIBSQL_TOKEN || env.LAYERBASE_TOKEN)) || "").trim();
+  const token = libsqlToken(env);
   if (!base || !token) throw new Error("cloud store not configured: set LIBSQL_URL + LIBSQL_TOKEN");
   const body = {
     requests: stmts
@@ -2422,17 +2481,35 @@ async function libsqlPipeline(env, stmts) {
 // included? Returns the round-trip time so "slow because it was hibernating" is
 // visible instead of guessed.
 async function storeProbe(env, uid = "") {
+  const info = libsqlInfo(env);
   if (!storeConfigured(env)) {
+    // secret to hai par parse nahi hui → yeh sabse common "link sahi hai par invalid" case hai
+    const badUrl = info.urlGiven && !info.normalized;
+    const badToken = info.urlGiven && info.normalized && !info.tokenGiven;
     return {
       ok: false,
       configured: false,
       backend: "layerbase-libsql",
-      error: "LIBSQL_URL + LIBSQL_TOKEN missing",
+      error: badUrl
+        ? "LIBSQL_URL parse nahi hui — sirf host chahiye, jaise https://lakshaydb-cute-drum.sage.cloud.layerbase.dev"
+        : badToken
+          ? "LIBSQL_TOKEN khali/galt hai (Bearer prefix ya quotes hata dein)"
+          : "LIBSQL_URL + LIBSQL_TOKEN missing",
+      url: {
+        given: info.urlGiven,
+        normalized: info.normalized,
+        host: info.host,
+        changed: info.changed,
+        tokenGiven: info.tokenGiven,
+        tokenPrefix: info.tokenPrefix,
+        endpoint: info.endpoint,
+      },
       steps: [
         "layerbase.com → sign in (free, no card)",
         "New Database → engine libSQL → Free plan → Create",
         "open the DB → Connect → copy the https://…cloud.layerbase.dev URL and the auth token",
         "Cloudflare → Workers → your worker → Settings → Variables → add LIBSQL_URL and LIBSQL_TOKEN as Secret",
+        "/v2/pipeline ya trailing slash paste karne ki zaroorat nahi — worker khud lagata hai (ab handle bhi karta hai)",
         "hit this probe again — it should say ok:true in a few hundred ms",
       ],
     };
@@ -2449,6 +2526,9 @@ async function storeProbe(env, uid = "") {
       configured: true,
       backend: "layerbase-libsql",
       host: libsqlBase(env).replace(/^https?:\/\//, "").split("/")[0],
+      endpoint: libsqlBase(env) + "/v2/pipeline",
+      urlFixed: info.changed,
+      originalUrl: info.changed ? info.normalized : undefined,
       latencyMs: Date.now() - t0,
       schema: "sv_store ready",
       rows,
@@ -2463,9 +2543,16 @@ async function storeProbe(env, uid = "") {
       backend: "layerbase-libsql",
       latencyMs: Date.now() - t0,
       error: /^layerbase/i.test(e.message) ? e.message : "layerbase: " + e.message,
+      host: libsqlBase(env).replace(/^https?:\/\//, ""),
+      endpoint: libsqlBase(env) + "/v2/pipeline",
+      url: { given: info.urlGiven, normalized: info.normalized, changed: info.changed, tokenGiven: info.tokenGiven, tokenPrefix: info.tokenPrefix },
       hint: /restore|archiv/i.test(e.message)
         ? "database is archived — open the Layerbase dashboard and press Restore (data + backups are kept)"
-        : "check LIBSQL_URL (https://…cloud.layerbase.dev) and LIBSQL_TOKEN; a sleeping DB wakes on the first query in ~1-5s",
+        : /401|403|unauthor/i.test(e.message)
+          ? "token galat hai — Layerbase dashboard → Connect se naya auth token copy karein (Bearer prefix ke bina), phir Cloudflare → Settings → Variables me LIBSQL_TOKEN update karke Deploy dabaein"
+          : /404|not found|non-JSON/i.test(e.message)
+            ? "host galat lag raha hai ya database delete ho gaya — Layerbase → Connect se poora https URL dobara copy karein (path ke bina)"
+            : "check LIBSQL_URL (https://…cloud.layerbase.dev) and LIBSQL_TOKEN; a sleeping DB wakes on the first query in ~1-5s",
     };
   }
 }
@@ -3007,6 +3094,9 @@ export {
   canonicalKind,
   opsToStatements,
   libsqlBase,
+  normalizeLibsqlUrl,
+  libsqlInfo,
+  libsqlToken,
   libsqlPipeline,
   syncGet,
   syncWrite,

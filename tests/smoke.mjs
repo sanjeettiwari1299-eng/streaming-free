@@ -71,6 +71,30 @@ check("durToSec", W.durToSec("1:02:03") === 3723);
 check("VIEWS", W.VIEWS("1.2M views") === 1200000);
 const list = W.normalizeList(JSON.parse(SEARCH), 10);
 check("normalizeList", list.length === 2 && list[0].title === "Hello World" && list[0].lengthSeconds === 605);
+/* ── LIBSQL_URL normalizer: path/scheme/quotes sab chalne chahiye ───────── */
+const HOST = "lakshaydb-cute-drum.sage.cloud.layerbase.dev";
+const WANT = "https://" + HOST;
+[
+  HOST,
+  HOST + "/v2/pipeline",
+  "https://" + HOST,
+  "https://" + HOST + "/v2/pipeline",
+  "https://" + HOST + "/v2/pipeline/",
+  "http://" + HOST + "/",
+  "libsql://" + HOST,
+  "libsql://" + HOST + "/v2/pipeline",
+  '"' + "https://" + HOST + '/v2/pipeline"',
+  "  https://" + HOST + "/v2  ",
+  "https://" + HOST + "/v1/pipeline",
+  "https://" + HOST + "/pipeline",
+  "https://" + HOST + "/v2/pipeline?x=1#y",
+].forEach((input) => check("libsql url: " + JSON.stringify(input).slice(0, 46), W.normalizeLibsqlUrl(input) === WANT, W.normalizeLibsqlUrl(input)));
+check("libsql url: garbage rejected", W.normalizeLibsqlUrl("not a url") === "" && W.normalizeLibsqlUrl("") === "", W.normalizeLibsqlUrl("not a url"));
+const info = W.libsqlInfo({ LIBSQL_URL: "libsql://" + HOST + "/v2/pipeline", LIBSQL_TOKEN: ' "Bearer abc.def" ' });
+check("libsql info: parses and flags the fix", info.configured === true && info.normalized === WANT && info.changed === true, JSON.stringify(info));
+check("libsql info: strips Bearer/quotes from the token", W.libsqlToken({ LIBSQL_TOKEN: ' Bearer abc.def ' }) === "abc.def");
+check("libsql info: endpoint is host + /v2/pipeline", info.endpoint === WANT + "/v2/pipeline", info.endpoint);
+
 /* ── comments: modern commentEntityPayload + legacy commentRenderer ─────── */
 const COMMENT_DATA = {
   frameworkUpdates: { entityBatchUpdate: { mutations: [{ payload: { commentEntityPayload: {

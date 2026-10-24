@@ -105,6 +105,23 @@ Playback stays 100% custom: a plain `<video>` element with our own YouTube-style
 
 `index.html` can be hosted anywhere static (GitHub Pages, Netlify, S3, or just opened locally).
 
+### `LIBSQL_URL` ka sahi format (aur jo bhi paste ho jaye)
+
+Secret me sirf **host** chahiye — `/v2/pipeline` worker khud lagata hai. Lekin galti se endpoint copy ho jaye
+to bhi `v8.2` ab sambhal leta hai:
+
+| Tumne paste kiya | Worker kya use karta hai |
+| --- | --- |
+| `lakshaydb-cute-drum.sage.cloud.layerbase.dev` | ✅ wahi |
+| `…/v2/pipeline` · `…/v2/pipeline/` · `…/v2` · `…/pipeline` | ✅ path hata ke host |
+| `libsql://…` · `http://…` · `wss://…` | ✅ `https://…` |
+| `"https://…"` (quotes ke saath) | ✅ quotes hata ke |
+| token: `Bearer eyJ…` · `"eyJ…"` | ✅ prefix/quotes hata ke |
+
+App me checker bhi hai: **Settings → Cloud store → Layerbase URL checker** — URL paste karo, normalized value
++ exact secret steps dikh jate hain. `/api/sync/probe` ab batata hai worker ne kya parse kiya (`url.normalized`,
+`endpoint`, `changed`, `tokenPrefix`) taaki "link sahi hai par invalid" jaisa guess-work khatam ho.
+
 ### Layerbase banayein — exact clicks
 
 1. <https://layerbase.com> → sign in (email/GitHub). Card nahi lagta.

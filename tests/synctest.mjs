@@ -263,7 +263,19 @@ check("opsToStatements drops unknown kinds", W.opsToStatements(KEY, [{ kind: "xx
 /* ── 15. setup probe: "is Layerbase really connected?" ───────────────────── */
 const probeOff = await W.storeProbe({}, "");
 check("probe says not configured when secrets are missing", probeOff.ok === false && probeOff.configured === false);
-check("probe hands back the exact 5 setup steps", Array.isArray(probeOff.steps) && probeOff.steps.length === 5, (probeOff.steps || []).length);
+check("probe hands back the setup steps", Array.isArray(probeOff.steps) && probeOff.steps.length >= 5, (probeOff.steps || []).length);
+check("probe tells you the path is not needed", probeOff.steps.join(" ").includes("/v2/pipeline"), probeOff.steps.join(" | ").slice(0, 160));
+
+/* the "link sahi hai par invalid" bug: a pasted endpoint URL must still work */
+const ENV_PATHY = { ...ENV, LIBSQL_URL: String(ENV.LIBSQL_URL || "").replace(/\/+$/, "") + "/v2/pipeline" };
+const probePathy = await W.storeProbe(ENV_PATHY, KEY);
+check("probe accepts a pasted /v2/pipeline URL", probePathy.ok === true, JSON.stringify({ ok: probePathy.ok, err: probePathy.error }));
+check("probe reports the normalized endpoint", /\/v2\/pipeline$/.test(String(probePathy.endpoint || "")) && !/pipeline\/v2\/pipeline/.test(String(probePathy.endpoint || "")), probePathy.endpoint);
+const probeNoScheme = await W.storeProbe({ ...ENV, LIBSQL_URL: String(ENV.LIBSQL_URL || "").replace(/^https?:\/\//, "") }, KEY);
+check("probe accepts a URL without a scheme", probeNoScheme.ok === true, JSON.stringify({ ok: probeNoScheme.ok, err: probeNoScheme.error }));
+const probeGarbage = await W.storeProbe({ ...ENV, LIBSQL_URL: "not a url" }, KEY);
+check("probe explains an unparseable URL", probeGarbage.ok === false && /parse nahi hui/i.test(probeGarbage.error || ""), probeGarbage.error);
+check("probe shows what it parsed", probeGarbage.url && probeGarbage.url.given === true, JSON.stringify(probeGarbage.url));
 check("steps name the two secrets", probeOff.steps.join(" ").includes("LIBSQL_URL") && probeOff.steps.join(" ").includes("LIBSQL_TOKEN"));
 
 const probe = await W.storeProbe(ENV, KEY);

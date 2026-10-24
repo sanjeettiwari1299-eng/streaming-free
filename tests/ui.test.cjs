@@ -115,7 +115,8 @@ function makeDom(opts = {}) {
         if (/\/api\/sync\/probe/.test(u)) {
           if (opts.syncFail) return ok({ ok: false, configured: true, backend: "layerbase-libsql", error: "layerbase: HTTP 503", hint: "check LIBSQL_URL + LIBSQL_TOKEN" });
           if (opts.probeOff) return ok({ ok: false, configured: false, error: "LIBSQL_URL + LIBSQL_TOKEN missing", steps: ["layerbase.com → sign in (free, no card)", "New Database → engine libSQL", "Connect → copy URL + token", "Cloudflare → Settings → Variables", "hit this probe again"] });
-          return ok({ ok: true, configured: true, backend: "layerbase-libsql", host: "demo.layerbase.dev", latencyMs: 214, rows: 7, caps: CAPS, ttl: "none", wokeFromSleep: true });
+          if (opts.probeBadUrl) return ok({ ok: false, configured: false, backend: "layerbase-libsql", error: "LIBSQL_URL parse nahi hui — sirf host chahiye", url: { given: true, normalized: "", tokenGiven: true, changed: false } });
+          return ok({ ok: true, configured: true, backend: "layerbase-libsql", host: "demo.layerbase.dev", latencyMs: 214, rows: 7, caps: CAPS, ttl: "none", wokeFromSleep: true, endpoint: "https://demo.layerbase.dev/v2/pipeline", url: { given: true, normalized: "https://demo.layerbase.dev", changed: true, tokenGiven: true, tokenPrefix: "eyJh…" } });
         }
         if (/\/api\/sync/.test(u)) {
           if (opts.syncFail) return { ok: false, status: 503, json: async () => ({ ok: false, error: "layerbase 503" }), text: async () => JSON.stringify({ ok: false, error: "layerbase 503" }) };
@@ -889,6 +890,45 @@ const cookie = (w, k) => {
     check("suite has a summary line", /pass/.test((q(ws, ".suite-sum") || {}).textContent || ""), (q(ws, ".suite-sum") || {}).textContent);
     check("suite calls the real routes", ["/api/health", "/api/search?q=", "/api/trending", "/api/shorts", "/api/player", "/api/comments", "/api/sync/probe"].every((frag) => ws.__calls.some((u) => u.includes(frag))), ws.__calls.filter((u) => /api\//.test(u)).slice(0, 6).join(" "));
     check("no JS errors in the suite", errs14.filter((e) => !/Not implemented|scrollTo|navigate|Warning: Each child/.test(e)).length === 0, errs14.slice(0, 2).join(" | "));
+  }
+
+
+  /* ══ 15. Layerbase URL: /v2/pipeline paste karna ab valid hai ═══════════ */
+  {
+    const dm = makeDom({ prefs: { sv_cfg: JSON.stringify({ engineUrl: "https://w.dev", autoplay: true, showRelated: true }) } });
+    const wu = dm.window;
+    const sc5 = wu.document.createElement("script");
+    sc5.textContent = app;
+    wu.document.body.appendChild(sc5);
+    await wait(900);
+    click(wu, all(wu, ".s-item").find((b) => /Settings/.test(b.textContent)));
+    await wait(400);
+
+    const urlInput = q(wu, ".urlcheck input");
+    check("cloud store has a URL checker", !!urlInput, wu.document.body.textContent.slice(0, 80));
+    const cases = [
+      ["lakshaydb-cute-drum.sage.cloud.layerbase.dev/v2/pipeline", "https://lakshaydb-cute-drum.sage.cloud.layerbase.dev"],
+      ["https://lakshaydb-cute-drum.sage.cloud.layerbase.dev/v2/pipeline", "https://lakshaydb-cute-drum.sage.cloud.layerbase.dev"],
+      ["https://lakshaydb-cute-drum.sage.cloud.layerbase.dev/", "https://lakshaydb-cute-drum.sage.cloud.layerbase.dev"],
+      ["libsql://lakshaydb-cute-drum.sage.cloud.layerbase.dev", "https://lakshaydb-cute-drum.sage.cloud.layerbase.dev"],
+      ["\"https://lakshaydb-cute-drum.sage.cloud.layerbase.dev/v2/pipeline\"", "https://lakshaydb-cute-drum.sage.cloud.layerbase.dev"],
+      ["https://lakshaydb-cute-drum.sage.cloud.layerbase.dev/v2", "https://lakshaydb-cute-drum.sage.cloud.layerbase.dev"],
+    ];
+    let allOk = true;
+    const seen = [];
+    for (const [input, expected] of cases) {
+      setVal(wu, q(wu, ".urlcheck input"), input);
+      await wait(120);
+      const val = (q(wu, ".urlcheck-val") || {}).textContent || "";
+      seen.push(input + " → " + val.replace(/\s+/g, " "));
+      if (!val.includes(expected)) allOk = false;
+    }
+    check("URL checker normalizes every paste shape", allOk, seen.join(" | "));
+    check("URL checker explains the secrets", /LIBSQL_URL/.test(q(wu, ".urlcheck-out").textContent) && /LIBSQL_TOKEN/.test(q(wu, ".urlcheck-out").textContent));
+    check("URL checker warns on garbage", (() => {
+      setVal(wu, q(wu, ".urlcheck input"), "not a url");
+      return /parse nahi hui/i.test((q(wu, ".urlcheck-out") || {}).textContent || "");
+    })(), (q(wu, ".urlcheck-out") || {}).textContent);
   }
 
   const failed = checks.filter((c) => !c.pass);

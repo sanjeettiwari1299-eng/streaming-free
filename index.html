@@ -1102,6 +1102,14 @@ a.cp-pill{text-decoration:none;display:inline-flex;align-items:center}
   .suite-detail{flex:1 0 100%;order:3;padding-left:19px}
   .suite-row{flex-wrap:wrap}
 }
+
+/* Layerbase URL checker */
+.urlcheck{margin-top:2px}
+.urlcheck-out{margin-top:8px;font-size:12.5px;line-height:1.7;color:var(--t2);background:var(--bg3);border-radius:8px;padding:10px 12px}
+.urlcheck-val{margin:6px 0;color:var(--t1);word-break:break-all}
+.urlcheck-val code{background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:1px 6px;font-size:12px}
+.urlcheck-steps{margin:8px 0 0 18px;color:var(--t2);line-height:1.8}
+.urlcheck-steps code{background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:0 5px;font-size:11.5px}
 </style>
 </head>
 <body>
@@ -1191,6 +1199,29 @@ const ensureSlot = (map, kind) => {
   if (!map.has(kind)) map.set(kind, { kind, upsert: new Map(), del: new Set(), clear: false });
   return map.get(kind);
 };
+
+/* Layerbase URL normalizer — worker ke normalizeLibsqlUrl ka mirror, taaki
+   paste karte hi saaf dikhe ki secret me kya daalna hai (path/quotes/scheme sab
+   handle hote hain). Worker bhi yahi karta hai, ye sirf preview ke liye hai. */
+const LIBSQL_SUFFIXES = [/\/v2\/pipeline$/i, /\/v1\/pipeline$/i, /\/v3\/pipeline$/i, /\/pipeline$/i, /\/v2$/i, /\/v1$/i, /\/v3$/i, /\/http$/i, /\/sql$/i];
+function normalizeLibsqlUrl(raw) {
+  let s = String(raw || "").trim().replace(/^["'`\s]+|["'`\s]+$/g, "");
+  if (!s) return "";
+  s = s.replace(/\s+/g, "").replace(/^libsql:\/\//i, "https://").replace(/^(wss|ws|http):\/\//i, "https://");
+  if (!/^https?:\/\//i.test(s)) s = "https://" + s;
+  s = s.replace(/[?#].*$/, "");
+  for (let i = 0; i < 4; i++) {
+    const before = s;
+    s = s.replace(/\/+$/, "");
+    for (const re of LIBSQL_SUFFIXES) s = s.replace(re, "");
+    if (s === before) break;
+  }
+  try {
+    const u = new URL(s);
+    if (!u.hostname || !u.hostname.includes(".")) return "";
+    return u.origin;
+  } catch { return ""; }
+}
 
 const YTT = (id, q) => `https://i.ytimg.com/vi/${id}/${q || "mqdefault"}.jpg`;
 const YTW = (id) => `https://www.youtube.com/watch?v=${id}`;
@@ -4409,6 +4440,50 @@ function EngineDoctor({ st, videoId, compact }) {
   );
 }
 
+function LibsqlUrlCheck() {
+  const [raw, setRaw] = useState("");
+  const [copied, setCopied] = useState("");
+  const clean = normalizeLibsqlUrl(raw);
+  const host = clean ? clean.replace(/^https:\/\//, "") : "";
+  const looksLayerbase = /(^|\.)(layerbase\.dev|turso\.io|libsql\.io)$/i.test(host);
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(clean); setCopied("copied"); setTimeout(() => setCopied(""), 1800); } catch {}
+  };
+  return (
+    <div className="urlcheck">
+      <div className="set-sub-h" style={{ margin: "14px 0 6px" }}>Layerbase URL checker</div>
+      <div className="doctor-row">
+        <input placeholder="Layerbase → Connect se URL paste karein (path ho to bhi chalega)"
+          value={raw} onChange={(e) => setRaw(e.target.value)} aria-label="Layerbase URL" />
+        {clean && <button className="set-chip" onClick={copy}>{copied || "Copy"}</button>}
+      </div>
+      {raw.trim() !== "" && (
+        clean ? (
+          <div className="urlcheck-out">
+            <div style={{ color: "#7ee787" }}>✓ Ye URL chalega — secret me bilkul yahi daalein:</div>
+            <div className="urlcheck-val"><code>LIBSQL_URL</code> = <code>{clean}</code></div>
+            <div style={{ color: "var(--t3)" }}>
+              <code>/v2/pipeline</code> ya trailing slash apne aap hata diya — worker endpoint khud lagata hai.
+              {!looksLayerbase && <span style={{ color: "#f1c40f" }}> Host Layerbase/Turso jaisa nahi lag raha, ek baar check kar lein.</span>}
+            </div>
+            <ol className="urlcheck-steps">
+              <li>Cloudflare → Workers → apna worker → <b>Settings → Variables and Secrets</b></li>
+              <li><code>LIBSQL_URL</code> = upar wala URL, <b>Secret</b> type</li>
+              <li><code>LIBSQL_TOKEN</code> = Layerbase ka auth token (sirf token, <code>Bearer </code> ke bina)</li>
+              <li><b>Deploy</b> dabaein, phir yahan <b>Test Layerbase</b></li>
+            </ol>
+          </div>
+        ) : (
+          <div className="urlcheck-out" style={{ color: "#ff8a80" }}>
+            ✕ Ye URL parse nahi hui — host missing ya adhoora paste hua. Layerbase → Connect se poora
+            <code> https://&lt;db&gt;.cloud.layerbase.dev </code> copy karein.
+          </div>
+        )
+      )}
+    </div>
+  );
+}
+
 function CloudStore({ st }) {
   const [copied, setCopied] = useState("");
   const [busy, setBusy] = useState(false);
@@ -4493,6 +4568,8 @@ function CloudStore({ st }) {
       )}
       {sync.stale && <div style={{ color: "#ffd479", fontSize: 12.5, marginTop: 6 }}>Edge snapshot se load hua — {sync.warning || "Layerbase abhi jaga nahi"}.</div>}
 
+      <LibsqlUrlCheck />
+
       <div className="set-chip-row" style={{ marginTop: 10 }}>
         <button className="set-chip" disabled={busy} onClick={testStore}>{busy ? "Testing…" : "Test Layerbase"}</button>
         <button className="set-chip" onClick={() => setOpen(!open)}>{open ? "▾ Setup chhupaein" : "▸ Layerbase banayein (5 steps)"}</button>
@@ -4503,6 +4580,16 @@ function CloudStore({ st }) {
             ? <>Connected ✓ <span style={{ color: "var(--t3)" }}>· {probe.host} · {probe.latencyMs} ms · sv_store {probe.rows === null ? "ready" : "· " + probe.rows + " rows"} · expiry none{probe.wokeFromSleep ? " · (sleep se jaga)" : ""}</span></>
             : <>✕ {probe.error || "not connected"}</>}
           {!probe.ok && probe.hint && <div style={{ color: "var(--t3)", marginTop: 3 }}>{probe.hint}</div>}
+          {probe.url && probe.url.given && (
+            <div style={{ color: "var(--t3)", marginTop: 4, fontSize: 12 }}>
+              worker ne parse kiya: <code>{probe.url.normalized || "(parse fail)"}</code>
+              <span style={{ margin: "0 6px" }}>·</span>
+              endpoint: <code>{(probe.url.normalized || "?") + "/v2/pipeline"}</code>
+              {probe.url.changed && <span style={{ color: "#f1c40f" }}> · aapke paste se alag (worker ne theek kar liya)</span>}
+              <span style={{ margin: "0 6px" }}>·</span>
+              token: {probe.url.tokenGiven ? <span style={{ color: "#7ee787" }}>{probe.url.tokenPrefix} set</span> : <span style={{ color: "#ff8a80" }}>missing</span>}
+            </div>
+          )}
           {!probe.ok && Array.isArray(probe.steps) && (
             <ol style={{ margin: "6px 0 0 18px", color: "var(--t2)" }}>{probe.steps.map((x) => <li key={x}>{x}</li>)}</ol>
           )}
