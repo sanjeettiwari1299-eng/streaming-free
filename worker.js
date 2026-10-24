@@ -21,7 +21,7 @@
  */
 
 // bump this when the worker changes, so /api/health tells you which code is live
-const BUILD = "8.9.0";
+const BUILD = "9.0.0";
 
 const INNERTUBE_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8";
 const UA = {
@@ -111,7 +111,7 @@ const VERSION_TTL = 6 * 3600; // seconds
 let VERSION_CACHE = { ts: 0, versions: null, source: {} };
 
 // Cache API with in-memory fallback (works without any binding).
-async function cachedText(tag, url, ttl, init, noCache = false) {
+async function cachedText(tag, url, ttl, init, noCache = false, env = null) {
   try {
     if (typeof caches !== "undefined" && caches.default) {
       const key = new Request(`https://sv.internal/${tag}`);
@@ -119,7 +119,7 @@ async function cachedText(tag, url, ttl, init, noCache = false) {
         const hit = await caches.default.match(key);
         if (hit) return await hit.text();
       }
-      const r = await fetch(url, init);
+      const r = await (env ? egressFetch(url, init, { env, retries: 0, timeout: 9000 }) : fetch(url, init));
       if (r.ok) {
         const text = await r.text();
         await caches.default.put(key, new Response(text, { headers: { "cache-control": `max-age=${ttl}` } }));
@@ -131,7 +131,7 @@ async function cachedText(tag, url, ttl, init, noCache = false) {
     /* fall through to a plain fetch */
   }
   try {
-    const r = await fetch(url, init);
+    const r = await (env ? egressFetch(url, init, { env, retries: 0, timeout: 9000 }) : fetch(url, init));
     return r.ok ? await r.text() : "";
   } catch {
     return "";
@@ -166,7 +166,8 @@ async function discoverVersions(env, force = false) {
     "https://www.youtube.com/",
     12 * 3600,
     { headers: { "user-agent": WEB_UA, "accept-language": "en-US,en;q=0.9" } },
-    force
+    force,
+    env
   );
   const visitorData =
     (html.match(/"VISITOR_DATA"\s*:\s*"([^"]+)"/) || [])[1] ||
@@ -184,7 +185,9 @@ async function discoverVersions(env, force = false) {
     "ytdlp_base",
     "https://raw.githubusercontent.com/yt-dlp/yt-dlp/master/yt_dlp/extractor/youtube/_base.py",
     6 * 3600,
-    { headers: { "user-agent": WEB_UA } }
+    { headers: { "user-agent": WEB_UA } },
+    false,
+    env
   );
   const fromYtdlp = parseYtdlpVersions(py);
   for (const name of Object.keys(fromYtdlp)) {
@@ -426,6 +429,72 @@ const playerCacheStats = () => ({
   inflight: PLAYER_INFLIGHT.size,
   ttlSec: Math.round(PLAYER_TTL / 1000),
 });
+
+/* ── egress pool: send the *same request* from a different IP ────────────────
+   Cloudflare does not let a Worker choose its egress IP, so the only way to
+   really rotate addresses is to hop through your own relay. Set one or more:
+
+     PROXY_URLS = https://relay.example/fetch?url={url}
+     PROXY_URLS = https://relay.example/?u=            (prefix style, encoded)
+
+   Requests are spread round-robin, a relay that fails is parked for a bit, and
+   if the whole pool is down we go direct (the app keeps working). Relays are used
+   for the small InnerTube calls that get 429'd — never for video bytes, so no
+   bandwidth cost. */
+const proxyList = (env) =>
+  String((env && (env.PROXY_URLS || env.PROXY_URL || env.EGRESS_PROXIES)) || "")
+    .split(/[,\n]/)
+    .map((x) => x.trim())
+    .filter(Boolean);
+
+const PROXY_BREAKER = new Map();          // template -> { fails, until }
+const proxyCooling = (tpl) => {
+  const b = PROXY_BREAKER.get(tpl);
+  return !!(b && b.until > Date.now());
+};
+const noteProxyFail = (tpl) => {
+  const b = PROXY_BREAKER.get(tpl) || { fails: 0, until: 0 };
+  b.fails += 1;
+  b.until = Date.now() + Math.min(10 * 60 * 1000, 60 * 1000 * Math.pow(2, b.fails - 1));
+  PROXY_BREAKER.set(tpl, b);
+};
+const noteProxyOk = (tpl) => PROXY_BREAKER.delete(tpl);
+const proxySnapshot = (env) =>
+  proxyList(env).map((tpl) => {
+    const b = PROXY_BREAKER.get(tpl);
+    return {
+      host: (() => { try { return new URL(tpl.replace("{url}", "x")).host; } catch { return tpl.slice(0, 30); } })(),
+      cooling: Math.max(0, Math.round(((b && b.until) || 0) / 1000 - Date.now() / 1000)),
+      fails: (b && b.fails) || 0,
+    };
+  });
+
+const PROXY_RR = { i: 0 };
+function proxyUrlFor(tpl, url) {
+  return tpl.includes("{url}") ? tpl.replace("{url}", encodeURIComponent(url)) : tpl + encodeURIComponent(url);
+}
+
+/* fetch through the pool (round-robin), direct as the fallback */
+async function egressFetch(url, init = {}, opts = {}) {
+  const env = opts.env || {};
+  const pool = proxyList(env).filter((t) => !proxyCooling(t));
+  if (!pool.length) return fetchRetry(url, init, opts);
+
+  PROXY_RR.i = (PROXY_RR.i + 1) % Math.max(1, pool.length);
+  const order = [...pool.slice(PROXY_RR.i), ...pool.slice(0, PROXY_RR.i)];
+  for (const tpl of order) {
+    try {
+      const r = await fetchRetry(proxyUrlFor(tpl, url), init, { ...opts, retries: 0 });
+      // a relay that answers with its own 401/402 is not a YouTube answer
+      if (r.status === 401 || r.status === 402 || r.status === 407) throw new Error("relay auth " + r.status);
+      noteProxyOk(tpl);
+      return r;
+    } catch (e) {
+      noteProxyFail(tpl);
+    }
+  }
+  return fetchRetry(url, init, opts);      // whole pool is sick → direct
+}
 
 // Per client+version circuit breaker: stop hammering a combination YouTube just rejected.
 const BREAKER = new Map(); // key -> { fails, until }
@@ -674,10 +743,10 @@ async function innertube(client, endpoint, extra, opts = {}) {
   const url = `https://www.youtube.com/youtubei/v1/${endpoint}?key=${INNERTUBE_KEY}&prettyPrint=false`;
   let res;
   try {
-    res = await fetchRetry(
+    res = await egressFetch(
       url,
       { method: "POST", headers, body: JSON.stringify(body) },
-      { retries: opts.retries ?? 1, timeout: opts.timeout ?? 9000 }
+      { retries: opts.retries ?? 1, timeout: opts.timeout ?? 9000, env: opts.env }
     );
   } catch (e) {
     const st = Number(e && e.status) || 0;
@@ -2752,6 +2821,7 @@ const ROUTE_LIST = [
   "/api/media?u=",
   "/mp4/{id}.mp4",
   "/api/stream?id=&itag=",
+  "/api/egress?test=1",
 ];
 
 function landingPage(env) {
@@ -3432,6 +3502,7 @@ const ROUTES = [
           gate: ytGateInfo(),
           mirrors: mirrorSnapshot(),
           playerCache: playerCacheStats(),
+          egress: { pool: proxyList(env).length, proxies: proxySnapshot(env) },
           winner: winnerClient() ? { client: WINNER.id, version: WINNER.version, ageSec: Math.round((Date.now() - WINNER.ts) / 1000) } : null,
           subrequestCap: SUB_CAP,
           breakers: breakerSnapshot(),
@@ -3609,6 +3680,45 @@ const ROUTES = [
   ["/api/comments", async (u, env) => comments(u.searchParams.get("id") || "", u.searchParams.get("token") || "", env, u)],
   ["/api/shorts", async (u, env) => shorts((u.searchParams.get("region") || "IN").toUpperCase(), env, u)],
   ["/api/rss", async (u, env) => rss(env, u.searchParams.get("channels") || "", u)],
+  [
+    "/api/egress",
+    async (u, env) => {
+      const pool = proxyList(env);
+      const test = u.searchParams.get("test") === "1";
+      const rows = [];
+      for (const tpl of pool) {
+        const row = { host: (() => { try { return new URL(tpl.replace("{url}", "x")).host; } catch { return "?"; } })(), ok: null, ms: 0, status: 0, error: "" };
+        if (test) {
+          const t0 = Date.now();
+          try {
+            // ask the relay for YouTube's homepage: tiny payload, proves the IP
+            const r = await fetchRetry(proxyUrlFor(tpl, "https://www.youtube.com/"), {
+              headers: { "user-agent": WEB_UA },
+            }, { retries: 0, timeout: 8000 });
+            row.status = r.status;
+            row.ok = r.status < 400;
+            row.ms = Date.now() - t0;
+            if (row.ok) noteProxyOk(tpl); else noteProxyFail(tpl);
+          } catch (e) {
+            row.ok = false;
+            row.ms = Date.now() - t0;
+            row.error = String((e && e.message) || e);
+            noteProxyFail(tpl);
+          }
+        }
+        rows.push({ ...row, cooling: proxyCooling(tpl) ? 1 : 0 });
+      }
+      return {
+        ok: true,
+        pool: pool.length,
+        mode: pool.length ? "rotating" : "direct (Cloudflare egress)",
+        proxies: rows,
+        hint: pool.length
+          ? "InnerTube calls rotate through these relays — YouTube dekhta hai relay ka IP, Worker ka nahi. Video bytes direct aate hain (bandwidth bachta hai)."
+          : "PROXY_URLS set karein: https://<relay>/fetch?url={url} — har request alag IP se jayegi. Bina relay ke sab requests Cloudflare ke apne IP se jaati hain (jo shared hain, isliye 429 aata hai).",
+      };
+    },
+  ],
   ["/api/probe", async (u, env) => probe(u, env)],
   ["/api/canary", async (u, env) => canary(u, env)],
   ["/api/channel", async (u) => resolveChannel(u.searchParams.get("q") || u.searchParams.get("id") || "")],
@@ -3741,6 +3851,9 @@ export {
   resetBreakers,
   ytGateInfo,
   mirrorSnapshot,
+  proxyList,
+  proxySnapshot,
+  egressFetch,
   playerCacheGet,
   playerCachePut,
   playerCacheStats,

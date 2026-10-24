@@ -1309,8 +1309,34 @@ const uid = () => Math.random().toString(36).slice(2, 10);
 /* ════════════════════════════════════════════════════════════════════════════
    ENGINE (Cloudflare Worker)
    ════════════════════════════════════════════════════════════════════════════ */
+/* ── multiple engines = multiple egress IPs ────────────────────────────────────
+   Cloudflare ek Worker ko apna egress IP chunne nahi deta, par tum ek hi code 2-3
+   alag workers/accounts par deploy kar sakte ho — har deployment ka YouTube-facing
+   IP alag hota hai aur har ek ka apna rate-limit. Settings me comma/newline se
+   kai URL daalo: jab ek 429/off ho, app chupchap agle par chali jaati hai aur
+   agla usi ko pehle try karti hai. */
+const engineBases = (cfg) =>
+  String((cfg && cfg.engineUrl) || "")
+    .split(/[,\n]/)
+    .map((x) => x.trim().replace(/\/+$/, ""))
+    .filter(Boolean);
+const ENGINE_BEST = { base: "", until: 0 };      // the base that answered last
+const engineOrder = (cfg) => {
+  const all = engineBases(cfg);
+  if (all.length < 2) return all;
+  const best = ENGINE_BEST.base && all.includes(ENGINE_BEST.base) ? ENGINE_BEST.base : "";
+  return best ? [best, ...all.filter((b) => b !== best)] : all;
+};
+const noteEngineOk = (base) => { ENGINE_BEST.base = base; ENGINE_BEST.until = Date.now() + 10 * 60 * 1000; };
+
 const baseOf = (cfg) => String((cfg && cfg.engineUrl) || "").replace(/\/+$/, "");
-const mediaUrl = (cfg, u) => (!u ? "" : /^https?:/i.test(u) ? u : baseOf(cfg) + u);
+const mediaUrl = (cfg, u) => {
+  if (!u) return "";
+  if (/^https?:/i.test(u)) return u;
+  // prefer the worker that last answered (multi-engine setups rotate IPs)
+  const base = ENGINE_BEST.base && engineBases(cfg).includes(ENGINE_BEST.base) ? ENGINE_BEST.base : baseOf(cfg);
+  return base + u;
+};
 
 /* ── stream sanity ────────────────────────────────────────────────────────────
    "Format not supported by this browser" (media error 4) almost never means the
@@ -1408,20 +1434,50 @@ async function ep(cfg, path, timeout = 25000, opts = {}) {
       init.body = JSON.stringify(opts.body);
       init.headers["content-type"] = "application/json";
     }
-    const r = await fetch(baseOf(cfg) + withKey, init);
+    const bases = engineOrder(cfg);
+    let lastErr = null;
+    for (let i = 0; i < Math.max(1, bases.length); i++) {
+      const base = bases[i] || baseOf(cfg);
+      try {
+        return await epOnce(base + withKey, init, opts, base);
+      } catch (e) {
+        lastErr = e;
+        // another worker will very likely answer — only give up on the last one
+        if (bases.length < 2 || i === bases.length - 1) throw e;
+        if (!(e.reason === "ratelimit" || e.status >= 500 || e.status === 0)) throw e;
+      }
+    }
+    throw lastErr || new Error("engine unreachable");
+  } finally { clearTimeout(t); }
+}
+
+async function epOnce(url, init, opts, base) {
+  {
+    const r = await fetch(url, init);
     const text = await r.text();
     let data = null;
     try { data = text ? JSON.parse(text) : null; } catch { throw new Error("engine returned non-JSON (worker URL check karein)"); }
     if (!r.ok) {
       const e = new Error((data && (data.error || data.detail)) || "engine HTTP " + r.status);
       e.status = r.status;
+      e.reason = data && data.reason;
       if (data && data.hint) e.hint = data.hint;
       if (data && data.verdict) e.verdict = data.verdict;
       if (data && data.jwt) e.jwt = data.jwt;
       throw e;
     }
+    /* a worker that is rate-limited answers 200 {ok:false, reason:"ratelimit"} —
+       treat it like an error so the next engine (different egress IP) is tried */
+    if (data && data.ok === false && data.reason === "ratelimit" && !opts.keepRateLimit) {
+      const e = new Error(data.error || "YouTube rate limit");
+      e.status = r.status;
+      e.reason = "ratelimit";
+      e.retryAfter = data.retryAfter || 0;
+      throw e;
+    }
+    if (base && !String(base).startsWith("(")) noteEngineOk(base);
     return data;
-  } finally { clearTimeout(t); }
+  }
 }
 
 const apiHealth = (cfg) => ep(cfg, "/api/health", 6000);
@@ -2894,6 +2950,7 @@ function SetupGate({ st, onRetry, busy }) {
         <div className="setup-row">
           <input className="setup-input" placeholder="https://your-worker.workers.dev" value={url}
             onChange={(e) => setUrl(e.target.value)}
+            placeholder="ek ya kai worker URLs (comma se alag) — har ek alag egress IP"
             onKeyDown={(e) => e.key === "Enter" && st.updCfg({ engineUrl: url.trim(), accessKey: key.trim() })} />
           <button className="setup-btn" disabled={busy} onClick={() => st.updCfg({ engineUrl: url.trim(), accessKey: key.trim() })}>
             {busy ? "Checking…" : "Connect"}
@@ -3858,7 +3915,8 @@ function WatchPage({ video, onPlay, st, engine, onChannel, onAddSub }) {
           if (dead) return;
         }
         let d = null;
-        try { d = await fetchOnce(); } catch (e) { last = { error: e.message, retryable: true }; }
+        try { d = await fetchOnce(); }
+        catch (e) { d = { ok: false, lesson: true, error: e.message, reason: e.reason || "", retryAfter: e.retryAfter || 0 }; last = d; }
         if (dead) return;
         if (d) {
           last = d;
@@ -5271,6 +5329,20 @@ function SetPage({ st, engine, onCheck, onAddSub }) {
           <button className="setup-link" style={{ marginLeft: 4 }} onClick={copyWorker}>Copy worker.js</button>
           {copied && <span style={{ color: "#7ee787", marginLeft: 6 }}>{copied}</span>}
         </div>
+        {engineBases(st.cfg).length > 1 && (
+          <div className="set-chip-row" style={{ marginTop: 6 }}>
+            {engineBases(st.cfg).map((b, i) => (
+              <span key={b} className="set-chip" style={{ cursor: "default" }}>
+                #{i + 1} {b.replace(/^https?:\/\//, "")}{ENGINE_BEST.base === b ? " ✓ active" : ""}
+              </span>
+            ))}
+          </div>
+        )}
+        <div style={{ color: "var(--t3)", fontSize: 12, marginTop: 4 }}>
+          Ek hi code 2–3 workers par deploy karo aur yahan comma se daal do — har worker ka YouTube-facing IP alag
+          hota hai, isliye ek par 429 lagne par app chupchap agle par chali jaati hai.
+        </div>
+
         <div className="set-sub-h">Koi video nahi chal rahi? Doctor chalayein</div>
         <EngineDoctor st={st} />
         <CookieCheck />

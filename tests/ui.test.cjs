@@ -112,6 +112,26 @@ function makeDom(opts = {}) {
         w.__calls.push(u);
         if (opts.offline) throw new Error("network down");
         const ok = (d) => ({ ok: true, status: 200, json: async () => d, text: async () => JSON.stringify(d) });
+        /* multi-engine: the second host answers when the first is rate-limited */
+        if (/engine2\.dev/.test(u)) {
+          w.__engine2 = (w.__engine2 || 0) + 1;
+          if (opts.engine2Limited) return ok({ ok: false, reason: "ratelimit", error: "rate limited", retryAfter: 30 });
+          if (/\/api\/player/.test(u)) return ok(PLAYER);
+          if (/\/api\/media/.test(u) || /\/mp4\//.test(u)) {
+            return {
+              ok: true, status: 206,
+              headers: { get: (k) => ({ "content-type": "video/mp4", "content-range": "bytes 0-2047/9999" }[String(k).toLowerCase()] || null) },
+              arrayBuffer: async () => new ArrayBuffer(2048),
+              text: async () => "bytes",
+              json: async () => ({}),
+            };
+          }
+          return ok({ ok: true, items: TRENDING });
+        }
+        if (opts.firstEngineLimited && /\/api\/player/.test(u) && /w\.dev/.test(u)) {
+          w.__limited1 = (w.__limited1 || 0) + 1;
+          return ok({ ok: false, reason: "ratelimit", error: "rate limited", retryAfter: 40 });
+        }
         if (/\/api\/sync\/probe/.test(u)) {
           if (opts.syncFail) return ok({ ok: false, configured: true, backend: "layerbase-libsql", error: "layerbase: HTTP 503", hint: "check LIBSQL_URL + LIBSQL_TOKEN" });
           if (opts.probeOff) return ok({ ok: false, configured: false, error: "LIBSQL_URL + LIBSQL_TOKEN missing", steps: ["layerbase.com → sign in (free, no card)", "New Database → engine libSQL", "Connect → copy URL + token", "Cloudflare → Settings → Variables", "hit this probe again"] });
@@ -1279,6 +1299,30 @@ const cookie = (w, k) => {
     })());
     await wait(500);
     check("data saver switch is in Settings", /Data saver/.test(wf.document.body.textContent), wf.document.body.textContent.slice(-120));
+  }
+
+  /* ══ 21. multi-engine failover (alag worker = alag egress IP) ═══════════ */
+  {
+    const dm = makeDom({
+      secondEngine: true,
+      firstEngineLimited: true,
+      prefs: { sv_cfg: JSON.stringify({ engineUrl: "https://w.dev,https://engine2.dev", autoplay: true }) },
+    });
+    const wf = dm.window;
+    wf.console.error = () => {};
+    const sc16 = wf.document.createElement("script");
+    sc16.textContent = app;
+    wf.document.body.appendChild(sc16);
+    await wait(1200);
+    click(wf, all(wf, ".vc")[0]);
+    await wait(1600);
+    check("a rate-limited worker hands over to the second one", (wf.__engine2 || 0) >= 1, wf.__engine2 || 0);
+    check("the video plays from the healthy worker", !!q(wf, ".cp video") && !q(wf, ".cp-err"), (q(wf, ".cp-err") || {}).textContent);
+    const media = (wf.__calls || []).filter((u) => /\/api\/media/.test(u));
+    check("the stream is proxied through the healthy worker", media.length === 0 || media.some((u) => /engine2\.dev/.test(u)), media.slice(0, 2).join(" "));
+    click(wf, all(wf, ".s-item").find((b) => /Settings/.test(b.textContent)));
+    await wait(600);
+    check("settings lists both engines", /#1 w\.dev/.test(wf.document.body.textContent) && /#2 engine2\.dev/.test(wf.document.body.textContent), wf.document.body.textContent.slice(-200));
   }
 
   const failed = checks.filter((c) => !c.pass);

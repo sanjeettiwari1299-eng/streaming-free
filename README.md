@@ -59,7 +59,7 @@ error panel me **Engine doctor**) — video id daalo, ek click me resolve + byte
 Sabse pehle ye confirm karein ki deploy naya hai:
 
 ```
-GET https://<your-worker>.workers.dev/api/health      → build: "8.9.0"
+GET https://<your-worker>.workers.dev/api/health      → build: "9.0.0"
 ```
 
 Purana build dikhe to Cloudflare → Workers → apna worker → Edit code → **poora `worker.js` paste** → Deploy.
@@ -99,6 +99,38 @@ aur **bot-check** (worker me `YT_COOKIES` ya `POTOKEN_URL`). Wahan panel asli re
 me chalta rehta hai, to cookie lagane ke baad bina reload video chal padti hai.
 
 ---
+
+## "Alag alag IP se request jaye" — haan, 2 tareeke se (9.0.0)
+
+Cloudflare **khud apna egress IP chunne nahi deta** (koi setting nahi hai, Smart Placement bhi IP nahi badalta).
+Isliye do asli raaste diye hain:
+
+### 1. Relay pool (worker side) — request sach me doosre IP se jaati hai
+
+```
+Cloudflare → Worker → Settings → Variables and Secrets:
+  PROXY_URLS = https://relay-1.example/fetch?url={url},https://relay-2.example/?u=
+```
+
+- InnerTube calls + version discovery **round-robin** ho kar relay se jaati hain → YouTube dekhta hai **relay ka IP**
+- `{url}` wala template encode ho kar bhar jata hai; bina `{url}` wala prefix-style (`?u=` + encoded URL) maana jaata hai
+- Relay mar jaye to wo park (1–10 min) hota hai, agla relay try hota hai, **pool poora down ho to direct** (app kabhi nahi rukti)
+- **Video bytes relay se nahi jaate** — sirf chhoti JSON calls. Bandwidth zero extra.
+- Check: `GET /api/egress?test=1` → har relay ka status/ms, `/api/health` → `resilience.egress`
+
+### 2. Multi-engine failover (app side) — 2-3 worker = 2-3 alag IP + alag limit
+
+Same `worker.js` ko **doosre Cloudflare account/subdomain** par bhi deploy karo, phir Settings → Engine URL me:
+
+```
+https://helloyt.delhiflowers.workers.dev, https://mera-worker-2.workers.dev
+```
+
+- Ek worker 429/5xx/dead → app **chupchap agle worker** par chali jaati hai (wo apna naya resolve karta hai)
+- Jo worker last me chala wahi "active" rehta hai (10 min), stream usi ke through proxy hota hai, Settings me `✓ active`
+- Sab resolve/API calls isi failover se guzarte hain — search, trending, player, comments, store
+
+**Note:** 3 workers = 3× free-tier quota. Har worker par yahi code paste karna hai (secrets bhi: `YT_COOKIES`, `LIBSQL_URL`, `POTOKEN_URL`, `PROXY_URLS`).
 
 ## Naya approach: "play se pehle resolve" (8.9.0)
 
