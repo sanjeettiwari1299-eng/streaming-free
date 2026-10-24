@@ -69,6 +69,38 @@ for (const sh of SHORTS) {
   if (!byId.has(sh.videoId)) byId.set(sh.videoId, { ...sh, sample: SAMPLES.find((s) => s.title === sh.title.replace(" #shorts", "")) || SAMPLES[0] });
 }
 
+const COMMENT_AUTHORS = [
+  ["Aarav Mehta", "UCdemo0"], ["Priya Sharma", "UCdemo1"], ["Rahul Verma", "UCdemo2"],
+  ["Sneha Iyer", "UCdemo3"], ["Dev Patel", "UCdemo4"], ["Kabir Singh", "UCdemo5"],
+  ["Ananya Rao", "UCdemo6"], ["Vikram Joshi", "UCdemo7"], ["Neha Gupta", "UCdemo8"],
+  ["Arjun Nair", "UCdemo9"], ["Ishita Bose", "UCdemo10"], ["Rohan Das", "UCdemo11"],
+];
+const COMMENT_TEXTS = [
+  "Bhai ye quality dekh ke maza aa gaya 🔥",
+  "Custom player + no ads = instant subscribe. Great work!",
+  "Explanation bilkul crisp hai, time waste nahi hua.",
+  "Watched this twice already. The editing is next level.",
+  "Background music ka naam kya hai? Please reply 🙏",
+  "Finally a front-end that respects the viewer. No login, no tracking.",
+  "The timestamps in this video are incredibly helpful.",
+  "Meri playlist me save ho gaya. Keep uploading!",
+  "Shorts me bhi same energy chahiye, waiting for that update.",
+  "Underrated channel fr. Sharing this with my friends.",
+  "Comment section bhi connect ho gaya — full YouTube feel now.",
+  "Serverless setup is genius. Bookmarked the repo.",
+];
+const COMMENTS = COMMENT_AUTHORS.map(([author, authorId], i) => ({
+  commentId: "cm" + String(i + 1).padStart(6, "0"),
+  author,
+  authorId,
+  avatar: "",
+  text: COMMENT_TEXTS[i % COMMENT_TEXTS.length],
+  likes: [2400, 1890, 731, 655, 512, 447, 380, 265, 190, 95, 44, 12][i] || 0,
+  replies: [12, 7, 4, 3, 9, 2, 0, 5, 1, 0, 0, 0][i] || 0,
+  published: (i + 1) + " days ago",
+  creator: i < 2,
+}));
+
 const json = (res, data, status = 200) => {
   res.writeHead(status, { "content-type": "application/json; charset=utf-8", "access-control-allow-origin": "*" });
   res.end(JSON.stringify(data));
@@ -161,6 +193,13 @@ const server = http.createServer(async (req, res) => {
     return json(res, { items: hits.length ? hits : ITEMS, continuation: null });
   }
   if (u.pathname === "/api/searchmore") return json(res, { items: [] });
+  if (u.pathname === "/api/comments") {
+    const id = u.searchParams.get("id") || "";
+    const token = Number(u.searchParams.get("token") || 0) || 0;
+    const items = COMMENTS.slice(token, token + 5);
+    const next = token + 5 < COMMENTS.length ? String(token + 5) : null;
+    return json(res, { ok: true, items, next, count: COMMENTS.length, source: "dev-mock" });
+  }
   if (u.pathname === "/api/related") {
     const id = u.searchParams.get("id");
     return json(res, { items: ITEMS.filter((v) => v.videoId !== id) });

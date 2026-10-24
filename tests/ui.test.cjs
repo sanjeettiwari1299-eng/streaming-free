@@ -115,7 +115,8 @@ function makeDom(opts = {}) {
         if (/\/api\/sync\/probe/.test(u)) {
           if (opts.syncFail) return ok({ ok: false, configured: true, backend: "layerbase-libsql", error: "layerbase: HTTP 503", hint: "check LIBSQL_URL + LIBSQL_TOKEN" });
           if (opts.probeOff) return ok({ ok: false, configured: false, error: "LIBSQL_URL + LIBSQL_TOKEN missing", steps: ["layerbase.com → sign in (free, no card)", "New Database → engine libSQL", "Connect → copy URL + token", "Cloudflare → Settings → Variables", "hit this probe again"] });
-          return ok({ ok: true, configured: true, backend: "layerbase-libsql", host: "demo.layerbase.dev", latencyMs: 214, rows: 7, caps: CAPS, ttl: "none", wokeFromSleep: true });
+          if (opts.probeBadUrl) return ok({ ok: false, configured: false, backend: "layerbase-libsql", error: "LIBSQL_URL parse nahi hui — sirf host chahiye", url: { given: true, normalized: "", tokenGiven: true, changed: false } });
+          return ok({ ok: true, configured: true, backend: "layerbase-libsql", host: "demo.layerbase.dev", latencyMs: 214, rows: 7, caps: CAPS, ttl: "none", wokeFromSleep: true, endpoint: "https://demo.layerbase.dev/v2/pipeline", url: { given: true, normalized: "https://demo.layerbase.dev", changed: true, tokenGiven: true, tokenPrefix: "eyJh…" } });
         }
         if (/\/api\/sync/.test(u)) {
           if (opts.syncFail) return { ok: false, status: 503, json: async () => ({ ok: false, error: "layerbase 503" }), text: async () => JSON.stringify({ ok: false, error: "layerbase 503" }) };
@@ -136,6 +137,37 @@ function makeDom(opts = {}) {
           applyOps(body.ops);
           return ok({ ok: true, written: (body.ops || []).reduce((n, o) => n + ((o.upsert || []).length), 0) });
         }
+        if (/\/api\/debug/.test(u)) return ok({ ok: true, clients: [{ id: "android_vr" }, { id: "web" }], versions: {} });
+        if (/\/api\/canary/.test(u)) return ok({ ok: true, videos: [{ id: "x", ok: true }] });
+        if (/\/api\/media/.test(u) || /\/mp4\//.test(u)) {
+          w.__mediaCalls = (w.__mediaCalls || 0) + 1;
+          if (opts.mediaFailFirst && w.__mediaCalls <= opts.mediaFailFirst) {
+            return {
+              ok: false, status: 403,
+              headers: { get: (k) => ({ "content-type": "application/json", "x-sv-media-fail": "1" }[String(k).toLowerCase()] || null) },
+              arrayBuffer: async () => new ArrayBuffer(0),
+              text: async () => JSON.stringify({ error: "stream bytes not available", retry: true }),
+              json: async () => ({ error: "stream bytes not available", retry: true }),
+            };
+          }
+          return {
+            ok: true, status: 206,
+            headers: { get: (k) => ({ "content-type": String(u).includes("webm") ? "video/webm" : "video/mp4", "content-range": "bytes 0-2047/9999" }[String(k).toLowerCase()] || null) },
+            arrayBuffer: async () => new ArrayBuffer(2048),
+            text: async () => "bytes",
+            json: async () => ({}),
+          };
+        }
+        if (/\/api\/selftest/.test(u)) {
+          if (opts.oldWorker) return ok({ ok: true, video: "tr000000001", ms: 747, pass: 1, client: "android_vr", clientVersion: "1.65.10", formats: ["360p"], attempts: [] });
+          if (opts.doctorFail) return { ok: false, status: 500, json: async () => ({ error: "boom" }), text: async () => "not json" };
+          return ok({
+            ok: true, video: "tr000000001", ms: 747, pass: 1, reason: null, needAuth: false, botCheck: false, poTokenUsed: false,
+            client: "android_vr", clientVersion: "1.65.10", healed: false, formats: ["360p"], attempts: [],
+            stream: { ok: true, status: 206, itag: 18, quality: "360p", type: "video/mp4", bytes: 2048, note: "bytes aa rahe hain — stream playable hai" },
+            verdict: { code: "ok", hi: "Sab theek — resolve + bytes dono kaam kar rahe hain." },
+          });
+        }
         if (/\/api\/health/.test(u)) return ok({ ok: true, service: "streamvoid-worker" });
         if (/\/api\/trending/.test(u)) return ok({ items: TRENDING });
         if (/\/api\/rss/.test(u)) {
@@ -152,6 +184,12 @@ function makeDom(opts = {}) {
         if (/\/api\/search/.test(u)) return ok({ items: TRENDING, continuation: null });
         if (/\/api\/player/.test(u)) {
           const id = decodeURIComponent(u.split("id=")[1].split("&")[0]);
+          if (opts.playerFailFirst) {
+            w.__playerCalls = (w.__playerCalls || 0) + 1;
+            if (w.__playerCalls <= opts.playerFailFirst) {
+              return { ok: false, status: 500, json: async () => ({ error: "resolve exploded" }), text: async () => JSON.stringify({ error: "resolve exploded" }) };
+            }
+          }
           if (opts.gatedPlayer && id === "tr000000002") {
             return ok({
               ok: false, error: "YouTube bot-check: koi playable stream nahi mila",
@@ -168,7 +206,27 @@ function makeDom(opts = {}) {
               formats: [{ itag: 18, quality: "360p", url: "/api/media?u=" + id + "&v=" + id + "&itag=18" }],
             });
           }
+          if (opts.mixedFormats) {
+            return ok({
+              ...PLAYER,
+              formats: [
+                { itag: 43, quality: "360p", height: 360, mime: "video/webm; codecs=\"vp9, opus\"", url: "/api/media?u=webm&v=" + id + "&itag=43" },
+                { itag: 22, quality: "720p", height: 720, mime: "video/mp4; codecs=\"avc1.64001F, mp4a.40.2\"", url: "/api/media?u=hi&v=" + id + "&itag=22" },
+                { itag: 18, quality: "360p", height: 360, mime: "video/mp4; codecs=\"avc1.42001E, mp4a.40.2\"", url: "/api/media?u=lo&v=" + id + "&itag=18" },
+              ],
+            });
+          }
           return ok(PLAYER);
+        }
+        if (/\/api\/comments/.test(u)) {
+          if (opts.commentsOff) return ok({ ok: true, items: [], next: null, count: 0, disabled: true });
+          const token = /token=([^&]+)/.test(u) ? decodeURIComponent(u.split("token=")[1]) : "";
+          const page = [
+            { commentId: "c1", author: "Aarav", authorId: UC1, avatar: "", text: "Great video, custom player is smooth.", likes: 1200, replies: 4, published: "2 days ago", creator: false },
+            { commentId: "c2", author: "Resolved Chan", authorId: UC2, avatar: "", text: "Thanks for watching!", likes: 340, replies: 0, published: "1 day ago", creator: true },
+          ];
+          if (token) return ok({ ok: true, items: [{ commentId: "c3", author: "Priya", authorId: UC1, text: "Second page comment.", likes: 5, replies: 0, published: "5 hours ago" }], next: null, count: 3 });
+          return ok({ ok: true, items: page, next: "page2", count: 3, source: "innertube" });
         }
         if (/\/api\/related/.test(u)) return ok({ items: TRENDING });
         throw new Error("unexpected " + u);
@@ -614,11 +672,21 @@ const cookie = (w, k) => {
   check("fourth failure switches to the stable URL", /\/mp4\/tr000000001\.mp4/.test(q(wr, ".cp video").getAttribute("src") || ""), q(wr, ".cp video").getAttribute("src"));
   check("stable URL keeps an itag", /itag=\d+/.test(q(wr, ".cp video").getAttribute("src") || ""), q(wr, ".cp video").getAttribute("src"));
 
-  // stage 4 — only now, the honest panel with actions
+  // stage 4 — ladder exhausted: it loops the ladder again instead of dying
   q(wr, ".cp video").dispatchEvent(new wr.Event("error"));
-  await wait(500);
-  const cpErr = q(wr, ".cp .cp-err");
+  await wait(300);
+  check("exhausted ladder restarts itself instead of dying", !q(wr, ".cp .cp-err") && /Dobara connect/.test(wr.document.body.textContent), wr.document.body.textContent.slice(0, 120));
+
+  // keep failing until the silent cycles are used up
+  let cpErr = null;
+  for (let i = 0; i < 80 && !cpErr; i++) {
+    const v = q(wr, ".cp video");
+    if (v) v.dispatchEvent(new wr.Event("error"));
+    await wait(250);
+    cpErr = q(wr, ".cp .cp-err");
+  }
   check("after every remedy the player is honest about it", !!cpErr && /Open on YouTube/.test(cpErr.textContent), cpErr && cpErr.textContent.slice(0, 80));
+  check("the panel promises to keep retrying", !!cpErr && /Khud retry/.test(cpErr.textContent), cpErr && cpErr.textContent.slice(0, 90));
   check("no crash during recovery", rerrs.filter((e) => !/Not implemented|scrollTo/.test(e)).length === 0, rerrs.slice(0, 2).join(" | "));
 
   // late-arriving recovery: going back online resumes by itself
@@ -692,6 +760,414 @@ const cookie = (w, k) => {
   check("a store failure is reported, not swallowed", /error|off/i.test(wf.document.body.textContent) || !!q(wf, ".dots") || true);
   const rootTxt = q(wf, "#root") ? q(wf, "#root").textContent : "";
   check("no crash from a failing store", !/Something went wrong|Uncaught|Cannot read/i.test(rootTxt), rootTxt.slice(0, 120));
+
+  /* ══ 12. YouTube shell: search suggestions, comments, theme, actions ════ */
+  {
+    const dm = makeDom();
+    const wv = dm.window;
+    const errs12 = [];
+    wv.console.error = (...a) => errs12.push(a.join(" "));
+    const sc2 = wv.document.createElement("script");
+    sc2.textContent = app;
+    wv.document.body.appendChild(sc2);
+    await wait(900);
+
+    check("topbar shows the wordmark", /StreamVoid/.test((q(wv, ".yt-logo") || {}).textContent || ""), (q(wv, ".yt-logo") || {}).textContent);
+    check("topbar has a YouTube-style search pill", !!q(wv, ".tb-search input") && !!q(wv, ".tb-search .tb-go"));
+    check("sidebar uses real icons, not emoji", all(wv, ".sidebar .s-ico svg").length >= 6, all(wv, ".sidebar .s-ico svg").length);
+    check("theme starts dark", wv.document.documentElement.dataset.theme === "dark", wv.document.documentElement.dataset.theme);
+
+    const sInput = q(wv, ".tb-search input");
+    sInput.dispatchEvent(new wv.FocusEvent("focusin", { bubbles: true }));
+    setVal(wv, sInput, "lofi");
+    await wait(120);
+    check("typing opens search suggestions", !!q(wv, ".tb-suggest") && all(wv, ".tb-sg").length > 0, all(wv, ".tb-sg").length);
+    const sugg = all(wv, ".tb-sg").find((b) => /lofi songs/.test(b.textContent));
+    check("suggestion list is filtered", !!sugg, all(wv, ".tb-sg").map((b) => b.textContent).join(" | "));
+    click(wv, sugg);
+    await wait(500);
+    check("suggestion starts a search", /search/.test(wv.document.body.textContent) && /Results for/.test(wv.document.body.textContent), wv.document.body.textContent.slice(0, 80));
+    check("search results use YouTube rows", all(wv, ".vc-search").length > 0, all(wv, ".vc-search").length);
+    check("search filters include upload date", all(wv, ".filter-btn").some((b) => /This week/.test(b.textContent)));
+
+    click(wv, all(wv, ".tb-avatar")[0]);
+    await wait(120);
+    check("avatar opens the account menu", !!q(wv, ".yt-menu") && /StreamVoid profile/.test(q(wv, ".yt-menu").textContent));
+    const themeBtn = all(wv, ".ym-item").find((b) => /Appearance/.test(b.textContent));
+    click(wv, themeBtn);
+    await wait(250);
+    check("appearance toggle switches to light", wv.document.documentElement.dataset.theme === "light", wv.document.documentElement.dataset.theme);
+    check("theme is persisted", (cookie(wv, "sv_cfg") || {}).theme === "light", JSON.stringify(cookie(wv, "sv_cfg")));
+
+    click(wv, all(wv, ".s-item").find((b) => /Home/.test(b.textContent)));
+    await wait(600);
+    click(wv, all(wv, ".vc")[0]);
+    await wait(900);
+    check("watch page opens after the shell pass", !!q(wv, ".cp video"), wv.document.body.textContent.slice(0, 60));
+    check("comments section is mounted", !!q(wv, ".cm-wrap"));
+    check("comments are listed", all(wv, ".cm").length === 2, all(wv, ".cm").length);
+    check("comments show the total count", /3 Comments/.test((q(wv, ".cm-count") || {}).textContent || ""), (q(wv, ".cm-count") || {}).textContent);
+    const moreCm = q(wv, ".cm-more");
+    check("more replies button exists", !!moreCm);
+    if (moreCm) { click(wv, moreCm); await wait(400); }
+    check("more comments load", all(wv, ".cm").length === 3, all(wv, ".cm").length);
+
+    const desc = q(wv, ".watch-desc-box");
+    check("description is collapsed", !q(wv, ".watch-desc-full"));
+    click(wv, desc);
+    await wait(150);
+    check("description expands", !!q(wv, ".watch-desc-full"), (q(wv, ".watch-desc-box") || {}).textContent);
+
+    const dbtn = all(wv, ".watch-actions .pill").find((b) => b.getAttribute("title") === "I dislike this");
+    check("dislike control exists", !!dbtn);
+    click(wv, dbtn);
+    await wait(120);
+    check("dislike toggles on", (dbtn.getAttribute("class") || "").includes("on"), dbtn.getAttribute("class"));
+
+    const moreBtn = all(wv, ".watch-actions .pill").find((b) => b.getAttribute("title") === "More");
+    check("overflow menu exists", !!moreBtn);
+    click(wv, moreBtn);
+    await wait(150);
+    check("overflow menu offers save to playlist", all(wv, ".ym-item").some((b) => /Save to playlist/.test(b.textContent)));
+
+    /* save to playlist (real, not a placeholder) */
+    const saveItem = all(wv, ".ym-item").find((b) => /Save to playlist/.test(b.textContent));
+    check("overflow menu offers save to playlist", !!saveItem);
+    click(wv, saveItem);
+    await wait(200);
+    check("save-to-playlist sheet opens", !!q(wv, ".pl-save"), wv.document.body.textContent.slice(0, 60));
+    click(wv, q(wv, ".pl-save-new"));
+    await wait(150);
+    const plInput = q(wv, ".pl-save input");
+    check("sheet can create a playlist inline", !!plInput);
+    if (plInput) {
+      setVal(wv, plInput, "Watch later-ish");
+      click(wv, all(wv, ".pl-save .set-api-btn")[0]);
+      await wait(600);
+    }
+    check("playlist is created with the video", (wv.__remote.playlists || []).some((p) => p.name === "Watch later-ish" && (p.videos || []).some((v) => v.videoId === "tr000000001")), JSON.stringify(wv.__remote.playlists || []).slice(0, 160));
+    click(wv, q(wv, ".pl-save-head .tb-icon-btn"));
+    await wait(150);
+    check("sheet closes", !q(wv, ".pl-save"));
+
+    /* resume position is written to the cloud store */
+    const vid = q(wv, ".cp video");
+    try {
+      Object.defineProperty(vid, "duration", { configurable: true, value: 300 });
+      vid.currentTime = 42;
+      vid.dispatchEvent(new wv.Event("pause"));
+    } catch {}
+    await wait(800);
+    check("playback position is remembered", (wv.__remote.history || []).some((h) => h.videoId === "tr000000001" && h.pos > 40), JSON.stringify((wv.__remote.history || [])[0] || {}).slice(0, 120));
+
+    check("rail has up-next chips", all(wv, ".watch-chips .chip").some((b) => /From this channel/.test(b.textContent)));
+
+    /* engine doctor: one click explains why playback fails */
+    click(wv, all(wv, ".s-item").find((b) => /Settings/.test(b.textContent)));
+    await wait(500);
+    const docBtn = all(wv, ".doctor-row .set-api-btn").find((b) => /engine doctor/i.test(b.textContent));
+    check("settings has a run-engine-doctor button", !!docBtn, all(wv, ".doctor-row .set-api-btn").map((b) => b.textContent).join(","));
+    click(wv, docBtn);
+    await wait(700);
+    check("doctor calls /api/selftest with probe=1", wv.__calls.some((u) => /\/api\/selftest\?id=.*probe=1/.test(u)), wv.__calls.filter((u) => /selftest/.test(u)).join(" "));
+    check("doctor shows the verdict", !!q(wv, ".doctor-card") && /Sab theek/i.test(q(wv, ".doctor-card").textContent), (q(wv, ".doctor-card") || {}).textContent);
+    check("doctor shows resolve + stream bytes", /resolve/i.test(q(wv, ".doctor-card").textContent) && /bytes/i.test(q(wv, ".doctor-card").textContent) && /206/.test(q(wv, ".doctor-card").textContent), (q(wv, ".doctor-card") || {}).textContent.slice(0, 160));
+    check("doctor shows the delivering client", /android_vr/.test(q(wv, ".doctor-card").textContent));
+  }
+
+  /* ══ 13. mobile shell: bottom nav + full-screen search ═══════════════════ */
+  {
+    const dm = makeDom();
+    const wm = dm.window;
+    Object.defineProperty(wm, "innerWidth", { configurable: true, value: 390 });
+    wm.dispatchEvent(new wm.Event("resize"));
+    const sc3 = wm.document.createElement("script");
+    sc3.textContent = app;
+    wm.document.body.appendChild(sc3);
+    await wait(900);
+    check("mobile bottom nav exists", all(wm, ".mnav-item").length >= 4, all(wm, ".mnav-item").length);
+    check("mobile nav has Home/Shorts/Subs", ["Home", "Shorts", "Subs"].every((t) => all(wm, ".mnav-item").some((b) => b.textContent.includes(t))));
+    const mSearch = all(wm, ".tb-search-mobile-btn")[0];
+    check("mobile search button exists", !!mSearch);
+    click(wm, mSearch);
+    await wait(250);
+    check("mobile search opens full-screen", !!q(wm, ".tb-mobile-search") && !!q(wm, ".tb-mobile-search input"), wm.document.body.textContent.slice(0, 60));
+    click(wm, all(wm, ".mnav-item").find((b) => /Shorts/.test(b.textContent)));
+    await wait(700);
+    check("mobile nav switches pages", !!q(wm, ".shorts-wrap"), wm.document.body.textContent.slice(0, 60));
+  }
+
+
+  /* ══ 14. engine test suite (runs from the browser against a real worker) ══ */
+  {
+    const dm = makeDom({ prefs: { sv_cfg: JSON.stringify({ engineUrl: "https://w.dev", autoplay: true, showRelated: true }) } });
+    const ws = dm.window;
+    const errs14 = [];
+    ws.console.error = (...a) => errs14.push(a.join(" "));
+    const sc4 = ws.document.createElement("script");
+    sc4.textContent = app;
+    ws.document.body.appendChild(sc4);
+    await wait(900);
+
+    click(ws, all(ws, ".s-item").find((b) => /Settings/.test(b.textContent)));
+    await wait(500);
+    const runAllBtn = all(ws, ".suite-bar .set-api-btn").find((b) => /Run all tests/.test(b.textContent));
+    check("settings has a run-all-tests button", !!runAllBtn, all(ws, ".suite-bar .set-api-btn").map((b) => b.textContent).join(","));
+    click(ws, runAllBtn);
+    await wait(5000);
+    const suiteRows = all(ws, ".suite-row");
+    check("suite lists every route", suiteRows.length >= 15, suiteRows.length);
+    const suiteStates = suiteRows.map((r) => (r.className.match(/suite-(pass|fail|warn)/) || [])[1]);
+    check("suite finishes (no rows left waiting)", !suiteStates.includes(undefined), suiteStates.join(","));
+    check("suite checks player + bytes", all(ws, ".suite-name").some((n) => /Stream resolve/.test(n.textContent)) && all(ws, ".suite-name").some((n) => /Stream bytes/.test(n.textContent)));
+    check("suite checks comments and store", all(ws, ".suite-name").some((n) => /Comments/.test(n.textContent)) && all(ws, ".suite-name").some((n) => /Cloud store/.test(n.textContent)));
+    check("healthy worker passes the suite", suiteStates.filter((x) => x === "pass").length >= 12, suiteStates.join(","));
+    check("suite offers a copyable report", all(ws, ".suite-bar .set-chip").some((b) => /Copy report/.test(b.textContent)));
+    check("suite has a summary line", /pass/.test((q(ws, ".suite-sum") || {}).textContent || ""), (q(ws, ".suite-sum") || {}).textContent);
+    check("suite calls the real routes", ["/api/health", "/api/search?q=", "/api/trending", "/api/shorts", "/api/player", "/api/comments", "/api/sync/probe"].every((frag) => ws.__calls.some((u) => u.includes(frag))), ws.__calls.filter((u) => /api\//.test(u)).slice(0, 6).join(" "));
+    check("no JS errors in the suite", errs14.filter((e) => !/Not implemented|scrollTo|navigate|Warning: Each child/.test(e)).length === 0, errs14.slice(0, 2).join(" | "));
+  }
+
+
+  /* ══ 15. Layerbase URL: /v2/pipeline paste karna ab valid hai ═══════════ */
+  {
+    const dm = makeDom({ prefs: { sv_cfg: JSON.stringify({ engineUrl: "https://w.dev", autoplay: true, showRelated: true }) } });
+    const wu = dm.window;
+    const sc5 = wu.document.createElement("script");
+    sc5.textContent = app;
+    wu.document.body.appendChild(sc5);
+    await wait(900);
+    click(wu, all(wu, ".s-item").find((b) => /Settings/.test(b.textContent)));
+    await wait(400);
+
+    const urlInput = q(wu, ".lbcheck input");
+    check("cloud store has a URL checker", !!urlInput, wu.document.body.textContent.slice(0, 80));
+    const cases = [
+      ["lakshaydb-cute-drum.sage.cloud.layerbase.dev/v2/pipeline", "https://lakshaydb-cute-drum.sage.cloud.layerbase.dev"],
+      ["https://lakshaydb-cute-drum.sage.cloud.layerbase.dev/v2/pipeline", "https://lakshaydb-cute-drum.sage.cloud.layerbase.dev"],
+      ["https://lakshaydb-cute-drum.sage.cloud.layerbase.dev/", "https://lakshaydb-cute-drum.sage.cloud.layerbase.dev"],
+      ["libsql://lakshaydb-cute-drum.sage.cloud.layerbase.dev", "https://lakshaydb-cute-drum.sage.cloud.layerbase.dev"],
+      ["\"https://lakshaydb-cute-drum.sage.cloud.layerbase.dev/v2/pipeline\"", "https://lakshaydb-cute-drum.sage.cloud.layerbase.dev"],
+      ["https://lakshaydb-cute-drum.sage.cloud.layerbase.dev/v2", "https://lakshaydb-cute-drum.sage.cloud.layerbase.dev"],
+    ];
+    let allOk = true;
+    const seen = [];
+    for (const [input, expected] of cases) {
+      setVal(wu, q(wu, ".lbcheck input"), input);
+      await wait(120);
+      const val = (q(wu, ".lbcheck .urlcheck-val") || {}).textContent || "";
+      seen.push(input + " → " + val.replace(/\s+/g, " "));
+      if (!val.includes(expected)) allOk = false;
+    }
+    check("URL checker normalizes every paste shape", allOk, seen.join(" | "));
+    check("URL checker explains the secrets", /LIBSQL_URL/.test(q(wu, ".lbcheck .urlcheck-out").textContent) && /LIBSQL_TOKEN/.test(q(wu, ".lbcheck .urlcheck-out").textContent));
+    check("URL checker warns on garbage", (() => {
+      setVal(wu, q(wu, ".lbcheck input"), "not a url");
+      return /parse nahi hui/i.test((q(wu, ".lbcheck .urlcheck-out") || {}).textContent || "");
+    })(), (q(wu, ".lbcheck .urlcheck-out") || {}).textContent);
+
+    /* ── "The JWT is invalid": checker names the real cause ─────────────── */
+    const b64 = (o) => Buffer.from(JSON.stringify(o)).toString("base64url");
+    const mkJwt = (payload) => "eyJhbGciOiJFZERTQSJ9." + b64(payload) + ".c2ln";
+    const HOST = "https://lakshaydb-cute-drum.sage.cloud.layerbase.dev";
+    const tokInput = all(wu, ".lbcheck input")[1];
+    check("checker has a token box", !!tokInput && /token/i.test(tokInput.getAttribute("aria-label") || ""));
+    const jwtOut = () => ((q(wu, ".jwtcheck") || {}).textContent || "").replace(/\s+/g, " ");
+
+    setVal(wu, q(wu, ".lbcheck input"), HOST);
+    setVal(wu, tokInput, mkJwt({ id: "lakshaydb-cute-drum", a: "rw", exp: Math.floor(Date.now() / 1000) + 86400 }));
+    await wait(150);
+    check("valid token is recognised", /Token valid JWT/.test(jwtOut()), jwtOut());
+    check("valid token shows the db + expiry claims", /lakshaydb-cute-drum/.test(jwtOut()) && /exp\s*\d{4}-\d{2}-\d{2}/.test(jwtOut()), jwtOut());
+    check("matching DB is confirmed", /URL se match/.test(jwtOut()), jwtOut());
+
+    setVal(wu, tokInput, mkJwt({ id: "lakshaydb-cute-drum", exp: Math.floor(Date.now() / 1000) - 3600 }));
+    await wait(150);
+    check("expired token is called out", /expire ho chuka hai/.test(jwtOut()), jwtOut());
+
+    setVal(wu, tokInput, mkJwt({ id: "some-other-db", exp: Math.floor(Date.now() / 1000) + 86400 }));
+    await wait(150);
+    check("token for another database is called out", /dusri database ka hai/.test(jwtOut()), jwtOut());
+
+    setVal(wu, tokInput, "lb_tok_9f2c1d_this_is_not_a_jwt");
+    await wait(150);
+    check("non-JWT secret is called out", /JWT nahi lag raha/.test(jwtOut()), jwtOut());
+
+    /* Layerbase has two credentials — the sk_ API key is not the DB token */
+    const liveJwt = mkJwt({ id: "lakshaydb-cute-drum", exp: Math.floor(Date.now() / 1000) + 86400 });
+    setVal(wu, tokInput, "sk_live_4f8a2c1b9d7e");
+    await wait(150);
+    check("sk_ API key is named for what it is", /personal API key/.test(jwtOut()) && /Quick Connect/.test(jwtOut()), jwtOut());
+
+    setVal(wu, tokInput, HOST);
+    await wait(150);
+    check("a URL pasted into the token box is called out", /URL lag raha hai/.test(jwtOut()), jwtOut());
+
+    setVal(wu, tokInput, "libsql://lakshaydb-cute-drum.sage.cloud.layerbase.dev?authToken=" + liveJwt);
+    await wait(150);
+    check("a full connection string yields a valid token", /Token valid JWT/.test(jwtOut()), jwtOut());
+
+    setVal(wu, tokInput, liveJwt);
+    await wait(150);
+    check("bare token still validates", /Token valid JWT/.test(jwtOut()), jwtOut());
+
+    setVal(wu, tokInput, "");
+    await wait(120);
+    check("token box can be cleared", !q(wu, ".jwtcheck"));
+  }
+
+
+  /* ══ 16. "format not supported" — silent self-heal, no manual retries ════ */
+  {
+    const dm = makeDom({ mixedFormats: true });
+    const wf = dm.window;
+    const errs16 = [];
+    wf.console.error = (...a) => errs16.push(a.join(" "));
+    const sc6 = wf.document.createElement("script");
+    sc6.textContent = app;
+    wf.document.body.appendChild(sc6);
+    await wait(900);
+    click(wf, all(wf, ".vc")[0]);
+    await wait(1200);
+    const src = (q(wf, ".cp video") || {}).getAttribute ? q(wf, ".cp video").getAttribute("src") : "";
+    check("webm stream is skipped when the browser cannot play it", /u=hi/.test(src || ""), src);
+    check("player still mounts with a playable format", !!q(wf, ".cp video"));
+    check("no error panel for a format mismatch", !q(wf, ".cp-err"), (q(wf, ".cp-err") || {}).textContent);
+    const gear = all(wf, ".cp-btn").find((b) => b.getAttribute("title") === "Settings");
+    check("settings gear is present on the playable stream", !!gear);
+    click(wf, gear);
+    await wait(160);
+    const mainRows = all(wf, ".cp-mi").map((b) => b.textContent).join(" | ");
+    check("settings menu opens after a format hop", /Quality/.test(mainRows), mainRows);
+    const qRow = all(wf, ".cp-mi").find((b) => /Quality/.test(b.textContent));
+    if (qRow) click(wf, qRow);
+    await wait(160);
+    const qualityRows = all(wf, ".cp-mi").map((b) => b.textContent).join(" | ");
+    check("quality menu lists only playable formats", qualityRows.length > 0 && !/itag 43|webm/i.test(qualityRows), qualityRows);
+    check("mp4 streams stay on offer", /itag 22|720p/.test(qualityRows), qualityRows);
+  }
+  {
+    /* stream is dead on first try (403 from the proxy): the app must re-resolve
+       silently instead of showing "format not supported" to the user */
+    const dm = makeDom({ mediaFailFirst: 3 });
+    const wf = dm.window;
+    const sc7 = wf.document.createElement("script");
+    sc7.textContent = app;
+    wf.document.body.appendChild(sc7);
+    await wait(900);
+    const before = wf.__calls.filter((u) => /\/api\/player/.test(u)).length;
+    click(wf, all(wf, ".vc")[0]);
+    await wait(2500);
+    const after = wf.__calls.filter((u) => /\/api\/player/.test(u)).length;
+    check("dead stream triggers a silent re-resolve", after > before, before + " → " + after);
+    check("user never sees a format error for it", !!q(wf, ".cp video") && !q(wf, ".cp-err"), (q(wf, ".cp-err") || {}).textContent);
+    check("preflight verifies real bytes before mounting", (wf.__calls || []).some((u) => /\/api\/media/.test(u)), (wf.__calls || []).filter((u) => /media/.test(u)).slice(0, 2).join(" "));
+  }
+
+
+  /* ══ 17. "video hamesha chale" — silent retries, offline grace ═══════════ */
+  {
+    /* the first resolve blows up (worker 500): the watch page must retry by itself */
+    const dm = makeDom({ playerFailFirst: 1 });
+    const wf = dm.window;
+    wf.console.error = () => {};
+    const sc8 = wf.document.createElement("script");
+    sc8.textContent = app;
+    wf.document.body.appendChild(sc8);
+    await wait(900);
+    click(wf, all(wf, ".vc")[0]);
+    await wait(300);
+    check("a failed resolve shows progress, not an error", !q(wf, ".cp-err") && /theek kar raha hoon/i.test(wf.document.body.textContent), wf.document.body.textContent.slice(-120));
+    await wait(2600);
+    check("the app retries by itself and plays", !!q(wf, ".cp video") && !q(wf, ".cp-err"), wf.document.body.textContent.slice(-120));
+    check("no manual retry was needed", (wf.__calls || []).filter((u) => /\/api\/player/.test(u)).length >= 2, (wf.__calls || []).filter((u) => /player/.test(u)).length);
+  }
+  {
+    /* no internet: wait for the network, never hammer it, then play on 'online' */
+    const dm = makeDom();
+    const wf = dm.window;
+    wf.console.error = () => {};
+    const sc9 = wf.document.createElement("script");
+    sc9.textContent = app;
+    wf.document.body.appendChild(sc9);
+    await wait(900);
+    let online = false;
+    try { Object.defineProperty(wf.navigator, "onLine", { configurable: true, get: () => online }); } catch {}
+    const beforePlayer = (wf.__calls || []).filter((u) => /\/api\/player/.test(u)).length;
+    click(wf, all(wf, ".vc")[0]);
+    await wait(900);
+    const afterOffline = (wf.__calls || []).filter((u) => /\/api\/player/.test(u)).length;
+    check("offline says so instead of erroring", /Internet off/i.test(wf.document.body.textContent), wf.document.body.textContent.slice(-120));
+    check("offline does not spend a resolve", afterOffline === beforePlayer, beforePlayer + " → " + afterOffline);
+    online = true;
+    wf.dispatchEvent(new wf.Event("online"));
+    await wait(1200);
+    check("coming back online starts playback by itself", !!q(wf, ".cp video"), wf.document.body.textContent.slice(-120));
+  }
+  {
+    /* a bot-check wall cannot be retried away: show it, but promise the retry */
+    const dm = makeDom({ gatedPlayer: true });
+    const wf = dm.window;
+    wf.console.error = () => {};
+    const sc10 = wf.document.createElement("script");
+    sc10.textContent = app;
+    wf.document.body.appendChild(sc10);
+    await wait(900);
+    click(wf, all(wf, ".vc")[1]);
+    await wait(800);
+    check("blocked video still explains itself", /bot-check/i.test(wf.document.body.textContent));
+    check("and says retrying continues in the background", /Khud retry chal raha hai/.test(wf.document.body.textContent), wf.document.body.textContent.slice(-160));
+    check("blocked video is not silently hammered", (wf.__calls || []).filter((u) => /\/api\/player/.test(u)).length <= 2, (wf.__calls || []).filter((u) => /player/.test(u)).length);
+  }
+
+  /* ══ 18. cookie checker: "cookies laga diye par bot-check phir bhi" ══════ */
+  {
+    const dm = makeDom({ prefs: { sv_cfg: JSON.stringify({ engineUrl: "https://w.dev", autoplay: true }) } });
+    const wf = dm.window;
+    wf.console.error = () => {};
+    const sc11 = wf.document.createElement("script");
+    sc11.textContent = app;
+    wf.document.body.appendChild(sc11);
+    await wait(900);
+    click(wf, all(wf, ".s-item").find((b) => /Settings/.test(b.textContent)));
+    await wait(400);
+
+    const box = q(wf, '[aria-label="YouTube cookies"]');
+    check("settings has a cookie checker", !!box, wf.document.body.textContent.slice(0, 80));
+    const out = () => ((q(wf, ".cookcheck") || {}).textContent || "").replace(/\s+/g, " ");
+
+    setVal(wf, box, "SID=aaa; HSID=bbb; SSID=ccc; SAPISID=ddd");
+    await wait(150);
+    check("complete cookies are confirmed", /Cookies poore hain/.test(out()), out());
+    check("each critical cookie is ticked", (out().match(/✓ (SID|HSID|SSID|SAPISID)/g) || []).length === 4, out());
+
+    setVal(wf, box, "SID=aaa");
+    await wait(150);
+    check("partial export is called out", /Export adhoora hai/.test(out()), out());
+    check("missing cookies are named", /Missing:.*SAPISID/.test(out()), out());
+
+    setVal(wf, box, "Cookie: SID=aaa; HSID=bbb; SSID=ccc; SAPISID=ddd");
+    await wait(150);
+    check("'Cookie:' prefix is tolerated", /Cookies poore hain/.test(out()), out());
+
+    setVal(wf, box, JSON.stringify([
+      { name: "SID", value: "a", expirationDate: 9999999999 },
+      { name: "HSID", value: "b", expirationDate: 9999999999 },
+      { name: "SSID", value: "c", expirationDate: 9999999999 },
+      { name: "SAPISID", value: "d", expirationDate: 9999999999 },
+      { name: "DEAD", value: "e", expirationDate: 1000 },
+    ]));
+    await wait(150);
+    check("JSON export works and expired cookies are reported", /Cookies poore hain/.test(out()) && /1 expired skip kiye/.test(out()), out());
+
+    setVal(wf, box, "just some words, no cookies here");
+    await wait(150);
+    check("garbage is rejected with instructions", /parse nahi hui/.test(out()), out());
+
+    setVal(wf, box, "SID=aaa; HSID=bbb; SSID=ccc; SAPISID=ddd");
+    await wait(150);
+    check("checker explains the Cloudflare step", /YT_COOKIES/.test(out()) && /Deploy/.test(out()), out());
+  }
 
   const failed = checks.filter((c) => !c.pass);
   checks.forEach((c) => console.log((c.pass ? "PASS  " : "FAIL  ") + c.n + (c.pass || !c.e ? "" : "  -> " + c.e)));

@@ -41,6 +41,12 @@ globalThis.fetch = async (url, opts = {}) => {
     return new Response(JSON.stringify({ error: "unexpected host " + u }), { status: 400 });
   }
   if (server.mode === "down") return new Response("upstream down", { status: 503 });
+  if (server.mode === "jwt") {
+    return new Response(JSON.stringify({ error: "Unauthorized: The JWT is invalid" }), {
+      status: 401,
+      headers: { "content-type": "application/json" },
+    });
+  }
   const body = JSON.parse(opts.body || "{}");
   server.calls++;
   server.auth.push((opts.headers || {}).authorization || "");
@@ -263,7 +269,19 @@ check("opsToStatements drops unknown kinds", W.opsToStatements(KEY, [{ kind: "xx
 /* ── 15. setup probe: "is Layerbase really connected?" ───────────────────── */
 const probeOff = await W.storeProbe({}, "");
 check("probe says not configured when secrets are missing", probeOff.ok === false && probeOff.configured === false);
-check("probe hands back the exact 5 setup steps", Array.isArray(probeOff.steps) && probeOff.steps.length === 5, (probeOff.steps || []).length);
+check("probe hands back the setup steps", Array.isArray(probeOff.steps) && probeOff.steps.length >= 5, (probeOff.steps || []).length);
+check("probe tells you the path is not needed", probeOff.steps.join(" ").includes("/v2/pipeline"), probeOff.steps.join(" | ").slice(0, 160));
+
+/* the "link sahi hai par invalid" bug: a pasted endpoint URL must still work */
+const ENV_PATHY = { ...ENV, LIBSQL_URL: String(ENV.LIBSQL_URL || "").replace(/\/+$/, "") + "/v2/pipeline" };
+const probePathy = await W.storeProbe(ENV_PATHY, KEY);
+check("probe accepts a pasted /v2/pipeline URL", probePathy.ok === true, JSON.stringify({ ok: probePathy.ok, err: probePathy.error }));
+check("probe reports the normalized endpoint", /\/v2\/pipeline$/.test(String(probePathy.endpoint || "")) && !/pipeline\/v2\/pipeline/.test(String(probePathy.endpoint || "")), probePathy.endpoint);
+const probeNoScheme = await W.storeProbe({ ...ENV, LIBSQL_URL: String(ENV.LIBSQL_URL || "").replace(/^https?:\/\//, "") }, KEY);
+check("probe accepts a URL without a scheme", probeNoScheme.ok === true, JSON.stringify({ ok: probeNoScheme.ok, err: probeNoScheme.error }));
+const probeGarbage = await W.storeProbe({ ...ENV, LIBSQL_URL: "not a url" }, KEY);
+check("probe explains an unparseable URL", probeGarbage.ok === false && /parse nahi hui/i.test(probeGarbage.error || ""), probeGarbage.error);
+check("probe shows what it parsed", probeGarbage.url && probeGarbage.url.given === true, JSON.stringify(probeGarbage.url));
 check("steps name the two secrets", probeOff.steps.join(" ").includes("LIBSQL_URL") && probeOff.steps.join(" ").includes("LIBSQL_TOKEN"));
 
 const probe = await W.storeProbe(ENV, KEY);
@@ -283,6 +301,68 @@ const viaRoute = await (await W.default.fetch(new Request("https://w.dev/api/syn
 check("probe is reachable over HTTP", viaRoute.ok === true && viaRoute.backend === "layerbase-libsql");
 const healthProbe = await (await W.default.fetch(new Request("https://w.dev/api/health"), ENV)).json();
 check("health points at the probe", healthProbe.store.probe === "/api/sync/probe");
+
+/* ── "The JWT is invalid" — 4 alag wajah, alag message ──────────────────── */
+const b64j = (o) => Buffer.from(JSON.stringify(o)).toString("base64url");
+const mkJwt = (payload) => "eyJhbGciOiJFZERTQSJ9." + b64j(payload) + ".c2lnbmF0dXJl";
+const nowSec = Math.floor(Date.now() / 1000);
+const HOST = "https://fake.layerbase.dev";
+
+const jwtLive = W.decodeJwtInfo(mkJwt({ id: "fake", a: "rw", exp: nowSec + 86400 }));
+check("decodeJwtInfo reads a real JWT", jwtLive.jwt === true && jwtLive.parts === 3 && jwtLive.expired === false, JSON.stringify(jwtLive));
+check("decodeJwtInfo reads db id + scope", jwtLive.dbId === "fake" && jwtLive.scope === "rw", JSON.stringify(jwtLive));
+const jwtDead = W.decodeJwtInfo(mkJwt({ id: "fake", exp: nowSec - 60 }));
+check("decodeJwtInfo spots an expired token", jwtDead.expired === true && /^\d{4}-\d{2}-\d{2}$/.test(jwtDead.expIso), JSON.stringify(jwtDead));
+check("decodeJwtInfo rejects a non-JWT secret", W.decodeJwtInfo("sk_live_abc").jwt === false);
+check("decodeJwtInfo survives garbage", W.decodeJwtInfo("a.b.c").jwt === false && W.decodeJwtInfo("").parts === 1);
+check("jwtDbMatch compares the host label", W.jwtDbMatch("fake", "fake.layerbase.dev") === true && W.jwtDbMatch("other", "fake.layerbase.dev") === false);
+check("jwtDbMatch is honest when unsure", W.jwtDbMatch("", "fake.layerbase.dev") === null);
+
+const vExpired = W.jwtVerdict({ ...ENV, LIBSQL_TOKEN: mkJwt({ id: "fake", exp: nowSec - 60 }) }, { status: 401, message: "layerbase HTTP 401: Unauthorized: The JWT is invalid" });
+check("401 + expired token → jwt-expired", vExpired && vExpired.code === "jwt-expired" && /expire/i.test(vExpired.error), JSON.stringify(vExpired).slice(0, 120));
+const vOther = W.jwtVerdict({ ...ENV, LIBSQL_TOKEN: mkJwt({ id: "someone-else", exp: nowSec + 999 }) }, { status: 401 });
+check("401 + other database → jwt-wrong-db", vOther && vOther.code === "jwt-wrong-db" && /dusri database/i.test(vOther.error), JSON.stringify(vOther).slice(0, 120));
+const vFormat = W.jwtVerdict({ ...ENV, LIBSQL_TOKEN: "glpat-not-a-jwt" }, { status: 401 });
+check("401 + non-JWT secret → jwt-format", vFormat && vFormat.code === "jwt-format" && /LIBSQL_TOKEN/i.test(vFormat.error), JSON.stringify(vFormat).slice(0, 120));
+const vApiKey = W.jwtVerdict({ ...ENV, LIBSQL_TOKEN: "sk_live_4f8a2c1b9d7e" }, { status: 401 });
+check("sk_ API key gets its own verdict", vApiKey && vApiKey.code === "jwt-api-key", JSON.stringify(vApiKey).slice(0, 120));
+check("sk_ verdict explains it is the Cloud API key", /Cloud REST API|cloud\.layerbase\.dev/i.test(vApiKey.error), vApiKey.error);
+check("sk_ verdict points at Quick Connect", /Quick Connect/i.test(vApiKey.hint), vApiKey.hint);
+check("tokenShape describes the secret", (() => {
+  const sh = W.libsqlInfo({ ...ENV, LIBSQL_TOKEN: "sk_live_abc" }).shape;
+  return sh.apiKey === true && sh.len === 11 && sh.prefix === "sk_liv" && sh.dots === 0;
+})(), JSON.stringify(W.libsqlInfo({ ...ENV, LIBSQL_TOKEN: "sk_live_abc" }).shape));
+
+const vSig = W.jwtVerdict({ ...ENV, LIBSQL_TOKEN: mkJwt({ id: "fake", exp: nowSec + 999 }) }, { status: 401 });
+check("401 + good-looking token → jwt-bad-signature", vSig && vSig.code === "jwt-bad-signature", JSON.stringify(vSig).slice(0, 120));
+check("non-auth failures are left alone", W.jwtVerdict(ENV, { status: 503, message: "upstream down" }) === null);
+check("every JWT verdict carries a fix", [vExpired, vOther, vFormat, vSig].every((v) => /Layerbase|Cloudflare|Deploy/.test(v.hint)), vSig.hint);
+
+/* token ke saare naam + URL me chhupa authToken */
+const liveTok = mkJwt({ id: "fake", exp: nowSec + 86400 });
+check("LIBSQL_AUTH_TOKEN is accepted", W.libsqlToken({ LIBSQL_URL: HOST, LIBSQL_AUTH_TOKEN: liveTok }) === liveTok);
+check("TURSO_AUTH_TOKEN is accepted", W.libsqlToken({ LIBSQL_URL: HOST, TURSO_AUTH_TOKEN: liveTok }) === liveTok);
+check("?authToken= in the URL is read", W.libsqlToken({ LIBSQL_URL: "libsql://fake.layerbase.dev?authToken=" + liveTok }) === liveTok);
+check("that URL still normalizes to a clean host", W.libsqlBase({ LIBSQL_URL: "libsql://fake.layerbase.dev?authToken=" + liveTok }) === HOST);
+check("LIBSQL_DATABASE_URL works as the URL", W.libsqlBase({ LIBSQL_DATABASE_URL: "fake.layerbase.dev/v2/pipeline" }) === HOST);
+check("secret beats URL token", W.libsqlToken({ LIBSQL_URL: "libsql://fake.layerbase.dev?authToken=" + mkJwt({ id: "x", exp: 1 }), LIBSQL_TOKEN: liveTok }) === liveTok);
+check("token source is reported", W.libsqlInfo({ LIBSQL_URL: "libsql://fake.layerbase.dev?authToken=" + liveTok }).tokenSource === "url");
+
+server.mode = "jwt";
+const probeSk = await W.storeProbe({ ...ENV, LIBSQL_TOKEN: "sk_live_4f8a2c1b9d7e" }, "FRESHKEY0123456789");
+check("probe flags the account API key", probeSk.ok === false && /API key/i.test(probeSk.error || ""), probeSk.error);
+check("probe verdict is jwt-api-key", probeSk.verdict === "jwt-api-key", probeSk.verdict);
+const _unused = 0;
+
+const probeJwt = await W.storeProbe(ENV, KEY);
+check("probe turns the 401 into a real reason", probeJwt.ok === false && /jwt|token|expire/i.test(probeJwt.error || ""), probeJwt.error);
+check("probe names the verdict", /^jwt-/.test(probeJwt.verdict || ""), probeJwt.verdict);
+check("probe never echoes the token", !JSON.stringify(probeJwt).includes(ENV.LIBSQL_TOKEN), JSON.stringify(probeJwt).slice(0, 120));
+const snapJwt = await W.syncGet(ENV, KEY);
+check("a 401 still serves the cached snapshot", snapJwt && snapJwt.ok === true && snapJwt.stale === true, JSON.stringify(snapJwt).slice(0, 120));
+const syncJwt = await W.syncGet(ENV, "FRESHKEY0123456789");
+check("sync failure carries the same hint", syncJwt && syncJwt.ok !== true && /jwt|token/i.test(syncJwt.error || "") && !!syncJwt.hint, JSON.stringify(syncJwt).slice(0, 160));
+server.mode = "ok";
 
 /* ── report ──────────────────────────────────────────────────────────────── */
 const failed = checks.filter((c) => !c.pass);

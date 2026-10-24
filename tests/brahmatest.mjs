@@ -186,6 +186,68 @@ const pr = await (await W.default.fetch(new Request("https://w.dev/api/player?id
 check("player route exposes reason/hint", pr.ok === false && pr.reason === "bot" && !!pr.hint, JSON.stringify({ r: pr.reason }));
 const st = await (await W.default.fetch(new Request("https://w.dev/api/selftest?id=gatedVid001"), {})).json();
 check("selftest exposes the reason", st.ok === false && st.reason === "bot" && st.needAuth === true, JSON.stringify({ r: st.reason, n: st.needAuth }));
+check("selftest tells you what to do about a bot-check", st.verdict && st.verdict.code === "bot" && /YT_COOKIES|POTOKEN_URL/.test(st.verdict.hi), JSON.stringify(st.verdict));
+
+/* doctor mode: resolve + pull real bytes through our own proxy in one request */
+const doc = await (await W.default.fetch(new Request("https://w.dev/api/selftest?id=okVid000001&probe=1"), {})).json();
+check("doctor probes the stream itself", doc.stream && typeof doc.stream.status === "number", JSON.stringify(doc.stream));
+check("doctor gives a verdict", doc.verdict && /ok|bot|proxy|resolve|geo|age/.test(doc.verdict.code), JSON.stringify(doc.verdict));
+
+/* ── 11. cookies: "set kar diye par bot-check phir bhi" ───────────────────── */
+const fullCookies = "SID=aaa; HSID=bbb; SSID=ccc; SAPISID=ddd";
+const noCookies = W.cookieReport({ MIRRORS: "off" }, null);
+check("no secret → configured false", noCookies.configured === false && /YT_COOKIES/.test(noCookies.fix), JSON.stringify(noCookies).slice(0, 100));
+
+const good = W.cookieReport({ YT_COOKIES: fullCookies }, null);
+check("full cookie header is usable", good.usable === true && good.count === 4 && good.missing.length === 0, JSON.stringify(good).slice(0, 120));
+check("cookie names are listed, values never", good.keys.includes("SAPISID") && !JSON.stringify(good).includes("ddd"), JSON.stringify(good.keys));
+
+const prefixed = W.cookieReport({ YT_COOKIES: "Cookie: " + fullCookies }, null);
+check("'Cookie:' prefix is stripped", prefixed.usable === true && prefixed.count === 4, JSON.stringify(prefixed).slice(0, 100));
+
+const newliney = W.cookieReport({ YT_COOKIES: "SID=aaa\nHSID=bbb\nSSID=ccc\nSAPISID=ddd" }, null);
+check("newline-separated paste works", newliney.usable === true && newliney.count === 4, JSON.stringify(newliney).slice(0, 100));
+
+const netscape = W.cookieReport({ YT_COOKIES: ["# Netscape HTTP Cookie File", ".youtube.com\tTRUE\t/\tTRUE\t9999999999\tSID\taaa", ".youtube.com\tTRUE\t/\tTRUE\t9999999999\tHSID\tbbb", ".youtube.com\tTRUE\t/\tTRUE\t9999999999\tSSID\tccc", ".youtube.com\tTRUE\t/\tTRUE\t9999999999\tSAPISID\tddd"].join("\n") }, null);
+check("netscape cookies.txt works", netscape.usable === true && netscape.format === "netscape", JSON.stringify(netscape).slice(0, 100));
+
+const jsonExport = W.cookieReport({ YT_COOKIES: JSON.stringify([
+  { name: "SID", value: "aaa", expirationDate: 9999999999 },
+  { name: "HSID", value: "bbb", expirationDate: 9999999999 },
+  { name: "SSID", value: "ccc", expirationDate: 9999999999 },
+  { name: "SAPISID", value: "ddd", expirationDate: 9999999999 },
+  { name: "OLD_COOKIE", value: "zzz", expirationDate: 1000 },
+]) }, null);
+check("JSON export works + expired ones are skipped", jsonExport.usable === true && jsonExport.expiredSkipped === 1, JSON.stringify(jsonExport).slice(0, 120));
+
+const partial = W.cookieReport({ YT_COOKIES: "SID=aaa" }, null);
+check("partial export is called out", partial.usable === false && partial.missing.includes("SAPISID"), JSON.stringify(partial.missing));
+check("partial export names the missing cookies", /SAPISID|HSID|SSID/.test(partial.fix), partial.fix);
+
+const gated = W.cookieReport({ YT_COOKIES: fullCookies, SV_KEY: "secret123" }, new URL("https://w.dev/api/selftest?id=x"));
+check("SV_KEY mismatch is visible", gated.keyOk === false && gated.usable === false && /SV_KEY/.test(gated.note), gated.note);
+
+/* the selftest verdict must tell these four cases apart */
+const botEnv = (extra) => ({ MIRRORS: "off", ...extra });
+mode = { player: "fail", playability: "LOGIN_REQUIRED", reason: "Sign in to confirm you're not a bot" };
+W.resetBreakers();
+const stNoCookies = await (await W.default.fetch(new Request("https://w.dev/api/selftest?id=gatedVid001"), botEnv({}))).json();
+check("no cookies → verdict bot", stNoCookies.verdict.code === "bot", stNoCookies.verdict.code);
+W.resetBreakers();
+const stPartial = await (await W.default.fetch(new Request("https://w.dev/api/selftest?id=gatedVid001"), botEnv({ YT_COOKIES: "SID=aaa" }))).json();
+check("partial cookies → verdict bot-cookies", stPartial.verdict.code === "bot-cookies" && /SAPISID/.test(stPartial.verdict.hi), JSON.stringify(stPartial.verdict));
+W.resetBreakers();
+const stKey = await (await W.default.fetch(new Request("https://w.dev/api/selftest?id=gatedVid001"), botEnv({ YT_COOKIES: fullCookies, SV_KEY: "secret123" }))).json();
+check("SV_KEY mismatch → verdict bot-key", stKey.verdict.code === "bot-key" && /SV_KEY/.test(stKey.verdict.hi), JSON.stringify(stKey.verdict));
+W.resetBreakers();
+const stGood = await (await W.default.fetch(new Request("https://w.dev/api/selftest?id=gatedVid001&key=secret123"), botEnv({ YT_COOKIES: fullCookies, SV_KEY: "secret123" }))).json();
+check("cookies present + used → PoToken verdict", /bot-potoken|bot-ip/.test(stGood.verdict.code), JSON.stringify(stGood.verdict));
+check("doctor reports the cookie state", stGood.cookies && stGood.cookies.usable === true && stGood.cookies.count >= 4, JSON.stringify(stGood.cookies).slice(0, 120));
+
+/* health exposes the same diagnosis */
+const health = await (await W.default.fetch(new Request("https://w.dev/api/health"), botEnv({ YT_COOKIES: fullCookies }))).json();
+check("health reports cookies", health.cookies && health.cookies.configured === true && health.cookies.usable === true && health.cookies.used === true, JSON.stringify(health.cookies).slice(0, 140));
+check("health never leaks a value", !JSON.stringify(health.cookies).includes("ddd"));
 
 const failed = checks.filter((c) => !c.pass);
 checks.forEach((c) => console.log((c.pass ? "PASS  " : "FAIL  ") + c.n + (c.pass || !c.e ? "" : "  -> " + c.e)));

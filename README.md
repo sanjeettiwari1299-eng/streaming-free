@@ -2,10 +2,153 @@
 
 `index.html` (whole app, one file) + `worker.js` (Cloudflare Worker, free tier).
 **No API key. No Google login. No Piped/Invidious. No server/VPS. No YouTube iframe. No localStorage.**
-Search · Trending · **Shorts** (+ **ShortsFire** embed) · **RSS subscriptions** · watch page · hand-built player.
-Self-healing playback: **video kabhi band na ho** — 5-step player recovery, proxy re-signing, endless play.
+Search · Trending · **Shorts** (+ **ShortsFire** embed) · **RSS subscriptions** · watch page · **comments** ·
+hand-built player. Self-healing playback: **video kabhi band na ho** — 5-step player recovery, proxy re-signing, endless play.
 
 ---
+
+## v9.0 — YouTube-jaisa UI (poora shell dobara likha)
+
+Pehle wala UI "YouTube-inspired" tha; ab shell YouTube web jaisa hai — layout, spacing, icons, menus, sab.
+
+| Kya | Ab kaise |
+| --- | --- |
+| **Logo + topbar** | red play mark + StreamVoid wordmark, 56px bar, guide button, centered search pill with clear + search button, mic |
+| **Search** | live suggestions (recent searches cookie me, aapke device par), `/` shortcut se focus, voice search (jahan browser support kare) |
+| **Right rail** | Create menu (playlist / subscribe / Studio), notification bell with badge + channel list, avatar menu (history, liked, watch later, theme, settings, cloud state) |
+| **Sidebar** | SVG icons (koi emoji nahi), You section, subscriptions with avatars + "show more", Explore (Trending/Music/Gaming/News/Sports/Learning/Podcasts), 72px mini rail on tablets |
+| **Home** | sticky chip bar, 310px+ responsive grid, hover "Watch later / Share" on thumbnails, card action menu (save, playlist, copy link, YouTube), Shorts shelf (9:16 cards), Recommended shelf |
+| **Watch page** | title + channel row + subscribe/bell, segmented Like/Dislike, Share, Download, Save, overflow menu, expandable description, comments, Up next rail with All / From this channel chips + autoplay toggle |
+| **Comments (naya)** | worker ka `/api/comments` — InnerTube `next` ki comments continuation se real comments: author, avatar, likes, replies, creator badge, "show more" paging |
+| **Search page** | YouTube-style result rows (360px thumb, 18px title, channel avatar, snippet), This week / Live / Shorts filters, relevance / upload date / view count sort, grid toggle |
+| **Channel page** | banner + 128px avatar + handle + tabs (Home/Videos/Shorts/Playlists/About) |
+| **Theme** | dark (default) aur light — avatar menu ya Settings → Appearance se, cookie + cloud me save |
+| **Mobile** | bottom nav (Home · Shorts · Create · Subs · You), full-screen mobile search, single-column feed, scrollable action pills |
+| **Errors** | engine/setup/galat stream messages waise hi honest, par ab card ke andar YouTube-style banners me |
+
+Comments optional hain: agar worker purana ho ya kisi video par comments band hon, section khud bata deta hai
+("YouTube par comments dekhein") — watch page kabhi nahi tootta.
+
+---
+
+## "Koi video nahi chal rahi" — 3-minute checklist
+
+Screen par jo panel aata hai wahi sach bolta hai. Us panel me **Engine doctor** button hai; wo ek hi request me
+do cheezein batata hai: stream resolve hua ya nahi, aur bytes aa rahe hain ya nahi.
+
+```
+GET https://<your-worker>.workers.dev/api/selftest?id=dQw4w9WgXcQ&probe=1
+```
+
+| `verdict.code` | Matlab | Fix |
+| --- | --- | --- |
+| `ok` | resolve + bytes dono theek | browser me chalni chahiye; app me ek baar hard-refresh (Ctrl+Shift+R) |
+| `bot` | YouTube bot-check (datacenter IP) | worker secret `YT_COOKIES` (throwaway Google account ka cookie header) ya `POTOKEN_URL` add karein → Deploy |
+| `proxy` | resolve hua par stream 403/0 bytes | worker ka **naya version** deploy karein (purana `BUILD` chal raha hai) |
+| `resolve` | player hi fail | `/api/debug?refresh=1` kholein, `clientStats` dekhein; `?refresh=1` se client versions dobara discover hote hain |
+| `geo` / `age` | region block / age wall | Settings → Region badlein, ya `YT_COOKIES` daalein |
+
+**Poora test suite (17 checks):** Settings → YouTube engine → **▶ Run all tests**. Ye tumhare browser se worker ke
+saare routes hit karta hai — health/build, debug, search (+page 2), trending, shorts, channel, rss, player,
+**stream bytes (2 KB proxy)**, related, comments, `/mp4/<id>.mp4`, canary, cloud store probe, CORS — aur har row par
+pass/warn/fail + ms deta hai. **Copy report** se poora text copy ho jata hai (issue bhejne ke liye).
+
+App ke andar bhi wahi doctor hai: **Settings → YouTube engine → Run engine doctor** (ya video fail hone par
+error panel me **Engine doctor**) — video id daalo, ek click me resolve + bytes + client + attempts dikh jate hain.
+
+Sabse pehle ye confirm karein ki deploy naya hai:
+
+```
+GET https://<your-worker>.workers.dev/api/health      → build: "8.6.0"
+```
+
+Purana build dikhe to Cloudflare → Workers → apna worker → Edit code → **poora `worker.js` paste** → Deploy.
+Uske baad app me Settings → **Save & test**.
+
+> **Note:** `PROBE` wala `?probe=1` extra hai — bina uske `/api/selftest?id=...` sirf resolve check karta hai.
+
+### "Format not supported" 2–3 baar aata tha, phir chal jati thi
+
+Wo galti video ki nahi thi — proxy kabhi-kabhi YouTube ka **HTML error page** (ya 403 JSON) 200 me wrap karke
+`<video>` ko de deta tha, aur browser usko `MEDIA_ERR_SRC_NOT_SUPPORTED` bana deta tha. Ab dono taraf fix hai:
+
+| Layer | Kya karta hai |
+| --- | --- |
+| worker `/api/media` | body ka `content-type` check karta hai; HTML/JSON mile to stream cancel karke **naya URL sign** karta hai, phir dusra muxed stream try karta hai. Phir bhi fail ho to `<video>` ko kabhi HTML nahi bhejta — `403/502` + `x-sv-media-fail: 1` JSON bhejta hai |
+| app (player) | `playableFormats()` sirf wahi stream rakhta hai jo browser ka `canPlayType` maanta hai (mp4 pehle), `preflightStream()` play karne se **pehle** 2 byte Range maang ke bytes verify karta hai, `verifyStream()` tak 3 format try karta hai |
+| app (watch page) | resolve → verify fail ho to **chupchap 2 baar aur** re-resolve karta hai ("Stream refresh ho raha hai… attempt 2/3"), user ko error tabhi dikhta hai jab teeno fail hon |
+| app (player error) | video me code 3/4 aaya to player **agli untried format** pe jump karta hai, phir `onRefresh()` — isliye ab manual retry ki zarurat nahi |
+
+Yani agar pehli koshish me hi bytes kharab hain, app khud 2–3 second me dusra stream le aata hai — user ko sirf
+"refresh ho raha hai" dikhta hai, "format not supported" nahi.
+
+### "Video hamesha chalti rahe" — kya-kya khud handle hota hai
+
+| Situation | App ka behaviour |
+| --- | --- |
+| resolve fail (worker 500 / timeout) | 6 silent tries, backoff 0.9s → 2s → 4s → 7s → 12s; phir bhi fail to panel jo **15s me khud retry** karta rehta hai |
+| stream bytes nahi aaye | naya URL sign, dubara verify — user ko sirf "Khud theek kar raha hoon… (try n/6)" |
+| playback ruk gaya / codec error | nudge → lower quality → fresh stream → `/mp4/<id>.mp4` (bina signature) → poora ladder **3 baar** dobara; uske baad hi panel, aur wo bhi auto-retry |
+| `/mp4/<id>.mp4` | worker khud ek dead quality ko chhod ke agli muxed stream try karta hai |
+| internet off | koi request nahi jaati, "Internet off — wapas aate hi chal jayegi"; `online` event par khud play |
+| worker down | health 12s me ek baar chupchap check hota hai; worker aate hi app apne aap theek |
+| video end | next recommendation → trending fallback → `endless` mode me wahi video loop |
+
+Sirf do cheezein retry se theek nahi hoti: **age wall** aur **region block** (unke liye `YT_COOKIES` / Region setting),
+aur **bot-check** (worker me `YT_COOKIES` ya `POTOKEN_URL`). Wahan panel asli reason batata hai — par retry background
+me chalta rehta hai, to cookie lagane ke baad bina reload video chal padti hai.
+
+---
+
+## "Cookies set kar diye, bot-check phir bhi aa raha hai"
+
+Bot-check ke 4 alag karan hote hain, aur ab app/worker bata dete hain kaun sa hai:
+
+```
+GET https://<worker>/api/health        → cookies: { configured, usable, count, missing[], keyOk, note, fix }
+GET https://<worker>/api/selftest?id=dQw4w9WgXcQ&probe=1 → verdict.code
+```
+
+| `verdict.code` | Matlab | Fix |
+| --- | --- | --- |
+| `bot` | cookies worker tak pahunche hi nahi | `YT_COOKIES` secret add karein → Deploy |
+| `bot-key` | `SV_KEY` set hai par app wahi key nahi bhej raha → worker cookies **jaan bujh ke** use nahi kar raha | Settings → Access key me wahi `SV_KEY` daalein, ya worker se `SV_KEY` hata dein |
+| `bot-cookies` | cookies pahunche par export **adhoora** (`missing` me naam dikhte hain) | SID, HSID, SSID, SAPISID (ya `__Secure-3P*`) sab chahiye — naya export lein |
+| `bot-potoken` | cookies theek, par YouTube is IP par **PoToken** maang raha hai | `POTOKEN_URL` (bgutil-verify-token provider) secret add karein |
+| `bot-ip` | cookies + PoToken dono theek, phir bhi block | IP-level block hai (Cloudflare shared IP) — doosra PoToken provider, ya usi IP se banaye gaye fresh cookies |
+
+**App me checker:** Settings → **Cookie checker (YT_COOKIES)** me cookies paste karein — browser me hi parse hota hai
+(header string, Netscape `cookies.txt`, ya JSON export — teeno). Wo dikhata hai: kaunsi cookie mili, kaunsi missing hai,
+kitni expire ho chuki hain, aur **Copy clean string** se ready-to-paste `YT_COOKIES` value mil jaati hai.
+
+> Cookies kisi ko bhejte nahi — checker browser me hi kaam karta hai. Secret me `Cookie:` prefix, quotes, newlines,
+> `cookies.txt` ya JSON — sab chalte hai (worker khud saaf karta hai). Cookie ke naam `YT_COOKIE` / `YOUTUBE_COOKIES` /
+> `COOKIES` bhi accepted hain.
+
+## `layerbase HTTP 401: Unauthorized: The JWT is invalid` — asli wajah
+
+Ye ek hi message **chaar alag** galtiyon ke liye aata hai. Ab worker aur app dono token ko **decode** karke
+(strictly claims, bina verify) exact wajah batate hain — token kahin network par nahi jaata.
+
+| `verdict` | Matlab | Fix |
+| --- | --- | --- |
+| `jwt-format` | `LIBSQL_TOKEN` me JWT hi nahi hai (3 dot-separated parts chahiye, `eyJ…`) | Layerbase → DB → **Connect** → **auth token** copy karein. URL/API key nahi. |
+| `jwt-expired` | Token ki `exp` nikal gayi (probe `exp` date dikhata hai) | Naya token banayein → `LIBSQL_TOKEN` update → **Deploy** |
+| `jwt-wrong-db` | Token ka `id` claim `LIBSQL_URL` ke host se match nahi karta (workspace me kai DB?) | Dono cheezein **usi** DB ke Connect screen se copy karein |
+| `jwt-bad-signature` | Token adhoora paste hua / rotate ho gaya | Poora token dobara copy karein (line break ke bina), phir Deploy |
+
+Check karne ke 2 tareeke:
+
+```
+GET https://<worker>/api/sync/probe?p=<profile-key>     → { ok:false, verdict:"jwt-expired", jwt:{...claims} }
+```
+
+**App me:** Settings → Cloud store → **Test Layerbase** (verdict + claims dikhata hai), ya
+**Layerbase checker** me apna `LIBSQL_TOKEN` paste karein — wo browser me hi decode karke batata hai ki token
+expire hua hai, kisi dusri DB ka hai, ya paste hi galat hua. (Token sirf tumhare browser me decode hota hai.)
+
+> 401 ke waqt bhi app khatam nahi hoti: worker edge snapshot se last-known profile de deta hai (`ok:true, stale:true`),
+> isliye history/likes/subs dikhte rehte hain jab tak token theek na ho.
 
 ## Why a worker at all? (the honest bit)
 
@@ -42,6 +185,23 @@ Playback stays 100% custom: a plain `<video>` element with our own YouTube-style
    host, the round-trip latency and how many rows this profile has. Green = synced.
 
 `index.html` can be hosted anywhere static (GitHub Pages, Netlify, S3, or just opened locally).
+
+### `LIBSQL_URL` ka sahi format (aur jo bhi paste ho jaye)
+
+Secret me sirf **host** chahiye — `/v2/pipeline` worker khud lagata hai. Lekin galti se endpoint copy ho jaye
+to bhi `v8.2` ab sambhal leta hai:
+
+| Tumne paste kiya | Worker kya use karta hai |
+| --- | --- |
+| `lakshaydb-cute-drum.sage.cloud.layerbase.dev` | ✅ wahi |
+| `…/v2/pipeline` · `…/v2/pipeline/` · `…/v2` · `…/pipeline` | ✅ path hata ke host |
+| `libsql://…` · `http://…` · `wss://…` | ✅ `https://…` |
+| `"https://…"` (quotes ke saath) | ✅ quotes hata ke |
+| token: `Bearer eyJ…` · `"eyJ…"` | ✅ prefix/quotes hata ke |
+
+App me checker bhi hai: **Settings → Cloud store → Layerbase URL checker** — URL paste karo, normalized value
++ exact secret steps dikh jate hain. `/api/sync/probe` ab batata hai worker ne kya parse kiya (`url.normalized`,
+`endpoint`, `changed`, `tokenPrefix`) taaki "link sahi hai par invalid" jaisa guess-work khatam ho.
 
 ### Layerbase banayein — exact clicks
 
@@ -207,6 +367,7 @@ session (password-equivalent).
 | `GET /api/shorts?region=IN` | Shorts feed: `browse` `FEshorts` (`shortsLockupViewModel` + `reelItemRenderer`), falling back to `#shorts` search, then to short items in trending |
 | `GET /api/player?id=` | InnerTube `player` with a client ladder (android_vr → ios → tv_embedded → android → mweb → web), picks muxed MP4, rewrites URLs to the proxy |
 | `GET /api/related?id=` | InnerTube `next` → Up next list |
+| `GET /api/comments?id=&token=` | InnerTube `next` → comments continuation → `{items, next, count}`; author, avatar, likes, replies, creator badge. Token sirf paging ke liye |
 | `GET /api/rss?channels=UC…,UC…` | fetch + merge YouTube RSS feeds for up to 30 channels → `{items, channels, errors}` (dedupe, newest first, per-channel failure isolated) |
 | `GET /api/channel?q=` | resolve anything you paste (`@handle`, `/channel/UC…`, `/c/name`, bare `UC…`) → `{channelId, name, avatar}` |
 | `GET /api/media?u=` | **Range-aware** byte proxy for `googlevideo.com` (host allowlist) |
@@ -672,6 +833,8 @@ click through the whole UI and player. It is a preview tool only — production 
   a blank screen.
 - Subscriptions: YouTube killed `feeds/videos.xml` in Oct 2026. The worker now falls back to the channel's
   Videos tab (InnerTube), which gives relative dates ("2 hours ago") — day grouping uses an approximation.
+- Comments: `/api/comments` InnerTube `next` ke continuation par depend karta hai. YouTube shape badle to section
+  khud "Comments load nahi ho paye" bolta hai (watch page safe rehta hai); `?token=` se paging hoti hai.
 - Shorts: `/api/shorts` returns one page (up to 40). There is no endless scroll yet — hit Refresh for more,
   and YouTube's `FEshorts` tab is region/algorithm dependent, which is why the two fallbacks exist.
 - Cloudflare free tier: 100k requests/day. Media proxying costs bandwidth — fine for personal use.

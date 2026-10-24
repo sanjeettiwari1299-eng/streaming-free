@@ -21,7 +21,7 @@
  */
 
 // bump this when the worker changes, so /api/health tells you which code is live
-const BUILD = "8.0.0";
+const BUILD = "8.6.0";
 
 const INNERTUBE_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8";
 const UA = {
@@ -317,22 +317,46 @@ const breakerSnapshot = () =>
 
 // ── cookies (optional, secret-only) ───────────────────────────────────────────
 // Accepts: browser "a=1; b=2" header string, Netscape cookies.txt, or JSON array.
-function parseCookies(raw) {
-  if (!raw) return "";
-  const text = String(raw).trim();
-  if (!text) return "";
+function parseCookiesDetailed(raw) {
+  const out = { header: "", format: "none", total: 0, expired: 0, dropped: 0 };
+  if (!raw) return out;
+  let text = String(raw).trim().replace(/^["'`]+|["'`]+$/g, "");
+  if (!text) return out;
+
+  const emit = (pairs, format) => {
+    const clean = [];
+    for (const p of pairs) {
+      const i = p.indexOf("=");
+      if (i <= 0) continue;
+      const k = p.slice(0, i).trim();
+      let v = p.slice(i + 1).trim();
+      if (!k || /^cookie$/i.test(k)) continue;
+      if (v.length > 2 && /^["']/.test(v) && /["']$/.test(v)) v = v.slice(1, -1);
+      clean.push(k + "=" + v);
+    }
+    out.header = clean.join("; ");
+    out.total = clean.length;
+    out.format = format;
+    return out;
+  };
+
+  // 1. browser extension JSON export (has expirationDate — expired cookies are skipped)
   if (text.startsWith("[") || text.startsWith("{")) {
     try {
       const data = JSON.parse(text);
       const arr = Array.isArray(data) ? data : data.cookies || [];
-      const pairs = arr
-        .map((c) => (c && c.name ? `${c.name}=${c.value ?? ""}` : ""))
-        .filter(Boolean);
-      if (pairs.length) return pairs.join("; ");
-    } catch {
-      /* fall through */
-    }
+      const now = Date.now() / 1000;
+      const live = [];
+      for (const c of arr) {
+        if (!c || !c.name) { out.dropped++; continue; }
+        if (c.expirationDate && Number(c.expirationDate) < now) { out.expired++; continue; }
+        live.push(`${c.name}=${c.value ?? ""}`);
+      }
+      if (live.length || arr.length) return emit(live, "json");
+    } catch { /* fall through */ }
   }
+
+  // 2. Netscape cookies.txt
   if (text.includes("\t")) {
     const pairs = text
       .split(/\r?\n/)
@@ -342,9 +366,17 @@ function parseCookies(raw) {
         return p.length >= 7 ? `${p[5]}=${p[6]}` : "";
       })
       .filter(Boolean);
-    if (pairs.length) return pairs.join("; ");
+    if (pairs.length) return emit(pairs, "netscape");
   }
-  return text.replace(/\r?\n+/g, "; ").replace(/;\s*;/g, ";").replace(/^;\s*|;\s*$/g, "");
+
+  // 3. "Cookie: a=1; b=2" | newline separated | plain header string
+  text = text.replace(/^cookie\s*:\s*/i, "").replace(/\r?\n+/g, "; ");
+  const pairs = text.split(";").map((x) => x.trim()).filter(Boolean);
+  return emit(pairs, "header");
+}
+
+function parseCookies(raw) {
+  return parseCookiesDetailed(raw).header;
 }
 
 const cookieValue = (header, name) => {
@@ -376,8 +408,67 @@ function keyAllowed(env, url) {
   return diff === 0;
 }
 
+const ytCookieRaw = (env) =>
+  String((env && (env.YT_COOKIES || env.YT_COOKIE || env.YOUTUBE_COOKIES || env.COOKIES)) || "");
+
+/* Everything about the cookie secret, without ever printing a value. This is
+   what tells "cookies set ho gaye par bot-check phir bhi aa raha hai" apart
+   from "cookies worker tak pahunche hi nahi". */
+function cookieReport(env, url) {
+  const raw = ytCookieRaw(env);
+  if (!raw.trim()) {
+    return {
+      configured: false,
+      usable: false,
+      note: "YT_COOKIES secret set nahi hai",
+      fix: "Browser me youtube.com login karke extension (Get cookies.txt / EditThisCookie) se cookies export karein → Cloudflare → Worker → Settings → Variables and Secrets → YT_COOKIES me poori cookie string paste karein → Deploy.",
+    };
+  }
+  const d = parseCookiesDetailed(raw);
+  const h = d.header;
+  const has = (n) => !!cookieValue(h, n);
+  const auth = {
+    SID: has("SID") || has("__Secure-1PSID") || has("__Secure-3PSID"),
+    SAPISID: has("SAPISID") || has("__Secure-3PAPISID") || has("__Secure-1PAPISID"),
+    HSID: has("HSID") || has("__Secure-1PSIDTS") || has("__Secure-3PSIDTS"),
+    SSID: has("SSID") || has("__Secure-1PSID") || has("__Secure-3PSID"),
+  };
+  const missing = Object.keys(auth).filter((k) => !auth[k]);
+  const keyOk = url ? keyAllowed(env, url) : true;
+  const usable = !!h && !missing.length && keyOk;
+  const note = !h
+    ? "cookie string parse nahi hui (format samajh nahi aaya)"
+    : !keyOk
+      ? "SV_KEY mismatch — cookies jaan bujh ke block hain, app me wahi access key daalein"
+      : missing.length
+        ? "cookie export adhoora hai — ye zaroori cookies missing hain: " + missing.join(", ")
+        : d.expired
+          ? d.expired + " cookie(s) expire ho chuke the, unhe chhod diya"
+          : "cookies ready hain";
+  return {
+    configured: true,
+    usable,
+    format: d.format,
+    count: d.total,
+    expiredSkipped: d.expired,
+    dropped: d.dropped,
+    keys: h.split("; ").map((x) => x.split("=")[0]).slice(0, 14),
+    auth,
+    missing,
+    keyOk,
+    note,
+    fix: usable
+      ? "cookies worker tak pahunch rahe hain — agar phir bhi bot-check aaye to IP/account level block hai: POTOKEN_URL (bgutil provider) ya usi IP se banaye gaye fresh cookies try karein."
+      : !keyOk
+        ? "Worker me SV_KEY set hai — app me Settings → Access key me bilkul wahi value daalein, warna worker cookies use nahi karega."
+        : missing.length
+          ? "Naya export lein: youtube.com pe logged-in hote hue cookies.txt (Netscape) ya header string — SID, HSID, SSID, SAPISID (ya __Secure-3P*) sab chahiye."
+          : "Export dobara karein — browser me logged in rehte hue, saari youtube.com cookies ke saath.",
+  };
+}
+
 function cookieAuth(env, url) {
-  const raw = env && env.YT_COOKIES ? parseCookies(env.YT_COOKIES) : "";
+  const raw = parseCookies(ytCookieRaw(env));
   if (!raw) return null;
   if (!keyAllowed(env, url)) return null;
   return raw;
@@ -1423,6 +1514,141 @@ async function related(videoId, env = {}, url = new URL("https://x/")) {
   return { items: normalizeList(data, 24) };
 }
 
+// ── Comments ──────────────────────────────────────────────────────────────────
+// The watch page's "next" response holds a comments continuation; feeding that
+// token back gives commentEntityPayload rows. Everything is optional: any shape
+// we do not recognise returns an empty, self-explaining result instead of 500.
+const runsText = (runs) => (Array.isArray(runs) ? runs.map((r) => (r && r.text) || "").join("") : "");
+const numOf = (v) => {
+  if (typeof v === "number") return v;
+  const n = Number(String(v || "").replace(/[^\d]/g, ""));
+  return Number.isFinite(n) ? n : 0;
+};
+
+function normalizeComments(data, limit = 20) {
+  const out = [];
+  const seen = new Set();
+  for (const p of collect(data, ["commentEntityPayload"])) {
+    const id = p.commentId || (p.properties && p.properties.commentId);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    const content = (p.properties && p.properties.content && p.properties.content.content) || "";
+    const author = p.author || {};
+    const toolbar = p.toolbar || {};
+    const text = String(content || "").trim();
+    if (!text) continue;
+    out.push({
+      commentId: String(id),
+      text: text.slice(0, 2000),
+      author: author.displayName || author.name || "",
+      authorId: author.channelId || "",
+      avatar: author.avatarThumbnailUrl || "",
+      published: (p.properties && p.properties.publishedTime) || "",
+      likes: numOf(toolbar.likeCountNotliked || toolbar.likeCountLiked || toolbar.likeCountA11y),
+      replies: numOf(toolbar.replyCount),
+      creator: !!(author.isCreator || author.isOwner),
+    });
+    if (out.length >= limit) break;
+  }
+  if (!out.length) {
+    for (const r of collect(data, ["commentRenderer"])) {
+      const id = r.commentId;
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      const text = runsText(r.contentText && r.contentText.runs).trim();
+      if (!text) continue;
+      const thumbs = r.authorThumbnail && r.authorThumbnail.thumbnails;
+      out.push({
+        commentId: String(id),
+        text: text.slice(0, 2000),
+        author: runsText(r.authorText && r.authorText.runs),
+        authorId: (r.authorEndpoint && r.authorEndpoint.browseEndpoint && r.authorEndpoint.browseEndpoint.browseId) || "",
+        avatar: Array.isArray(thumbs) && thumbs.length ? thumbs[thumbs.length - 1].url : "",
+        published: runsText(r.publishedTimeText && r.publishedTimeText.runs),
+        likes: numOf(r.voteCount && r.voteCount.simpleText),
+        replies: numOf(r.replyCount && r.replyCount.simpleText) || 0,
+        creator: !!r.authorCommentBadge,
+      });
+      if (out.length >= limit) break;
+    }
+  }
+  return out.slice(0, limit);
+}
+
+function commentCount(data) {
+  const h = collect(data, ["commentsHeaderRenderer"])[0];
+  const t = h && h.countText;
+  const txt = (t && (t.simpleText || runsText(t.runs))) || "";
+  const n = numOf(txt);
+  if (n) return n;
+  const hp = collect(data, ["commentsEntryPointHeaderRenderer"])[0];
+  const t2 = hp && hp.commentCount;
+  return numOf(t2 && (t2.simpleText || runsText(t2.runs)));
+}
+
+function commentsToken(data, first) {
+  const fromSection = () => {
+    const sections = collect(data, ["itemSectionRenderer"]);
+    for (const sec of sections) {
+      const sid = String(sec.sectionIdentifier || sec.targetId || "");
+      if (!/comment/i.test(sid)) continue;
+      const c = collect(sec, ["continuationItemRenderer"])[0];
+      const tok = c && c.continuationEndpoint && c.continuationEndpoint.continuationCommand && c.continuationEndpoint.continuationCommand.token;
+      if (tok) return tok;
+    }
+    return "";
+  };
+  const fromEntry = () => {
+    const entry = collect(data, ["commentsEntryPointHeaderRenderer", "engagementPanelSectionListRenderer"])
+      .find((x) => JSON.stringify(x.panelIdentifier || x.targetId || "").match(/comment/i) || x.commentCount);
+    if (!entry) return "";
+    const c = collect(entry, ["continuationItemRenderer"])[0];
+    return (c && c.continuationEndpoint && c.continuationEndpoint.continuationCommand && c.continuationEndpoint.continuationCommand.token) || "";
+  };
+  const direct = fromSection() || fromEntry();
+  if (direct) return direct;
+  // last resort: every continuation in a comments response continues comments
+  if (!first) {
+    const all = collect(data, ["continuationItemRenderer"])
+      .map((c) => c.continuationEndpoint && c.continuationEndpoint.continuationCommand && c.continuationEndpoint.continuationCommand.token)
+      .filter(Boolean);
+    return all.length ? all[all.length - 1] : "";
+  }
+  return "";
+}
+
+async function comments(videoId, token, env = {}, url = new URL("https://x/")) {
+  if (!/^[A-Za-z0-9_-]{6,15}$/.test(String(videoId || ""))) return { ok: false, error: "valid video id required" };
+  let data;
+  let first = !token;
+  try {
+    if (!token) {
+      const next = await listCall(env, url, "next", { videoId });
+      token = commentsToken(next, true);
+      if (!token) {
+        const count = commentCount(next);
+        return { ok: true, items: [], next: null, count, disabled: true, source: "no-comments-continuation" };
+      }
+      data = await listCall(env, url, "next", { continuation: token });
+      first = false;
+      if (!commentCount(next)) {
+        const c = commentCount(data);
+        if (c) data.__count = c;
+      } else {
+        data.__count = commentCount(next);
+      }
+    } else {
+      data = await listCall(env, url, "next", { continuation: token });
+    }
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e), items: [], next: null, count: 0 };
+  }
+  const items = normalizeComments(data, 20);
+  const count = data.__count || commentCount(data) || 0;
+  const next = commentsToken(data, first) || null;
+  return { ok: true, items, next, count: count || items.length, source: "innertube", build: BUILD };
+}
+
 // ── Shorts ────────────────────────────────────────────────────────────────────
 const SHORT_MAX_SEC = 90;
 const ID_RE = /^[A-Za-z0-9_-]{6,15}$/;
@@ -1615,10 +1841,23 @@ async function directMp4(videoId, request, env) {
     return json({ error: p.error || "no playable stream", attempts: (p.attempts || []).slice(-8) }, 502);
   }
   const want = urlObj.searchParams.get("itag");
-  const pick = (want && p.formats.find((f) => String(f.itag) === String(want))) || p.formats[0];
-  const upstream = decodeURIComponent(pick.url.split("u=")[1].split("&")[0]);
+  const wanted = want ? p.formats.filter((f) => String(f.itag) === String(want)) : [];
+  /* a dead signature or an HTML body should never make /mp4/<id>.mp4 fail: walk
+     the other muxed streams before giving up (each one is proxied + validated) */
+  const order = [...wanted, ...p.formats.filter((f) => !wanted.includes(f))].slice(0, 3);
+  let pick = order[0];
+  let upstream = "";
+  let mp4res = null;
+  for (const f of order) {
+    const up = decodeURIComponent(String(f.url || "").split("u=")[1]?.split("&")[0] || f.url || "");
+    if (!up) continue;
+    const r = await media(up, request, env);
+    if (!mp4res) { pick = f; upstream = up; mp4res = r; }
+    if (r.status < 400 && r.headers.get("x-sv-media-fail") !== "1") { pick = f; upstream = up; mp4res = r; break; }
+  }
+  if (!mp4res || !upstream) return json({ error: "no proxyable stream", attempts: (p.attempts || []).slice(-8) }, 502);
 
-  const res = await media(upstream, request, env);
+  const res = mp4res;
   const headers = new Headers(res.headers);
   const safeTitle = String(p.video.title || videoId)
     .replace(/[^\w\s.-]/g, "")
@@ -1724,6 +1963,36 @@ async function media(url, request, env = {}) {
     }
   }
 
+  /* A 403 is not the only way a stream dies: googlevideo can answer 200 with an
+     HTML/JSON body (consent, "unavailable", a redirect page). The <video> tag
+     turns that into MEDIA_ERR_SRC_NOT_SUPPORTED — the user-visible
+     "format not supported" — so treat it as a failure and re-sign. */
+  const isMediaCt = (ct) => !ct || /^(video\/|audio\/|application\/octet-stream|binary\/|application\/mp4|application\/x-mpegurl)/i.test(ct);
+  const badBody = (r) => !r || !isMediaCt(r.headers.get("content-type") || "");
+
+  if (upstream && upstream.ok && badBody(upstream)) {
+    try { upstream.body?.cancel?.(); } catch {}
+    if (!refreshed && (await swap())) {
+      try {
+        upstream = await grab();
+        lastStatus = upstream.status;
+        refreshed = true;
+      } catch { /* keep going */ }
+    }
+    // still not media → ask the player for a different (lower) muxed stream
+    if (badBody(upstream) && videoId) {
+      const alt = await refreshedUrl(videoId, "", env).catch(() => "");
+      if (alt && alt !== target.toString()) {
+        try {
+          target = new URL(alt);
+          const r2 = await grab();
+          if (!badBody(r2)) { upstream = r2; lastStatus = r2.status; refreshed = true; }
+          else { try { r2.body?.cancel?.(); } catch {} }
+        } catch { /* ignore */ }
+      }
+    }
+  }
+
   // upstream broke (5xx / 429): back off once, then try a fresh signature
   if (upstream.status >= 500 || upstream.status === 429) {
     try {
@@ -1744,11 +2013,33 @@ async function media(url, request, env = {}) {
     }
   }
 
+  // never hand HTML/JSON to a <video> element: say it in JSON with a real status
+  if (badBody(upstream) || upstream.status === 403 || upstream.status === 410) {
+    try { upstream.body?.cancel?.(); } catch {}
+    const failBody = JSON.stringify({
+      error: "stream bytes not available (upstream " + upstream.status + ") — signature expired, retry",
+      retry: true,
+      itag: itag || undefined,
+    });
+    return new Response(failBody, {
+      status: upstream.status === 403 ? 403 : 502,
+      headers: {
+        "content-type": "application/json; charset=utf-8",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "x-sv-media-fail",
+        "x-sv-media-fail": "1",
+        "cache-control": "no-store",
+      },
+    });
+  }
+
   const out = new Headers();
   for (const h of ["content-length", "content-range", "accept-ranges", "content-type", "etag"]) {
     const v = upstream.headers.get(h);
     if (v) out.set(h, v);
   }
+  if (!out.get("content-type")) out.set("content-type", "video/mp4");
+  if (!out.get("accept-ranges")) out.set("accept-ranges", "bytes");
   out.set("access-control-allow-origin", "*");
   out.set("access-control-expose-headers", "content-length, content-range, accept-ranges");
   out.set("cache-control", "no-store");
@@ -2120,6 +2411,7 @@ const ROUTE_LIST = [
   "/api/trending?region=IN",
   "/api/shorts?region=IN",
   "/api/related?id=",
+  "/api/comments?id=&token=",
   "/api/rss?channels=UC..,UC..",
   "/api/channel?q=@handle",
   "/api/sync?p=KEY  (GET/POST/DELETE)",
@@ -2185,7 +2477,7 @@ p{margin:8px 0}
   <div class="card">
     <h2>Quick test</h2>
     <p class="muted">In links ko kholke dekho — sab JSON aana chahiye:</p>
-    <p><a class="btn ghost" href="/api/selftest?id=dQw4w9WgXcQ">/api/selftest?id=dQw4w9WgXcQ</a><a class="btn ghost" href="/api/trending?region=IN">/api/trending</a><a class="btn ghost" href="/api/shorts?region=IN">/api/shorts</a></p>
+    <p><a class="btn ghost" href="/api/selftest?id=dQw4w9WgXcQ&probe=1">/api/selftest?id=…&amp;probe=1 (doctor)</a><a class="btn ghost" href="/api/trending?region=IN">/api/trending</a><a class="btn ghost" href="/api/shorts?region=IN">/api/shorts</a></p>
     <p class="muted">Direct file: <code>/mp4/dQw4w9WgXcQ.mp4</code> · <code>?dl=1</code> download · <code>?itag=18</code> quality</p>
   </div>
 
@@ -2215,13 +2507,154 @@ const SYNC_SCHEMA = [
 const canonicalKind = (k) => KIND_ALIAS[String(k || "").toLowerCase()] || "";
 const validProfileKey = (k) => /^[A-Za-z0-9_-]{16,64}$/.test(String(k || ""));
 
-const libsqlBase = (env) =>
-  String((env && (env.LIBSQL_URL || env.LAYERBASE_URL)) || "")
-    .trim()
-    .replace(/^libsql:\/\//i, "https://")
-    .replace(/\/+$/, "");
+/* ── LIBSQL_URL normalizer ────────────────────────────────────────────────────
+   Dashboard se jo bhi paste ho, usse ek hi shakal me le aao:
+     https://db-xyz.sage.cloud.layerbase.dev
+   Sab ye chalte hain (aur pehle toot rahe the):
+     db-xyz.sage.cloud.layerbase.dev            (no scheme)
+     libsql://db-xyz…  ·  http://db-xyz…
+     https://db-xyz…/v2/pipeline                (endpoint copy kiya hua)
+     https://db-xyz…/v2  ·  …/pipeline  ·  …/    (trailing bits)
+     "https://db-xyz…"                          (quotes ke saath paste)
+   Hrana endpoint khud add hota hai — isliye base me path kabhi nahi rakhte.  */
+const LIBSQL_SUFFIXES = [/\/v2\/pipeline$/i, /\/v1\/pipeline$/i, /\/v3\/pipeline$/i, /\/pipeline$/i, /\/v2$/i, /\/v1$/i, /\/v3$/i, /\/http$/i, /\/sql$/i];
+const libsqlRaw = (env) =>
+  String((env && (env.LIBSQL_URL || env.LIBSQL_DATABASE_URL || env.LAYERBASE_URL || env.TURSO_DATABASE_URL)) || "");
 
-const storeConfigured = (env) => !!(libsqlBase(env) && String((env && (env.LIBSQL_TOKEN || env.LAYERBASE_TOKEN)) || "").trim());
+/* Turso-style connection strings carry the token in the URL itself:
+     libsql://db.cloud.layerbase.dev?authToken=eyJ…
+   The dashboard's ".env download" prints exactly that, so a token that never
+   made it into its own secret still works. */
+function tokenFromUrl(raw) {
+  const s = String(raw || "");
+  const m = s.match(/[?&](?:authToken|auth_token|token)=([^&#\s]+)/i);
+  if (!m) return "";
+  try { return decodeURIComponent(m[1]); } catch { return m[1]; }
+}
+
+function normalizeLibsqlUrl(raw) {
+  let s = String(raw || "").trim().replace(/^["'`\s]+|["'`\s]+$/g, "");
+  if (!s) return "";
+  s = s.replace(/\s+/g, "");
+  s = s.replace(/^libsql:\/\//i, "https://").replace(/^(wss|ws|http):\/\//i, "https://");
+  if (!/^https?:\/\//i.test(s)) s = "https://" + s;
+  s = s.replace(/[?#].*$/, "");
+  for (let i = 0; i < 4; i++) {
+    const before = s;
+    s = s.replace(/\/+$/, "");
+    for (const re of LIBSQL_SUFFIXES) s = s.replace(re, "");
+    if (s === before) break;
+  }
+  try {
+    const u = new URL(s);
+    if (!u.hostname || !u.hostname.includes(".")) return "";
+    return u.origin;                       // path hamesha drop — endpoint worker khud lagata hai
+  } catch {
+    return "";
+  }
+}
+
+const libsqlBase = (env) => normalizeLibsqlUrl(libsqlRaw(env));
+
+const libsqlToken = (env) => {
+  const given = String(
+    (env && (env.LIBSQL_TOKEN || env.LIBSQL_AUTH_TOKEN || env.LAYERBASE_TOKEN || env.TURSO_AUTH_TOKEN)) || ""
+  );
+  const cleaned = given
+    .trim()
+    .replace(/^["'`]|["'`]$/g, "")
+    .replace(/^bearer\s+/i, "")
+    .replace(/\s+/g, "");
+  return cleaned || tokenFromUrl(libsqlRaw(env));
+};
+
+/* What kind of secret did we actually get? Layerbase hands out two very
+   different credentials — the database auth token (a JWT) and the account API
+   key (sk_…, for the Cloud REST API only). Naming the shape ends the guessing. */
+function tokenShape(token) {
+  const t = String(token || "");
+  const parts = t.split(".").length;
+  return {
+    len: t.length,
+    parts,
+    prefix: t.slice(0, 6),
+    dots: parts - 1,
+    apiKey: /^sk[_-]/i.test(t),
+    url: /^(https?|libsql|wss?):\/\//i.test(t),
+    spaced: /\s/.test(t),
+    uuid: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(t),
+  };
+}
+
+/* ── JWT inspector ───────────────────────────────────────────────────────────
+   Layerbase answers 401 with "The JWT is invalid" for four different mistakes:
+   the secret is not a JWT, the JWT expired, the JWT was issued for another
+   database, or the signing secret was rotated. We decode the payload (claims
+   only, no verification) so the probe can name the real one instead of guessing.
+   The token itself never leaves the worker. */
+function b64urlJson(part) {
+  try {
+    const s = String(part || "").replace(/-/g, "+").replace(/_/g, "/");
+    const pad = s + "=".repeat((4 - (s.length % 4)) % 4);
+    return JSON.parse(atob(pad));
+  } catch { return null; }
+}
+
+function decodeJwtInfo(token) {
+  const t = String(token || "");
+  const parts = t.split(".");
+  const out = { jwt: parts.length === 3 && t.length > 40, parts: parts.length, len: t.length };
+  if (!out.jwt) return out;
+  const head = b64urlJson(parts[0]) || {};
+  const p = b64urlJson(parts[1]) || {};
+  const exp = Number(p.exp || 0);
+  out.alg = String(head.alg || "");
+  out.exp = exp || 0;
+  out.expIso = exp ? new Date(exp * 1000).toISOString().slice(0, 10) : "";
+  out.expired = !!exp && exp * 1000 < Date.now();
+  out.dbId = String(p.id || p.db || p.database || p.dbid || "");
+  out.scope = String(p.a || p.scope || "");
+  out.iss = String(p.iss || "");
+  out.sub = String(p.sub || "");
+  return out;
+}
+
+/* does the token look like it belongs to the database in LIBSQL_URL? */
+function jwtDbMatch(dbId, host) {
+  if (!dbId || !host) return null;
+  const first = String(host).split(".")[0].toLowerCase();
+  const id = String(dbId).toLowerCase();
+  if (!first || !id) return null;
+  return first === id || first.includes(id) || id.includes(first);
+}
+
+/* What the worker actually parsed — so a wrong paste is visible, not guessed. */
+function libsqlInfo(env) {
+  const raw = libsqlRaw(env);
+  const base = libsqlBase(env);
+  const token = libsqlToken(env);
+  const tk = decodeJwtInfo(token);
+  const hadScheme = /^[a-z]+:\/\//i.test(raw.trim());
+  const hadPath = /^[a-z]+:\/\/.*\//i.test(raw.trim().replace(/\/+$/, "") + "/x") && /\/[^/]+/.test(raw.trim().replace(/^[a-z]+:\/\//i, ""));
+  return {
+    configured: !!(base && token),
+    urlGiven: !!raw.trim(),
+    tokenGiven: !!token,
+    normalized: base,
+    host: base ? base.replace(/^https:\/\//, "") : "",
+    endpoint: base ? base + "/v2/pipeline" : "",
+    changed: !!raw.trim() && base !== raw.trim(),
+    hadScheme,
+    hadPath,
+    tokenPrefix: token ? token.slice(0, 4) + "…" : "",
+    tokenSource: String((env && (env.LIBSQL_TOKEN || env.LIBSQL_AUTH_TOKEN || env.LAYERBASE_TOKEN || env.TURSO_AUTH_TOKEN)) || "") ? "secret" : token ? "url" : "",
+    shape: tokenShape(token),
+    token: tk,
+    dbMatch: jwtDbMatch(tk.dbId, base ? base.replace(/^https:\/\//, "").split("/")[0] : ""),
+  };
+}
+
+const storeConfigured = (env) => !!(libsqlBase(env) && libsqlToken(env));
 
 // Hrana v2 typed values
 const T = (v) => ({ type: "text", value: String(v) });
@@ -2231,7 +2664,7 @@ const SCHEMA_DONE = new Set();
 
 async function libsqlPipeline(env, stmts) {
   const base = libsqlBase(env);
-  const token = String((env && (env.LIBSQL_TOKEN || env.LAYERBASE_TOKEN)) || "").trim();
+  const token = libsqlToken(env);
   if (!base || !token) throw new Error("cloud store not configured: set LIBSQL_URL + LIBSQL_TOKEN");
   const body = {
     requests: stmts
@@ -2254,7 +2687,12 @@ async function libsqlPipeline(env, stmts) {
   } catch {
     throw new Error(`layerbase returned non-JSON (HTTP ${r.status})`);
   }
-  if (!r.ok) throw new Error(`layerbase HTTP ${r.status}${data && data.error ? ": " + data.error : ""}`);
+  if (!r.ok) {
+    const e = new Error(`layerbase HTTP ${r.status}${data && data.error ? ": " + data.error : ""}`);
+    e.status = r.status;
+    e.code = "http";
+    throw e;
+  }
   const out = [];
   for (const res of data.results || []) {
     if (res.type === "error") {
@@ -2282,21 +2720,91 @@ async function libsqlPipeline(env, stmts) {
   return out;
 }
 
+/* Turn "layerbase HTTP 401: Unauthorized: The JWT is invalid" into the real
+   cause. Used everywhere the store touches Layerbase, so the app, the probe and
+   the sync error all say the same, actionable thing. */
+function jwtVerdict(env, e) {
+  const info = libsqlInfo(env);
+  const tk = info.token || {};
+  const status = (e && e.status) || 0;
+  const msg = String((e && e.message) || "");
+  const auth = status === 401 || status === 403 || /unauthor|invalid jwt|jwt is invalid|token/i.test(msg);
+  if (!auth) return null;
+  const jwt = { ...tk, dbMatch: info.dbMatch, host: info.host };
+  if (!tk.jwt) {
+    const sh = info.shape || {};
+    const seen = `${sh.len || 0} chars, shuru "${sh.prefix || "?"}", ${sh.dots || 0} dot`;
+    /* the single most common Layerbase mix-up: the account API key (sk_…) is for
+       the Cloud REST API, while /v2/pipeline wants the database auth token */
+    const error = sh.apiKey
+      ? `LIBSQL_TOKEN me Layerbase ka personal API key (sk_…) hai — wo Cloud REST API ke liye hota hai, database ke liye nahi (${seen})`
+      : sh.url
+        ? "LIBSQL_TOKEN me URL paste ho gaya — ye secret database ka auth token maangta hai, URL alag LIBSQL_URL me jaata hai"
+        : sh.spaced
+          ? "LIBSQL_TOKEN me space ya line break hai — token ek hi line me, bina space ke paste karein"
+          : `LIBSQL_TOKEN JWT nahi lag raha (${seen}; JWT 3 dot-separated parts hota hai, "eyJ…" se shuru)`;
+    const hint = sh.apiKey
+      ? "sk_ key Cloud API (cloud.layerbase.dev/v1) ke liye hai. Database chalane ke liye dashboard me apna DB kholein → Quick Connect / Connect panel → auth token (eyJ… wala, ~200+ chars) copy karein → Cloudflare → Worker → Settings → Variables and Secrets me LIBSQL_TOKEN = wahi token → Deploy."
+      : "Layerbase → apna DB → Quick Connect → auth token (eyJ… wala) copy karein — URL nahi, API key nahi. Cloudflare → Worker → Settings → Variables and Secrets → LIBSQL_TOKEN update → Deploy. (Naam LIBSQL_AUTH_TOKEN bhi chalega, aur URL me ?authToken=… ho to wo bhi padh liya jaata hai.)";
+    return { code: sh.apiKey ? "jwt-api-key" : "jwt-format", error, hint, jwt };
+  }
+  if (tk.expired) {
+    return {
+      code: "jwt-expired",
+      error: "LIBSQL_TOKEN expire ho chuka hai (exp " + tk.expIso + ")",
+      hint: "Layerbase → DB → Connect se naya token banayein, LIBSQL_TOKEN update karein, Deploy dabayein. Bina expiry wala token lein to ye dobara nahi aayega.",
+      jwt,
+    };
+  }
+  if (info.dbMatch === false) {
+    return {
+      code: "jwt-wrong-db",
+      error: 'Token dusri database ka lag raha hai (token db "' + tk.dbId + '", URL host "' + info.host + '")',
+      hint: "Workspace me kai DB ho sakte hain. Layerbase me jis DB ka token hai, usi DB ke Connect screen se URL bhi copy karein aur wahi LIBSQL_URL me daalein, phir Deploy dabayein.",
+      jwt,
+    };
+  }
+  return {
+    code: "jwt-bad-signature",
+    error: "Token ki signature invalid hai — rotate ho gaya ya adhoora paste hua",
+    hint: "Layerbase → DB → Connect se token dobara copy karein (poora, bina line break ke). Bearer prefix ki zaroorat nahi, worker khud lagata hai. Phir LIBSQL_TOKEN update + Deploy.",
+    jwt,
+  };
+}
+
 // One-click setup check: does this worker actually reach Layerbase, sleep/wake
 // included? Returns the round-trip time so "slow because it was hibernating" is
 // visible instead of guessed.
 async function storeProbe(env, uid = "") {
+  const info = libsqlInfo(env);
   if (!storeConfigured(env)) {
+    // secret to hai par parse nahi hui → yeh sabse common "link sahi hai par invalid" case hai
+    const badUrl = info.urlGiven && !info.normalized;
+    const badToken = info.urlGiven && info.normalized && !info.tokenGiven;
     return {
       ok: false,
       configured: false,
       backend: "layerbase-libsql",
-      error: "LIBSQL_URL + LIBSQL_TOKEN missing",
+      error: badUrl
+        ? "LIBSQL_URL parse nahi hui — sirf host chahiye, jaise https://lakshaydb-cute-drum.sage.cloud.layerbase.dev"
+        : badToken
+          ? "LIBSQL_TOKEN khali/galt hai (Bearer prefix ya quotes hata dein)"
+          : "LIBSQL_URL + LIBSQL_TOKEN missing",
+      url: {
+        given: info.urlGiven,
+        normalized: info.normalized,
+        host: info.host,
+        changed: info.changed,
+        tokenGiven: info.tokenGiven,
+        tokenPrefix: info.tokenPrefix,
+        endpoint: info.endpoint,
+      },
       steps: [
         "layerbase.com → sign in (free, no card)",
         "New Database → engine libSQL → Free plan → Create",
         "open the DB → Connect → copy the https://…cloud.layerbase.dev URL and the auth token",
         "Cloudflare → Workers → your worker → Settings → Variables → add LIBSQL_URL and LIBSQL_TOKEN as Secret",
+        "/v2/pipeline ya trailing slash paste karne ki zaroorat nahi — worker khud lagata hai (ab handle bhi karta hai)",
         "hit this probe again — it should say ok:true in a few hundred ms",
       ],
     };
@@ -2313,6 +2821,9 @@ async function storeProbe(env, uid = "") {
       configured: true,
       backend: "layerbase-libsql",
       host: libsqlBase(env).replace(/^https?:\/\//, "").split("/")[0],
+      endpoint: libsqlBase(env) + "/v2/pipeline",
+      urlFixed: info.changed,
+      originalUrl: info.changed ? info.normalized : undefined,
       latencyMs: Date.now() - t0,
       schema: "sv_store ready",
       rows,
@@ -2321,15 +2832,27 @@ async function storeProbe(env, uid = "") {
       wokeFromSleep: Date.now() - t0 > 1200,
     };
   } catch (e) {
+    const jv = jwtVerdict(env, e);
     return {
       ok: false,
       configured: true,
       backend: "layerbase-libsql",
       latencyMs: Date.now() - t0,
-      error: /^layerbase/i.test(e.message) ? e.message : "layerbase: " + e.message,
-      hint: /restore|archiv/i.test(e.message)
+      error: jv ? jv.error : /^layerbase/i.test(e.message) ? e.message : "layerbase: " + e.message,
+      verdict: jv ? jv.code : "layerbase-error",
+      jwt: jv ? jv.jwt : undefined,
+      host: libsqlBase(env).replace(/^https?:\/\//, ""),
+      endpoint: libsqlBase(env) + "/v2/pipeline",
+      url: { given: info.urlGiven, normalized: info.normalized, changed: info.changed, tokenGiven: info.tokenGiven, tokenPrefix: info.tokenPrefix },
+      hint: jv
+        ? jv.hint
+        : /restore|archiv/i.test(e.message)
         ? "database is archived — open the Layerbase dashboard and press Restore (data + backups are kept)"
-        : "check LIBSQL_URL (https://…cloud.layerbase.dev) and LIBSQL_TOKEN; a sleeping DB wakes on the first query in ~1-5s",
+        : /401|403|unauthor/i.test(e.message)
+          ? "token galat hai — Layerbase dashboard → Connect se naya auth token copy karein (Bearer prefix ke bina), phir Cloudflare → Settings → Variables me LIBSQL_TOKEN update karke Deploy dabaein"
+          : /404|not found|non-JSON/i.test(e.message)
+            ? "host galat lag raha hai ya database delete ho gaya — Layerbase → Connect se poora https URL dobara copy karein (path ke bina)"
+            : "check LIBSQL_URL (https://…cloud.layerbase.dev) and LIBSQL_TOKEN; a sleeping DB wakes on the first query in ~1-5s",
     };
   }
 }
@@ -2457,11 +2980,19 @@ async function syncGet(env, uid) {
     writeSnapshot(uid, payload);
     return payload;
   } catch (e) {
+    const jv = jwtVerdict(env, e);
     const snap = await readSnapshot(uid);
     if (snap && snap.store) {
-      return { ...snap, ok: true, stale: true, backend: "edge-snapshot", warning: e.message };
+      return { ...snap, ok: true, stale: true, backend: "edge-snapshot", warning: (jv && jv.error) || e.message };
     }
-    return { ok: false, configured: true, error: e.message, hint: "Layerbase free DB sleeps when idle (wakes in ~1-5s) and is archived after 14 idle days — open the dashboard and hit Restore." };
+    return {
+      ok: false,
+      configured: true,
+      error: (jv && jv.error) || e.message,
+      hint: (jv && jv.hint) || "Layerbase free DB sleeps when idle (wakes in ~1-5s) and is archived after 14 idle days — open the dashboard and hit Restore.",
+      verdict: jv ? jv.code : "layerbase-error",
+      jwt: jv ? jv.jwt : undefined,
+    };
   }
 }
 
@@ -2490,7 +3021,16 @@ async function syncWrite(env, uid, body) {
     }
     return payload;
   } catch (e) {
-    return { ok: false, configured: true, error: e.message, written: 0 };
+    const jv = jwtVerdict(env, e);
+    return {
+      ok: false,
+      configured: true,
+      error: (jv && jv.error) || e.message,
+      hint: jv ? jv.hint : undefined,
+      verdict: jv ? jv.code : "layerbase-error",
+      jwt: jv ? jv.jwt : undefined,
+      written: 0,
+    };
   }
 }
 
@@ -2542,7 +3082,7 @@ const ROUTES = [
     "/api/health",
     async (u, env) => {
       const { versions, source } = await discoverVersions(env);
-      const cookies = env && env.YT_COOKIES ? parseCookies(env.YT_COOKIES) : "";
+      const cookies = parseCookies(ytCookieRaw(env));
       return {
         ok: true,
         build: BUILD,
@@ -2552,14 +3092,7 @@ const ROUTES = [
         versions,
         versionSource: source,
         ladder: "2 versions per client (discovered, then baked fallback)",
-        cookies: cookies
-          ? {
-              configured: true,
-              used: keyAllowed(env, u),
-              keys: cookies.split("; ").map((x) => x.split("=")[0]).slice(0, 12),
-              note: keyAllowed(env, u) ? "cookies enabled for this caller" : "SV_KEY mismatch → cookies NOT used",
-            }
-          : { configured: false },
+        cookies: { ...cookieReport(env, u), used: !!(cookies && keyAllowed(env, u)) },
         versionCacheAge: Math.round(Date.now() / 1000 - VERSION_CACHE.ts) + "s",
         resilience: {
           visitorData: !!VERSION_CACHE.visitorData,
@@ -2614,8 +3147,9 @@ const ROUTES = [
         versions,
         source,
         ladder: ladder.map((c) => ({ id: c.id, version: c.ctx.clientVersion, needsAuth: !!c.needsAuth })),
-        cookieHeaderPresent: !!(env && env.YT_COOKIES),
+        cookieHeaderPresent: !!ytCookieRaw(env),
         keyProtectsCookies: !!(env && env.SV_KEY),
+        cookies: cookieReport(env, u),
         // who is actually delivering on this worker's IP (per isolate, resets on redeploy)
         clientStats: CLIENT_STATS,
         headers: {
@@ -2637,6 +3171,63 @@ const ROUTES = [
         cookieHeader: cookieAuth(env, u),
         region: (u.searchParams.get("region") || "IN").toUpperCase(),
       });
+      /* ?probe=1 also pulls the first bytes through our own /api/media proxy, so a
+         single URL answers both questions: "did we resolve?" and "does it play?" */
+      let stream = null;
+      if (u.searchParams.get("probe") === "1") {
+        const first = (res.formats || [])[0];
+        if (!first) {
+          stream = { ok: false, status: 0, note: "no format to probe (player did not resolve)" };
+        } else {
+          try {
+            const src = new URL(first.url, u.origin).toString();
+            const r = await fetch(src, { headers: { range: "bytes=0-2047" } });
+            const buf = await r.arrayBuffer();
+            stream = {
+              ok: r.status === 200 || r.status === 206,
+              status: r.status,
+              itag: first.itag,
+              quality: first.quality,
+              type: r.headers.get("content-type") || "",
+              bytes: buf.byteLength,
+              note: r.status === 403 ? "googlevideo ne 403 diya — signature/nsig toot gaya, worker dobara deploy karein" :
+                r.status === 200 || r.status === 206 ? "bytes aa rahe hain — stream playable hai" : "unexpected status",
+            };
+          } catch (e) {
+            stream = { ok: false, status: 0, note: "proxy fetch failed: " + String((e && e.message) || e) };
+          }
+        }
+      }
+
+      const ck = cookieReport(env, u);
+      const verdict = (() => {
+        if (!res.ok) {
+          if (res.botCheck || res.needAuth) {
+            // "cookies laga diye par bot-check phir bhi" — yahi wajah hoti hai
+            if (!ck.configured) {
+              return { code: "bot", hi: "YouTube bot-check aur cookies set nahi hain: worker me YT_COOKIES (throwaway account) ya POTOKEN_URL secret add karein → Deploy." };
+            }
+            if (!ck.keyOk) {
+              return { code: "bot-key", hi: "Cookies set hain par SV_KEY mismatch ki wajah se worker unhe use nahi kar raha. App ke Settings → Access key me bilkul wahi SV_KEY daalein (ya worker se SV_KEY hata dein)." };
+            }
+            if (ck.missing.length) {
+              return { code: "bot-cookies", hi: "Cookies pahunche par export adhoora hai — missing: " + ck.missing.join(", ") + ". SID/HSID/SSID/SAPISID sab chahiye; netscape cookies.txt ya poori header string paste karein." };
+            }
+            if (res.poTokenUsed || (env && (env.PO_TOKEN || env.POTOKEN_URL))) {
+              return { code: "bot-ip", hi: "Cookies poore hain aur PoToken bhi try hua, phir bhi bot-check — ye IP-level block hai (Cloudflare Workers ka shared IP). Free fix: POTOKEN_URL provider (bgutil) chalu karein, ya worker ko aise account ke cookies dein jo us IP se pehle kabhi use na hua ho." };
+            }
+            return { code: "bot-potoken", hi: "Cookies theek hain par YouTube is IP par PoToken maang raha hai. POTOKEN_URL (bgutil-verify-token provider) secret add karein — uske bina datacenter IP par playback block rehta hai. /api/debug me clientStats dekhein." };
+          }
+          if (res.reason === "geo") return { code: "geo", hi: "Ye video is region me block hai — Settings → Region me IN ke alawa US/GB try karein." };
+          if (res.reason === "age") return { code: "age", hi: "Age-restricted video: cookies chahiye (YT_COOKIES)." };
+          return { code: "resolve", hi: "Stream resolve hi nahi hua — /api/debug?refresh=1 kholein aur clientStats dekhein." };
+        }
+        if (stream && !stream.ok) {
+          return { code: "proxy", hi: "Resolve ho gaya par bytes nahi aa rahe (" + stream.status + "). Worker ka naya version deploy karein, phir dobara probe karein." };
+        }
+        return { code: "ok", hi: "Sab theek — resolve + bytes dono kaam kar rahe hain. Browser me video chalni chahiye." };
+      })();
+
       return {
         ok: !!res.ok,
         video: id,
@@ -2654,6 +3245,9 @@ const ROUTES = [
         formats: (res.formats || []).map((f) => f.quality),
         attempts: (res.attempts || []).slice(-12),
         breakers: breakerSnapshot(),
+        stream,
+        cookies: ck,
+        verdict,
       };
     },
   ],
@@ -2662,6 +3256,7 @@ const ROUTES = [
   ["/api/searchmore", async (u, env) => searchMore(u.searchParams.get("q") || "", u.searchParams.get("token") || "", env, u)],
   ["/api/trending", async (u, env) => trending((u.searchParams.get("region") || "IN").toUpperCase(), env, u)],
   ["/api/related", async (u, env) => related(u.searchParams.get("id") || "", env, u)],
+  ["/api/comments", async (u, env) => comments(u.searchParams.get("id") || "", u.searchParams.get("token") || "", env, u)],
   ["/api/shorts", async (u, env) => shorts((u.searchParams.get("region") || "IN").toUpperCase(), env, u)],
   ["/api/rss", async (u, env) => rss(env, u.searchParams.get("channels") || "", u)],
   ["/api/probe", async (u, env) => probe(u, env)],
@@ -2775,6 +3370,8 @@ export {
   search,
   trending,
   related,
+  comments,
+  normalizeComments,
   // new: version discovery + cookies
   parseYtdlpVersions,
   discoverVersions,
@@ -2782,6 +3379,9 @@ export {
   CLIENT_SPECS,
   FALLBACK_VERSIONS,
   parseCookies,
+  parseCookiesDetailed,
+  cookieReport,
+  ytCookieRaw,
   sapisidHash,
   sha1Hex,
   keyAllowed,
@@ -2825,6 +3425,12 @@ export {
   canonicalKind,
   opsToStatements,
   libsqlBase,
+  normalizeLibsqlUrl,
+  libsqlInfo,
+  libsqlToken,
+  decodeJwtInfo,
+  jwtVerdict,
+  jwtDbMatch,
   libsqlPipeline,
   syncGet,
   syncWrite,
