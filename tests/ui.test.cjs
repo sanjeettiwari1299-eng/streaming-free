@@ -111,6 +111,7 @@ function makeDom(opts = {}) {
         const u = String(url);
         w.__calls.push(u);
         if (opts.offline) throw new Error("network down");
+        if (/dead\.dev/.test(u)) throw new Error("fetch failed: dead.dev unreachable");
         const ok = (d) => ({ ok: true, status: 200, json: async () => d, text: async () => JSON.stringify(d) });
         /* multi-engine: the second host answers when the first is rate-limited */
         if (/engine2\.dev/.test(u)) {
@@ -1323,6 +1324,53 @@ const cookie = (w, k) => {
     click(wf, all(wf, ".s-item").find((b) => /Settings/.test(b.textContent)));
     await wait(600);
     check("settings lists both engines", /#1 w\.dev/.test(wf.document.body.textContent) && /#2 engine2\.dev/.test(wf.document.body.textContent), wf.document.body.textContent.slice(-200));
+  }
+
+  /* ══ 22. engine pool panel: add / test / remove a second worker ══════════ */
+  {
+    const dm = makeDom({ secondEngine: true, prefs: { sv_cfg: JSON.stringify({ engineUrl: "https://w.dev", autoplay: true }) } });
+    const wf = dm.window;
+    wf.console.error = () => {};
+    const sc17 = wf.document.createElement("script");
+    sc17.textContent = app;
+    wf.document.body.appendChild(sc17);
+    await wait(900);
+    click(wf, all(wf, ".s-item").find((b) => /Settings/.test(b.textContent)));
+    await wait(500);
+
+    check("settings has an engine pool panel", !!q(wf, ".engpool"), wf.document.body.textContent.slice(0, 80));
+    check("the first engine is listed", /#1 w\.dev/.test(q(wf, ".engpool") ? q(wf, ".engpool").textContent : ""), (q(wf, ".engpool") || {}).textContent);
+
+    /* test the engine: a live worker turns the dot green + shows build + ms */
+    click(wf, all(wf, ".eng-row .set-chip").find((b) => /^Test$/.test(b.textContent)));
+    await wait(700);
+    check("testing an engine shows its build and latency", /build 8\.8\.0/.test(q(wf, ".engpool").textContent) && /\d+ ms/.test(q(wf, ".engpool").textContent), (q(wf, ".engpool") || {}).textContent);
+
+    /* add the second worker */
+    const addInput = q(wf, '[aria-label="Add engine"]');
+    check("there is an add-engine box", !!addInput);
+    setVal(wf, addInput, "engine2.dev");
+    await wait(200);
+    click(wf, all(wf, ".engpool .set-api-btn").find((b) => /^Add$/.test(b.textContent)));
+    await wait(900);
+    check("the second engine is added", /#2 engine2\.dev/.test(q(wf, ".engpool").textContent), (q(wf, ".engpool") || {}).textContent);
+    check("https is added automatically", /engine2\.dev/.test((cookie(wf, "sv_cfg") || {}).engineUrl || ""), (cookie(wf, "sv_cfg") || {}).engineUrl);
+
+    /* remove is only offered when there are 2+ */
+    const rowTech = all(wf, ".eng-row").find((r) => /engine2/.test(r.textContent));
+    const chipsOf = (el) => (el ? [...el.querySelectorAll(".set-chip")] : []);
+    check("remove is offered for the extra engine", !!rowTech && chipsOf(rowTech).some((b) => /✕/.test(b.textContent)), all(wf, ".eng-row").map((r) => r.textContent).join(" | "));
+    const xBtn = chipsOf(rowTech).find((b) => /✕/.test(b.textContent));
+    if (xBtn) click(wf, xBtn);
+    await wait(500);
+    check("removing it leaves one engine", !/engine2\.dev/.test(q(wf, ".engpool").textContent), (q(wf, ".engpool") || {}).textContent);
+
+    /* a dead engine is reported, not silently ignored */
+    setVal(wf, q(wf, '[aria-label="Add engine"]'), "https://dead.dev");
+    await wait(200);
+    click(wf, all(wf, ".engpool .set-api-btn").find((b) => /^Add$/.test(b.textContent)));
+    await wait(900);
+    check("an unreachable engine is marked failed", all(wf, ".eng-row").some((r) => /fetch failed|unreachable|HTTP/i.test(r.textContent)), all(wf, ".eng-row").map((r) => r.textContent).join(" | ").slice(0, 200));
   }
 
   const failed = checks.filter((c) => !c.pass);

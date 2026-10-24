@@ -100,6 +100,21 @@ me chalta rehta hai, to cookie lagane ke baad bina reload video chal padti hai.
 
 ---
 
+### Second worker banane ke steps (5 min, recommended)
+
+1. **naya Cloudflare account** (ya usi account me naya worker — alag subdomain `.workers.dev`).
+2. Workers & Pages → **Create** → **Hello World** → **Deploy**.
+3. **Edit code** → purana code delete → yahi `worker.js` poora paste → **Deploy**.
+4. **Settings → Variables and Secrets**: wahi secrets jo pehle worker me hain —
+   `LIBSQL_URL`, `LIBSQL_TOKEN`, `YT_COOKIES` (agar hai), `POTOKEN_URL`, `PROXY_URLS`, `SV_KEY`.
+   (Same Layerbase DB chalega — dono workers ek hi profile padhte/likhte hain.)
+5. Naya URL copy karein, app me **Settings → Engines (multi-IP) → input → Add**.
+   Panel khud test karta hai: dot green = live, `build` + `ms` dikhta hai, dead engine red.
+6. `✓ active` chip batata hai kaun sa worker abhi serve kar raha hai. `✕` se hata bhi sakte hain.
+
+Teen workers tak theek hai (3× free quota, 3 alag egress IP + 3 alag rate-limit bucket).
+Aage badhane se pehle `POTOKEN_URL` lagana zyada faydemand hai.
+
 ## "Alag alag IP se request jaye" — haan, 2 tareeke se (9.0.0)
 
 Cloudflare **khud apna egress IP chunne nahi deta** (koi setting nahi hai, Smart Placement bhi IP nahi badalta).
