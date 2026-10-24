@@ -21,7 +21,7 @@
  */
 
 // bump this when the worker changes, so /api/health tells you which code is live
-const BUILD = "8.3.0";
+const BUILD = "8.4.0";
 
 const INNERTUBE_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8";
 const UA = {
@@ -1750,10 +1750,23 @@ async function directMp4(videoId, request, env) {
     return json({ error: p.error || "no playable stream", attempts: (p.attempts || []).slice(-8) }, 502);
   }
   const want = urlObj.searchParams.get("itag");
-  const pick = (want && p.formats.find((f) => String(f.itag) === String(want))) || p.formats[0];
-  const upstream = decodeURIComponent(pick.url.split("u=")[1].split("&")[0]);
+  const wanted = want ? p.formats.filter((f) => String(f.itag) === String(want)) : [];
+  /* a dead signature or an HTML body should never make /mp4/<id>.mp4 fail: walk
+     the other muxed streams before giving up (each one is proxied + validated) */
+  const order = [...wanted, ...p.formats.filter((f) => !wanted.includes(f))].slice(0, 3);
+  let pick = order[0];
+  let upstream = "";
+  let mp4res = null;
+  for (const f of order) {
+    const up = decodeURIComponent(String(f.url || "").split("u=")[1]?.split("&")[0] || f.url || "");
+    if (!up) continue;
+    const r = await media(up, request, env);
+    if (!mp4res) { pick = f; upstream = up; mp4res = r; }
+    if (r.status < 400 && r.headers.get("x-sv-media-fail") !== "1") { pick = f; upstream = up; mp4res = r; break; }
+  }
+  if (!mp4res || !upstream) return json({ error: "no proxyable stream", attempts: (p.attempts || []).slice(-8) }, 502);
 
-  const res = await media(upstream, request, env);
+  const res = mp4res;
   const headers = new Headers(res.headers);
   const safeTitle = String(p.video.title || videoId)
     .replace(/[^\w\s.-]/g, "")

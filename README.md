@@ -59,7 +59,7 @@ error panel me **Engine doctor**) — video id daalo, ek click me resolve + byte
 Sabse pehle ye confirm karein ki deploy naya hai:
 
 ```
-GET https://<your-worker>.workers.dev/api/health      → build: "8.3.0"
+GET https://<your-worker>.workers.dev/api/health      → build: "8.4.0"
 ```
 
 Purana build dikhe to Cloudflare → Workers → apna worker → Edit code → **poora `worker.js` paste** → Deploy.
@@ -81,6 +81,22 @@ Wo galti video ki nahi thi — proxy kabhi-kabhi YouTube ka **HTML error page** 
 
 Yani agar pehli koshish me hi bytes kharab hain, app khud 2–3 second me dusra stream le aata hai — user ko sirf
 "refresh ho raha hai" dikhta hai, "format not supported" nahi.
+
+### "Video hamesha chalti rahe" — kya-kya khud handle hota hai
+
+| Situation | App ka behaviour |
+| --- | --- |
+| resolve fail (worker 500 / timeout) | 6 silent tries, backoff 0.9s → 2s → 4s → 7s → 12s; phir bhi fail to panel jo **15s me khud retry** karta rehta hai |
+| stream bytes nahi aaye | naya URL sign, dubara verify — user ko sirf "Khud theek kar raha hoon… (try n/6)" |
+| playback ruk gaya / codec error | nudge → lower quality → fresh stream → `/mp4/<id>.mp4` (bina signature) → poora ladder **3 baar** dobara; uske baad hi panel, aur wo bhi auto-retry |
+| `/mp4/<id>.mp4` | worker khud ek dead quality ko chhod ke agli muxed stream try karta hai |
+| internet off | koi request nahi jaati, "Internet off — wapas aate hi chal jayegi"; `online` event par khud play |
+| worker down | health 12s me ek baar chupchap check hota hai; worker aate hi app apne aap theek |
+| video end | next recommendation → trending fallback → `endless` mode me wahi video loop |
+
+Sirf do cheezein retry se theek nahi hoti: **age wall** aur **region block** (unke liye `YT_COOKIES` / Region setting),
+aur **bot-check** (worker me `YT_COOKIES` ya `POTOKEN_URL`). Wahan panel asli reason batata hai — par retry background
+me chalta rehta hai, to cookie lagane ke baad bina reload video chal padti hai.
 
 ---
 

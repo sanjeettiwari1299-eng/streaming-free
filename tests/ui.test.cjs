@@ -184,6 +184,12 @@ function makeDom(opts = {}) {
         if (/\/api\/search/.test(u)) return ok({ items: TRENDING, continuation: null });
         if (/\/api\/player/.test(u)) {
           const id = decodeURIComponent(u.split("id=")[1].split("&")[0]);
+          if (opts.playerFailFirst) {
+            w.__playerCalls = (w.__playerCalls || 0) + 1;
+            if (w.__playerCalls <= opts.playerFailFirst) {
+              return { ok: false, status: 500, json: async () => ({ error: "resolve exploded" }), text: async () => JSON.stringify({ error: "resolve exploded" }) };
+            }
+          }
           if (opts.gatedPlayer && id === "tr000000002") {
             return ok({
               ok: false, error: "YouTube bot-check: koi playable stream nahi mila",
@@ -666,11 +672,21 @@ const cookie = (w, k) => {
   check("fourth failure switches to the stable URL", /\/mp4\/tr000000001\.mp4/.test(q(wr, ".cp video").getAttribute("src") || ""), q(wr, ".cp video").getAttribute("src"));
   check("stable URL keeps an itag", /itag=\d+/.test(q(wr, ".cp video").getAttribute("src") || ""), q(wr, ".cp video").getAttribute("src"));
 
-  // stage 4 — only now, the honest panel with actions
+  // stage 4 — ladder exhausted: it loops the ladder again instead of dying
   q(wr, ".cp video").dispatchEvent(new wr.Event("error"));
-  await wait(500);
-  const cpErr = q(wr, ".cp .cp-err");
+  await wait(300);
+  check("exhausted ladder restarts itself instead of dying", !q(wr, ".cp .cp-err") && /Dobara connect/.test(wr.document.body.textContent), wr.document.body.textContent.slice(0, 120));
+
+  // keep failing until the silent cycles are used up
+  let cpErr = null;
+  for (let i = 0; i < 80 && !cpErr; i++) {
+    const v = q(wr, ".cp video");
+    if (v) v.dispatchEvent(new wr.Event("error"));
+    await wait(250);
+    cpErr = q(wr, ".cp .cp-err");
+  }
   check("after every remedy the player is honest about it", !!cpErr && /Open on YouTube/.test(cpErr.textContent), cpErr && cpErr.textContent.slice(0, 80));
+  check("the panel promises to keep retrying", !!cpErr && /Khud retry/.test(cpErr.textContent), cpErr && cpErr.textContent.slice(0, 90));
   check("no crash during recovery", rerrs.filter((e) => !/Not implemented|scrollTo/.test(e)).length === 0, rerrs.slice(0, 2).join(" | "));
 
   // late-arriving recovery: going back online resumes by itself
@@ -997,6 +1013,62 @@ const cookie = (w, k) => {
     check("dead stream triggers a silent re-resolve", after > before, before + " → " + after);
     check("user never sees a format error for it", !!q(wf, ".cp video") && !q(wf, ".cp-err"), (q(wf, ".cp-err") || {}).textContent);
     check("preflight verifies real bytes before mounting", (wf.__calls || []).some((u) => /\/api\/media/.test(u)), (wf.__calls || []).filter((u) => /media/.test(u)).slice(0, 2).join(" "));
+  }
+
+
+  /* ══ 17. "video hamesha chale" — silent retries, offline grace ═══════════ */
+  {
+    /* the first resolve blows up (worker 500): the watch page must retry by itself */
+    const dm = makeDom({ playerFailFirst: 1 });
+    const wf = dm.window;
+    wf.console.error = () => {};
+    const sc8 = wf.document.createElement("script");
+    sc8.textContent = app;
+    wf.document.body.appendChild(sc8);
+    await wait(900);
+    click(wf, all(wf, ".vc")[0]);
+    await wait(300);
+    check("a failed resolve shows progress, not an error", !q(wf, ".cp-err") && /theek kar raha hoon/i.test(wf.document.body.textContent), wf.document.body.textContent.slice(-120));
+    await wait(2600);
+    check("the app retries by itself and plays", !!q(wf, ".cp video") && !q(wf, ".cp-err"), wf.document.body.textContent.slice(-120));
+    check("no manual retry was needed", (wf.__calls || []).filter((u) => /\/api\/player/.test(u)).length >= 2, (wf.__calls || []).filter((u) => /player/.test(u)).length);
+  }
+  {
+    /* no internet: wait for the network, never hammer it, then play on 'online' */
+    const dm = makeDom();
+    const wf = dm.window;
+    wf.console.error = () => {};
+    const sc9 = wf.document.createElement("script");
+    sc9.textContent = app;
+    wf.document.body.appendChild(sc9);
+    await wait(900);
+    let online = false;
+    try { Object.defineProperty(wf.navigator, "onLine", { configurable: true, get: () => online }); } catch {}
+    const beforePlayer = (wf.__calls || []).filter((u) => /\/api\/player/.test(u)).length;
+    click(wf, all(wf, ".vc")[0]);
+    await wait(900);
+    const afterOffline = (wf.__calls || []).filter((u) => /\/api\/player/.test(u)).length;
+    check("offline says so instead of erroring", /Internet off/i.test(wf.document.body.textContent), wf.document.body.textContent.slice(-120));
+    check("offline does not spend a resolve", afterOffline === beforePlayer, beforePlayer + " → " + afterOffline);
+    online = true;
+    wf.dispatchEvent(new wf.Event("online"));
+    await wait(1200);
+    check("coming back online starts playback by itself", !!q(wf, ".cp video"), wf.document.body.textContent.slice(-120));
+  }
+  {
+    /* a bot-check wall cannot be retried away: show it, but promise the retry */
+    const dm = makeDom({ gatedPlayer: true });
+    const wf = dm.window;
+    wf.console.error = () => {};
+    const sc10 = wf.document.createElement("script");
+    sc10.textContent = app;
+    wf.document.body.appendChild(sc10);
+    await wait(900);
+    click(wf, all(wf, ".vc")[1]);
+    await wait(800);
+    check("blocked video still explains itself", /bot-check/i.test(wf.document.body.textContent));
+    check("and says retrying continues in the background", /Khud retry chal raha hai/.test(wf.document.body.textContent), wf.document.body.textContent.slice(-160));
+    check("blocked video is not silently hammered", (wf.__calls || []).filter((u) => /\/api\/player/.test(u)).length <= 2, (wf.__calls || []).filter((u) => /player/.test(u)).length);
   }
 
   const failed = checks.filter((c) => !c.pass);

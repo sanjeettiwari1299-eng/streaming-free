@@ -143,6 +143,40 @@ const m2t = await m2.text();
 check("dead stream never reaches the video tag as HTML", m2.status >= 400 && /json/.test(m2.headers.get("content-type") || ""), m2.status + " " + m2.headers.get("content-type"));
 check("dead stream is marked retryable", m2.headers.get("x-sv-media-fail") === "1" && /retry/.test(m2t), m2t.slice(0, 80));
 
+/* /mp4/<id>.mp4 must also survive a dead first format — it walks the others */
+let mp4Hops = 0;
+globalThis.fetch = async (url) => {
+  const u = String(url);
+  if (u.includes("/s/player/")) return new Response(PLAYER_JS, { status: 200 });
+  if (u.startsWith("https://www.youtube.com/") && !u.includes("/youtubei/"))
+    return new Response('<script>var ytcfg={"INNERTUBE_CLIENT_VERSION":"2.1"};', { status: 200 });
+  if (u.includes("raw.githubusercontent.com")) return new Response("", { status: 200 });
+  if (u.includes("/youtubei/v1/player"))
+    return new Response(JSON.stringify({
+      playabilityStatus: { status: "OK" },
+      videoDetails: { title: "T", author: "A", channelId: "UC", lengthSeconds: "60" },
+      assets: { js: "https://www.youtube.com/s/player/x/player_ias.vflset/en_US/base.js" },
+      streamingData: {
+        formats: [
+          { itag: 22, url: "https://rr1---sn-x.googlevideo.com/videoplayback?itag=22", qualityLabel: "720p", height: 720, mimeType: "video/mp4" },
+          { itag: 18, url: "https://rr1---sn-x.googlevideo.com/videoplayback?itag=18", qualityLabel: "360p", height: 360, mimeType: "video/mp4" },
+        ],
+        adaptiveFormats: [],
+      },
+    }), { status: 200 });
+  if (u.includes("itag=22")) return new Response("<html>blocked</html>", { status: 200, headers: { "content-type": "text/html" } });
+  if (u.includes("googlevideo.com")) {
+    mp4Hops += 1;
+    return new Response("SECONDBYTES", { status: 206, headers: { "content-range": "bytes 0-10/100", "content-type": "video/mp4" } });
+  }
+  throw new Error("unexpected " + u);
+};
+W.resetBreakers();
+const m3 = await W.default.fetch(new Request("https://w.dev/mp4/dQw4w9WgXcQ.mp4"), {});
+const m3t = await m3.text();
+check("mp4 route hops past a dead quality", (m3.status === 200 || m3.status === 206) && m3t === "SECONDBYTES", m3.status + " " + m3t.slice(0, 40));
+check("mp4 route reports the quality it actually used", m3.headers.get("x-sv-quality") === "360p", m3.headers.get("x-sv-quality"));
+
 const failed = checks.filter((c) => !c.pass);
 checks.forEach((c) => console.log((c.pass ? "PASS  " : "FAIL  ") + c.n + (c.pass || !c.e ? "" : "  -> " + c.e)));
 console.log(`\n${checks.length - failed.length}/${checks.length} direct-mp4 checks passed`);

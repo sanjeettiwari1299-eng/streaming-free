@@ -1309,6 +1309,11 @@ function playableFormats(list) {
   });
 }
 
+const RESOLVE_BACKOFF = [900, 2000, 4000, 7000, 12000];      // ms between silent resolve rounds
+/* reasons a retry cannot fix in the next 30 seconds — show the panel (it keeps
+   re-checking every 15s anyway) instead of silently hammering the worker */
+const SLOW_REASONS = new Set(["bot", "age", "region", "login", "unavailable"]);
+
 const PREFLIGHT_TTL = 10 * 60 * 1000;
 const PREFLIGHT_OK = new Map();                // videoId|itag → ts (verified recently)
 async function preflightStream(cfg, format, videoId, timeout = 9000) {
@@ -2059,7 +2064,9 @@ const ZOOM_MODES = [
 
 /* Recovery memory lives outside the component: a refresh re-mounts the player,
    and the ladder must continue where it left off (stage, quality, position). */
-const REC = { id: "", stage: 0, stable: false, qi: 0, at: 0 };
+const REC = { id: "", stage: 0, stable: false, qi: 0, at: 0, cycles: 0 };
+
+const LADDER_CYCLES = 3;      // full self-heal re-runs before the UI admits defeat
 
 function CPlayer({ video, formats, st, onNext, poster, onRefresh }) {
   const wrapRef = useRef(null), vidRef = useRef(null), hideT = useRef(null);
@@ -2086,7 +2093,11 @@ function CPlayer({ video, formats, st, onNext, poster, onRefresh }) {
   const barRef = useRef(null);
   const histRef = useRef(st.hist || []); histRef.current = st.hist || [];
   const tried = useRef(new Set());                 // format indexes already burned
+  // full-ladder re-runs survive the re-mount that onRefresh() causes
+  const cycles = useRef(REC.id && video && REC.id === video.videoId ? REC.cycles || 0 : 0);
+  const retryT = useRef(null);
   useEffect(() => { tried.current = new Set(); }, [video && video.videoId]);
+  useEffect(() => () => clearTimeout(retryT.current), []);
 
   const list = formats && formats.length ? formats : [];
   const cur = list[Math.min(qi, list.length - 1)];
@@ -2112,8 +2123,9 @@ function CPlayer({ video, formats, st, onNext, poster, onRefresh }) {
   useEffect(() => {
     const id = (video && video.videoId) || "";
     if (REC.id === id) return;
-    REC.id = id; REC.stage = 0; REC.stable = false; REC.qi = 0; REC.at = 0;
+    REC.id = id; REC.stage = 0; REC.stable = false; REC.qi = 0; REC.at = 0; REC.cycles = 0;
     rec.current.stage = 0;
+    cycles.current = 0;
     setStable(false);
   }, [video && video.videoId]);
 
@@ -2368,10 +2380,41 @@ function CPlayer({ video, formats, st, onNext, poster, onRefresh }) {
       setStable(true);
       return;
     }
+    /* still nothing? the ladder was cheap moves — run it again from the top.
+       A flaky minute should never end in a dead player; only after LADDER_CYCLES
+       full re-runs (≈40s of self-healing) do we admit it to the UI. */
+    if (cycles.current < LADDER_CYCLES) {
+      cycles.current += 1;
+      REC.cycles = cycles.current;
+      const n = cycles.current;
+      rec.current.stage = 0; REC.stage = 0;
+      setRecovering("Dobara connect kar raha hoon… (" + n + "/" + LADDER_CYCLES + ")");
+      clearTimeout(retryT.current);
+      retryT.current = setTimeout(() => {
+        if (!vidRef.current) return;
+        setStable(false); REC.stable = false;
+        if (onRefresh) onRefresh();
+        else { try { vidRef.current.load(); } catch {} }
+      }, 800 * n);
+      return;
+    }
     setRecovering("");
     setErr(fmtErr(vidRef.current) || "Stream ruk gaya");
     setWaiting(false);
   }, [list.length, qi, onRefresh, video, st.cfg]);
+
+  // the panel is a pause, not a verdict: it keeps reconnecting by itself
+  useEffect(() => {
+    if (!err) return;
+    const t = setTimeout(() => {
+      if (!vidRef.current) return;
+      cycles.current = 0; REC.cycles = 0;
+      setErr(""); setWaiting(true); setStable(false); REC.stable = false;
+      if (onRefresh) onRefresh();
+      else { try { vidRef.current.load(); } catch {} }
+    }, 12000);
+    return () => clearTimeout(t);
+  }, [err, onRefresh]);
 
   // stall watchdog: no progress while playing for ~9s = escalate (once per stall)
   useEffect(() => {
@@ -2457,7 +2500,7 @@ function CPlayer({ video, formats, st, onNext, poster, onRefresh }) {
         onWaiting={() => setWaiting(true)}
         onPlaying={() => {
           setWaiting(false); setErr(""); setRecovering("");
-          rec.current.stage = 0; REC.stage = 0; REC.at = 0;
+          rec.current.stage = 0; REC.stage = 0; REC.at = 0; cycles.current = 0; REC.cycles = 0;
           tick.current = { t: vidRef.current?.currentTime || 0, at: Date.now() };
         }}
         onCanPlay={() => setWaiting(false)}
@@ -2529,8 +2572,9 @@ function CPlayer({ video, formats, st, onNext, poster, onRefresh }) {
       {err && (
         <div className="cp-err" onClick={(e) => e.stopPropagation()}>
           <Icon d={I.warn} size={34} cls="pl-ico-svg" />
-          <div style={{ fontSize: 16, fontWeight: 500, color: "#fff" }}>Video play nahi ho paya</div>
+          <div style={{ fontSize: 16, fontWeight: 500, color: "#fff" }}>Connection slow lag raha hai</div>
           <div style={{ fontSize: 13, color: "#aaa", maxWidth: 420, lineHeight: 1.6 }}>{err}</div>
+          <div style={{ fontSize: 12, color: "#7fb9e8" }}>Khud retry chal raha hai — aapko kuch karne ki zarurat nahi</div>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "center" }}>
             <button className="cp-pill" onClick={() => { setErr(""); setWaiting(true); vidRef.current?.load(); }}>Retry</button>
             {list.length > 1 && <button className="cp-pill ghost" onClick={() => setQi((qi + 1) % list.length)}>Try another quality</button>}
@@ -3643,6 +3687,7 @@ function WatchPage({ video, onPlay, st, engine, onChannel, onAddSub }) {
   const [showWhy, setShowWhy] = useState(false);
   const [doctor, setDoctor] = useState(false);
   const [retrying, setRetrying] = useState(0);
+  const [offline, setOffline] = useState(false);
   const [fallback, setFallback] = useState([]);   // endless play: recommendations dead → trending
   const [relTab, setRelTab] = useState("all");
   const [moreOpen, setMoreOpen] = useState(false);
@@ -3662,29 +3707,53 @@ function WatchPage({ video, onPlay, st, engine, onChannel, onAddSub }) {
       setStream(warm); setStatus("ready"); return () => { dead = true; };
     }
 
-    /* resolve → verify real bytes → (if dead) silently re-resolve twice.
-       The user only ever sees an error after the silent attempts are gone. */
+    /* no internet = wait, do not throw a request at a dead network */
+    if (typeof navigator !== "undefined" && navigator.onLine === false) {
+      setStatus("loading");
+      setRetrying(0);
+      setOffline(true);
+      const onUp = () => { setOffline(false); setAttempt((a) => a + 1); };
+      window.addEventListener("online", onUp, { once: true });
+      return () => { dead = true; window.removeEventListener("online", onUp); };
+    }
+    setOffline(false);
+
+    /* resolve → verify real bytes → repeat with backoff. Six silent rounds cover
+       ~40s of a bad network; only then does the panel appear, and even that panel
+       keeps retrying on its own. Retrying can never fix an age/geo/private wall,
+       so those stop after the first honest answer. */
     const fetchOnce = () => apiPlayer(st.cfg, video.videoId);
     (async () => {
       let last = null;
-      for (let i = 0; i < 3; i++) {
+      for (let i = 0; i < 6; i++) {
         if (dead) return;
+        if (i > 0) {
+          setRetrying(i);
+          await new Promise((r) => setTimeout(r, RESOLVE_BACKOFF[Math.min(i - 1, RESOLVE_BACKOFF.length - 1)]));
+          if (dead) return;
+        }
         let d = null;
-        try { d = await fetchOnce(); } catch (e) { last = { error: e.message }; break; }
+        try { d = await fetchOnce(); } catch (e) { last = { error: e.message, retryable: true }; }
         if (dead) return;
-        last = d;
-        if (!d || !d.ok || !(d.formats || []).length) break;      // resolve-level failure: no point retrying bytes
-        const v = await verifyStream(st.cfg, d, video.videoId);
-        if (dead) return;
-        if (v.ok) {
-          streamRemember(st.cfg, v.data);
-          setStream(v.data);
-          setStatus("ready");
-          return;
+        if (d) {
+          last = d;
+          if (d.ok && (d.formats || []).length) {
+            const v = await verifyStream(st.cfg, d, video.videoId);
+            if (dead) return;
+            if (v.ok) {
+              streamRemember(st.cfg, v.data);
+              setStream(v.data);
+              setStatus("ready");
+              return;
+            }
+            last = { ...d, error: "stream bytes nahi aaye", retryable: true };
+          } else if (SLOW_REASONS.has(d.reason)) {
+            setDiag(d);
+            break;                                  // retrying cannot unlock this one
+          }
         }
         // resolved but bytes did not arrive → fresh URL, quietly
         STREAM_CACHE.delete(streamKey(st.cfg, video.videoId));
-        setRetrying(i + 1);
       }
       if (dead) return;
       setStatus("error");
@@ -3693,6 +3762,14 @@ function WatchPage({ video, onPlay, st, engine, onChannel, onAddSub }) {
     })();
     return () => { dead = true; };
   }, [video.videoId, engine, st.cfg.engineUrl, attempt]);
+
+  /* the error panel is a pause: keep trying behind it (15s, forever) so a bad
+     minute on the network never becomes a video the user has to click again */
+  useEffect(() => {
+    if (status !== "error" || err === "engine-offline") return;
+    const t = setTimeout(() => setAttempt((a) => a + 1), 15000);
+    return () => clearTimeout(t);
+  }, [status, err, attempt]);
 
   useEffect(() => {
     let dead = false;
@@ -3795,7 +3872,13 @@ function WatchPage({ video, onPlay, st, engine, onChannel, onAddSub }) {
           {status === "loading" && (
             <div className="cp">
               <div className="cp-big"><div className="cp-spin" /></div>
-              <div className="cp-loadtxt">{retrying ? "Stream refresh ho raha hai… (attempt " + (retrying + 1) + "/3)" : "Stream resolve ho raha hai…"}</div>
+              <div className="cp-loadtxt">
+                {offline
+                  ? "Internet off hai — wapas aate hi video khud chal jayegi"
+                  : retrying
+                    ? "Khud theek kar raha hoon… (try " + (retrying + 1) + "/6)"
+                    : "Stream resolve ho raha hai…"}
+              </div>
             </div>
           )}
           {status === "error" && (
@@ -3804,13 +3887,19 @@ function WatchPage({ video, onPlay, st, engine, onChannel, onAddSub }) {
                 <div className="pl-badge">{err === "engine-offline" ? "engine" : (diag && diag.reason) || "error"}</div>
                 <Icon d={I.warn} size={34} cls="pl-ico-svg" />
                 <div className="pl-title">
-                  {err === "engine-offline" ? "Engine connect nahi hai" : (diag && diag.reasonLabel) || "Video play nahi ho paya"}
+                  {err === "engine-offline" ? "Engine connect nahi hai" : (diag && diag.reasonLabel) || "Net slow lag raha hai"}
                 </div>
                 <div className="pl-sub">
                   {err === "engine-offline"
                     ? "Settings → Engine URL set karein (Cloudflare Worker)."
                     : (diag && diag.hint) || err}
                 </div>
+
+                {err !== "engine-offline" && (
+                  <div className="pl-note">
+                    <b>Khud retry chal raha hai</b> — 15 second me dobara try hoga, aapko page refresh karne ki zarurat nahi.
+                  </div>
+                )}
 
                 {diag && diag.needAuth && (
                   <div className="pl-note">
@@ -5285,6 +5374,18 @@ function App() {
   }, [st.cfg.engineUrl, st.cfg.accessKey]);
 
   useEffect(() => { checkEngine(); }, [st.cfg.engineUrl]);
+
+  /* engine down? keep checking quietly — the moment the worker is back the app
+     heals itself instead of asking the user to reload */
+  useEffect(() => {
+    if (engine !== "down") return;
+    let dead = false;
+    const ping = async () => {
+      try { const d = await apiHealth(st.cfg); if (!dead && d && d.ok) setEngine("ok"); } catch {}
+    };
+    const iv = setInterval(ping, 12000);
+    return () => { dead = true; clearInterval(iv); };
+  }, [engine, st.cfg.engineUrl, st.cfg.accessKey]);
 
   useEffect(() => { document.documentElement.dataset.theme = theme; }, [theme]);
   useEffect(() => { if (st.cfg.theme && st.cfg.theme !== theme) setTheme(st.cfg.theme); }, [st.cfg.theme]);
