@@ -1859,6 +1859,36 @@ async function media(url, request, env = {}) {
     }
   }
 
+  /* A 403 is not the only way a stream dies: googlevideo can answer 200 with an
+     HTML/JSON body (consent, "unavailable", a redirect page). The <video> tag
+     turns that into MEDIA_ERR_SRC_NOT_SUPPORTED — the user-visible
+     "format not supported" — so treat it as a failure and re-sign. */
+  const isMediaCt = (ct) => !ct || /^(video\/|audio\/|application\/octet-stream|binary\/|application\/mp4|application\/x-mpegurl)/i.test(ct);
+  const badBody = (r) => !r || !isMediaCt(r.headers.get("content-type") || "");
+
+  if (upstream && upstream.ok && badBody(upstream)) {
+    try { upstream.body?.cancel?.(); } catch {}
+    if (!refreshed && (await swap())) {
+      try {
+        upstream = await grab();
+        lastStatus = upstream.status;
+        refreshed = true;
+      } catch { /* keep going */ }
+    }
+    // still not media → ask the player for a different (lower) muxed stream
+    if (badBody(upstream) && videoId) {
+      const alt = await refreshedUrl(videoId, "", env).catch(() => "");
+      if (alt && alt !== target.toString()) {
+        try {
+          target = new URL(alt);
+          const r2 = await grab();
+          if (!badBody(r2)) { upstream = r2; lastStatus = r2.status; refreshed = true; }
+          else { try { r2.body?.cancel?.(); } catch {} }
+        } catch { /* ignore */ }
+      }
+    }
+  }
+
   // upstream broke (5xx / 429): back off once, then try a fresh signature
   if (upstream.status >= 500 || upstream.status === 429) {
     try {
@@ -1879,11 +1909,33 @@ async function media(url, request, env = {}) {
     }
   }
 
+  // never hand HTML/JSON to a <video> element: say it in JSON with a real status
+  if (badBody(upstream) || upstream.status === 403 || upstream.status === 410) {
+    try { upstream.body?.cancel?.(); } catch {}
+    const failBody = JSON.stringify({
+      error: "stream bytes not available (upstream " + upstream.status + ") — signature expired, retry",
+      retry: true,
+      itag: itag || undefined,
+    });
+    return new Response(failBody, {
+      status: upstream.status === 403 ? 403 : 502,
+      headers: {
+        "content-type": "application/json; charset=utf-8",
+        "access-control-allow-origin": "*",
+        "access-control-expose-headers": "x-sv-media-fail",
+        "x-sv-media-fail": "1",
+        "cache-control": "no-store",
+      },
+    });
+  }
+
   const out = new Headers();
   for (const h of ["content-length", "content-range", "accept-ranges", "content-type", "etag"]) {
     const v = upstream.headers.get(h);
     if (v) out.set(h, v);
   }
+  if (!out.get("content-type")) out.set("content-type", "video/mp4");
+  if (!out.get("accept-ranges")) out.set("accept-ranges", "bytes");
   out.set("access-control-allow-origin", "*");
   out.set("access-control-expose-headers", "content-length, content-range, accept-ranges");
   out.set("cache-control", "no-store");

@@ -140,9 +140,19 @@ function makeDom(opts = {}) {
         if (/\/api\/debug/.test(u)) return ok({ ok: true, clients: [{ id: "android_vr" }, { id: "web" }], versions: {} });
         if (/\/api\/canary/.test(u)) return ok({ ok: true, videos: [{ id: "x", ok: true }] });
         if (/\/api\/media/.test(u) || /\/mp4\//.test(u)) {
+          w.__mediaCalls = (w.__mediaCalls || 0) + 1;
+          if (opts.mediaFailFirst && w.__mediaCalls <= opts.mediaFailFirst) {
+            return {
+              ok: false, status: 403,
+              headers: { get: (k) => ({ "content-type": "application/json", "x-sv-media-fail": "1" }[String(k).toLowerCase()] || null) },
+              arrayBuffer: async () => new ArrayBuffer(0),
+              text: async () => JSON.stringify({ error: "stream bytes not available", retry: true }),
+              json: async () => ({ error: "stream bytes not available", retry: true }),
+            };
+          }
           return {
             ok: true, status: 206,
-            headers: { get: (k) => ({ "content-type": "video/mp4", "content-range": "bytes 0-2047/9999" }[String(k).toLowerCase()] || null) },
+            headers: { get: (k) => ({ "content-type": String(u).includes("webm") ? "video/webm" : "video/mp4", "content-range": "bytes 0-2047/9999" }[String(k).toLowerCase()] || null) },
             arrayBuffer: async () => new ArrayBuffer(2048),
             text: async () => "bytes",
             json: async () => ({}),
@@ -188,6 +198,16 @@ function makeDom(opts = {}) {
               ok: true, client: "android_vr",
               video: { videoId: id, title: "Short " + id.slice(-1), author: "ShortChan", authorId: "UCshorts000000000000000", viewCount: 12345, lengthSeconds: 30, thumbnails: [] },
               formats: [{ itag: 18, quality: "360p", url: "/api/media?u=" + id + "&v=" + id + "&itag=18" }],
+            });
+          }
+          if (opts.mixedFormats) {
+            return ok({
+              ...PLAYER,
+              formats: [
+                { itag: 43, quality: "360p", height: 360, mime: "video/webm; codecs=\"vp9, opus\"", url: "/api/media?u=webm&v=" + id + "&itag=43" },
+                { itag: 22, quality: "720p", height: 720, mime: "video/mp4; codecs=\"avc1.64001F, mp4a.40.2\"", url: "/api/media?u=hi&v=" + id + "&itag=22" },
+                { itag: 18, quality: "360p", height: 360, mime: "video/mp4; codecs=\"avc1.42001E, mp4a.40.2\"", url: "/api/media?u=lo&v=" + id + "&itag=18" },
+              ],
             });
           }
           return ok(PLAYER);
@@ -929,6 +949,54 @@ const cookie = (w, k) => {
       setVal(wu, q(wu, ".urlcheck input"), "not a url");
       return /parse nahi hui/i.test((q(wu, ".urlcheck-out") || {}).textContent || "");
     })(), (q(wu, ".urlcheck-out") || {}).textContent);
+  }
+
+
+  /* ══ 16. "format not supported" — silent self-heal, no manual retries ════ */
+  {
+    const dm = makeDom({ mixedFormats: true });
+    const wf = dm.window;
+    const errs16 = [];
+    wf.console.error = (...a) => errs16.push(a.join(" "));
+    const sc6 = wf.document.createElement("script");
+    sc6.textContent = app;
+    wf.document.body.appendChild(sc6);
+    await wait(900);
+    click(wf, all(wf, ".vc")[0]);
+    await wait(1200);
+    const src = (q(wf, ".cp video") || {}).getAttribute ? q(wf, ".cp video").getAttribute("src") : "";
+    check("webm stream is skipped when the browser cannot play it", /u=hi/.test(src || ""), src);
+    check("player still mounts with a playable format", !!q(wf, ".cp video"));
+    check("no error panel for a format mismatch", !q(wf, ".cp-err"), (q(wf, ".cp-err") || {}).textContent);
+    const gear = all(wf, ".cp-btn").find((b) => b.getAttribute("title") === "Settings");
+    check("settings gear is present on the playable stream", !!gear);
+    click(wf, gear);
+    await wait(160);
+    const mainRows = all(wf, ".cp-mi").map((b) => b.textContent).join(" | ");
+    check("settings menu opens after a format hop", /Quality/.test(mainRows), mainRows);
+    const qRow = all(wf, ".cp-mi").find((b) => /Quality/.test(b.textContent));
+    if (qRow) click(wf, qRow);
+    await wait(160);
+    const qualityRows = all(wf, ".cp-mi").map((b) => b.textContent).join(" | ");
+    check("quality menu lists only playable formats", qualityRows.length > 0 && !/itag 43|webm/i.test(qualityRows), qualityRows);
+    check("mp4 streams stay on offer", /itag 22|720p/.test(qualityRows), qualityRows);
+  }
+  {
+    /* stream is dead on first try (403 from the proxy): the app must re-resolve
+       silently instead of showing "format not supported" to the user */
+    const dm = makeDom({ mediaFailFirst: 3 });
+    const wf = dm.window;
+    const sc7 = wf.document.createElement("script");
+    sc7.textContent = app;
+    wf.document.body.appendChild(sc7);
+    await wait(900);
+    const before = wf.__calls.filter((u) => /\/api\/player/.test(u)).length;
+    click(wf, all(wf, ".vc")[0]);
+    await wait(2500);
+    const after = wf.__calls.filter((u) => /\/api\/player/.test(u)).length;
+    check("dead stream triggers a silent re-resolve", after > before, before + " → " + after);
+    check("user never sees a format error for it", !!q(wf, ".cp video") && !q(wf, ".cp-err"), (q(wf, ".cp-err") || {}).textContent);
+    check("preflight verifies real bytes before mounting", (wf.__calls || []).some((u) => /\/api\/media/.test(u)), (wf.__calls || []).filter((u) => /media/.test(u)).slice(0, 2).join(" "));
   }
 
   const failed = checks.filter((c) => !c.pass);

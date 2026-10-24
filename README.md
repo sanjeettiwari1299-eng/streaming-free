@@ -59,13 +59,28 @@ error panel me **Engine doctor**) — video id daalo, ek click me resolve + byte
 Sabse pehle ye confirm karein ki deploy naya hai:
 
 ```
-GET https://<your-worker>.workers.dev/api/health      → build: "8.1.0"
+GET https://<your-worker>.workers.dev/api/health      → build: "8.2.0"
 ```
 
 Purana build dikhe to Cloudflare → Workers → apna worker → Edit code → **poora `worker.js` paste** → Deploy.
 Uske baad app me Settings → **Save & test**.
 
 > **Note:** `PROBE` wala `?probe=1` extra hai — bina uske `/api/selftest?id=...` sirf resolve check karta hai.
+
+### "Format not supported" 2–3 baar aata tha, phir chal jati thi
+
+Wo galti video ki nahi thi — proxy kabhi-kabhi YouTube ka **HTML error page** (ya 403 JSON) 200 me wrap karke
+`<video>` ko de deta tha, aur browser usko `MEDIA_ERR_SRC_NOT_SUPPORTED` bana deta tha. Ab dono taraf fix hai:
+
+| Layer | Kya karta hai |
+| --- | --- |
+| worker `/api/media` | body ka `content-type` check karta hai; HTML/JSON mile to stream cancel karke **naya URL sign** karta hai, phir dusra muxed stream try karta hai. Phir bhi fail ho to `<video>` ko kabhi HTML nahi bhejta — `403/502` + `x-sv-media-fail: 1` JSON bhejta hai |
+| app (player) | `playableFormats()` sirf wahi stream rakhta hai jo browser ka `canPlayType` maanta hai (mp4 pehle), `preflightStream()` play karne se **pehle** 2 byte Range maang ke bytes verify karta hai, `verifyStream()` tak 3 format try karta hai |
+| app (watch page) | resolve → verify fail ho to **chupchap 2 baar aur** re-resolve karta hai ("Stream refresh ho raha hai… attempt 2/3"), user ko error tabhi dikhta hai jab teeno fail hon |
+| app (player error) | video me code 3/4 aaya to player **agli untried format** pe jump karta hai, phir `onRefresh()` — isliye ab manual retry ki zarurat nahi |
+
+Yani agar pehli koshish me hi bytes kharab hain, app khud 2–3 second me dusra stream le aata hai — user ko sirf
+"refresh ho raha hai" dikhta hai, "format not supported" nahi.
 
 ---
 

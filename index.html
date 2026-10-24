@@ -1273,6 +1273,79 @@ const uid = () => Math.random().toString(36).slice(2, 10);
 const baseOf = (cfg) => String((cfg && cfg.engineUrl) || "").replace(/\/+$/, "");
 const mediaUrl = (cfg, u) => (!u ? "" : /^https?:/i.test(u) ? u : baseOf(cfg) + u);
 
+/* ── stream sanity ────────────────────────────────────────────────────────────
+   "Format not supported by this browser" (media error 4) almost never means the
+   codec: it usually means the proxy handed the <video> tag an HTML/JSON error
+   page, or a container this browser cannot decode. So before mounting a player we
+   (a) drop formats this browser says it cannot play and (b) pull 2 bytes through
+   the proxy once. A bad stream is then replaced silently instead of failing in
+   front of the user — the old flow needed 2-3 manual retries for exactly this. */
+function canPlayMime(mime) {
+  try {
+    const probe = document.createElement("video");
+    if (!probe.canPlayType) return true;
+    const m = String(mime || "").trim();
+    if (!m) return true;                      // unknown → let the preflight decide
+    const base = m.split(";")[0].trim().toLowerCase();
+    const codecs = (m.match(/codecs="([^"]+)"/) || [])[1] || "";
+    const answer = probe.canPlayType(codecs ? `${base}; codecs="${codecs}"` : base);
+    // Safari answers "" for things it half-supports; only a hard "" + known bad
+    // container is a veto (webm on Safari, mkv anywhere).
+    if (answer) return true;
+    return !/^video\/(webm|x-matroska)/i.test(base);
+  } catch { return true; }
+}
+
+function playableFormats(list) {
+  const arr = (Array.isArray(list) ? list : []).filter((f) => f && f.url);
+  if (!arr.length) return [];
+  const ok = arr.filter((f) => canPlayMime(f.mime || ""));
+  const pick = ok.length ? ok : arr;
+  return pick.slice().sort((a, b) => {
+    const am = /mp4/i.test(a.mime || "") ? 1 : 0;
+    const bm = /mp4/i.test(b.mime || "") ? 1 : 0;
+    if (am !== bm) return bm - am;             // mp4 first: Safari-safe, seekable
+    return (b.height || 0) - (a.height || 0);
+  });
+}
+
+const PREFLIGHT_TTL = 10 * 60 * 1000;
+const PREFLIGHT_OK = new Map();                // videoId|itag → ts (verified recently)
+async function preflightStream(cfg, format, videoId, timeout = 9000) {
+  if (!format || !format.url) return false;
+  const memo = videoId ? PREFLIGHT_OK.get(videoId + "|" + format.itag) : 0;
+  if (memo && Date.now() - memo < PREFLIGHT_TTL) return true;   // this pair just worked
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(), timeout);
+  try {
+    const r = await fetch(mediaUrl(cfg, format.url), {
+      headers: { Range: "bytes=0-1" },
+      signal: ac.signal,
+      cache: "no-store",
+    });
+    const ct = String(r.headers.get("content-type") || "");
+    const ok = (r.status === 200 || r.status === 206) && !/^(text\/|application\/json)/i.test(ct);
+    try { await r.arrayBuffer(); } catch {}
+    if (ok && videoId) PREFLIGHT_OK.set(videoId + "|" + format.itag, Date.now());
+    return ok;
+  } catch { return false; } finally { clearTimeout(t); }
+}
+
+/* Load a player response into a mountable stream: playable formats, first one
+   verified with real bytes. Returns { ok, data, tried } or { ok:false }. */
+async function verifyStream(cfg, data, videoId) {
+  const formats = playableFormats((data && data.formats) || []);
+  if (!formats.length) return { ok: false, tried: 0 };
+  const tried = [];
+  for (const f of formats.slice(0, 3)) {
+    tried.push(f.itag);
+    if (await preflightStream(cfg, f, videoId)) {
+      return { ok: true, data: { ...data, formats: [f, ...formats.filter((x) => x !== f)] }, tried: tried.length };
+    }
+  }
+  return { ok: false, tried: tried.length };
+}
+
 async function ep(cfg, path, timeout = 25000, opts = {}) {
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), timeout);
@@ -2012,6 +2085,8 @@ function CPlayer({ video, formats, st, onNext, poster, onRefresh }) {
   const firstRender = useRef(true);
   const barRef = useRef(null);
   const histRef = useRef(st.hist || []); histRef.current = st.hist || [];
+  const tried = useRef(new Set());                 // format indexes already burned
+  useEffect(() => { tried.current = new Set(); }, [video && video.videoId]);
 
   const list = formats && formats.length ? formats : [];
   const cur = list[Math.min(qi, list.length - 1)];
@@ -2028,7 +2103,10 @@ function CPlayer({ video, formats, st, onNext, poster, onRefresh }) {
     setWaiting(true);
   }, [qi]);
 
-  useEffect(() => { REC.qi = qi; }, [qi]);
+  useEffect(() => {
+    REC.qi = qi;
+    if (tried.current) tried.current.add(qi);
+  }, [qi]);
 
   // a new video starts a new ladder; a re-mount (refresh) continues the old one
   useEffect(() => {
@@ -2223,9 +2301,9 @@ function CPlayer({ video, formats, st, onNext, poster, onRefresh }) {
   const fmtErr = (el) => {
     const c = el && el.error;
     if (!c) return "Playback error";
-    if (c.code === 4) return "Format not supported by this browser";
-    if (c.code === 2) return "Network error while loading the stream";
-    if (c.code === 3) return "Stream decode error";
+    if (c.code === 4) return "Stream ne playable response nahi diya (403 / galat format) — URL refresh karke dobara try karein";
+    if (c.code === 2) return "Stream load hote waqt network error";
+    if (c.code === 3) return "Stream decode error (codec/format)";
     return "Playback error (" + c.code + ")";
   };
 
@@ -2241,6 +2319,28 @@ function CPlayer({ video, formats, st, onNext, poster, onRefresh }) {
     if (st.cfg.autoRecover === false) { setErr(fmtErr(vidRef.current)); setWaiting(false); return; }
     const el = vidRef.current;
     const at = (el && el.currentTime) || 0;
+    /* "Format not supported" (4) / decode (3) / network-dead (2): the cheapest fix
+       is another muxed stream we already have in hand — no re-resolve, no error UI.
+       Only when every format has been burned do we climb the heavier ladder. */
+    const code = el && el.error && el.error.code;
+    const mediaShape = code === 3 || code === 4;
+    const nextIdx = list.findIndex((_, i) => !tried.current.has(i));
+    if (mediaShape && nextIdx >= 0 && list.length > 1) {
+      rec.current.stage = 0; REC.stage = 0;
+      try { el.pause(); } catch {}
+      setRecovering("Dusra stream try…");
+      setQi(nextIdx);
+      bump();
+      return;
+    }
+    if (mediaShape && onRefresh && refreshTries.current < 2) {
+      rec.current.stage = 0; REC.stage = 0;
+      refreshTries.current += 1;
+      setRecovering("Fresh stream…");
+      onRefresh();
+      bump();
+      return;
+    }
     const stage = rec.current.stage;
     rec.current.stage = stage + 1;
     REC.stage = rec.current.stage;
@@ -2262,7 +2362,7 @@ function CPlayer({ video, formats, st, onNext, poster, onRefresh }) {
       onRefresh();
       return;
     }
-    if (stage === 3 && video && video.videoId && baseOf(st.cfg)) {
+    if (stage === 3 && video && video.videoId && baseOf(st.cfg) && !stable) {
       setRecovering("Stable stream…");
       REC.stable = true;
       setStable(true);
@@ -3542,6 +3642,7 @@ function WatchPage({ video, onPlay, st, engine, onChannel, onAddSub }) {
   const [diag, setDiag] = useState(null);   // worker's {reason, reasonLabel, hint, needAuth, attempts}
   const [showWhy, setShowWhy] = useState(false);
   const [doctor, setDoctor] = useState(false);
+  const [retrying, setRetrying] = useState(0);
   const [fallback, setFallback] = useState([]);   // endless play: recommendations dead → trending
   const [relTab, setRelTab] = useState("all");
   const [moreOpen, setMoreOpen] = useState(false);
@@ -3552,25 +3653,44 @@ function WatchPage({ video, onPlay, st, engine, onChannel, onAddSub }) {
 
   useEffect(() => {
     let dead = false;
-    setStatus("loading"); setErr(""); setStream(null); setDiag(null); setShowWhy(false);
+    setStatus("loading"); setErr(""); setStream(null); setDiag(null); setShowWhy(false); setRetrying(0);
     if (engine !== "ok") { setStatus("error"); setErr("engine-offline"); return; }
     // a cached stream is exactly what just died — a manual/ladder retry must bypass it
     if (attempt > 0) STREAM_CACHE.delete(streamKey(st.cfg, video.videoId));
     const warm = attempt > 0 ? null : streamCached(st.cfg, video.videoId);
-    if (warm) { setStream(warm); setStatus("ready"); return () => { dead = true; }; }
-    apiPlayer(st.cfg, video.videoId)
-      .then((d) => {
+    if (warm && playableFormats(warm.formats || []).length) {
+      setStream(warm); setStatus("ready"); return () => { dead = true; };
+    }
+
+    /* resolve → verify real bytes → (if dead) silently re-resolve twice.
+       The user only ever sees an error after the silent attempts are gone. */
+    const fetchOnce = () => apiPlayer(st.cfg, video.videoId);
+    (async () => {
+      let last = null;
+      for (let i = 0; i < 3; i++) {
         if (dead) return;
-        if (!d || !d.ok || !(d.formats || []).length) {
-          setStatus("error");
-          setDiag(d || null);
-          setErr((d && (d.error || (d.attempts || []).slice(-3).join(" · "))) || "koi playable stream nahi mila");
+        let d = null;
+        try { d = await fetchOnce(); } catch (e) { last = { error: e.message }; break; }
+        if (dead) return;
+        last = d;
+        if (!d || !d.ok || !(d.formats || []).length) break;      // resolve-level failure: no point retrying bytes
+        const v = await verifyStream(st.cfg, d, video.videoId);
+        if (dead) return;
+        if (v.ok) {
+          streamRemember(st.cfg, v.data);
+          setStream(v.data);
+          setStatus("ready");
           return;
         }
-        streamRemember(st.cfg, d);
-        setStream(d); setStatus("ready");
-      })
-      .catch((e) => { if (!dead) { setStatus("error"); setErr(e.message); } });
+        // resolved but bytes did not arrive → fresh URL, quietly
+        STREAM_CACHE.delete(streamKey(st.cfg, video.videoId));
+        setRetrying(i + 1);
+      }
+      if (dead) return;
+      setStatus("error");
+      setDiag(last || null);
+      setErr((last && (last.error || (last.attempts || []).slice(-3).join(" · "))) || "koi playable stream nahi mila");
+    })();
     return () => { dead = true; };
   }, [video.videoId, engine, st.cfg.engineUrl, attempt]);
 
@@ -3673,7 +3793,10 @@ function WatchPage({ video, onPlay, st, engine, onChannel, onAddSub }) {
       <div className="watch-main">
         <div className="watch-player">
           {status === "loading" && (
-            <div className="cp"><div className="cp-big"><div className="cp-spin" /></div><div className="cp-loadtxt">Stream resolve ho raha hai…</div></div>
+            <div className="cp">
+              <div className="cp-big"><div className="cp-spin" /></div>
+              <div className="cp-loadtxt">{retrying ? "Stream refresh ho raha hai… (attempt " + (retrying + 1) + "/3)" : "Stream resolve ho raha hai…"}</div>
+            </div>
           )}
           {status === "error" && (
             <div className="cp">
