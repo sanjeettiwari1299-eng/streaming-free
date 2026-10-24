@@ -112,6 +112,26 @@ function makeDom(opts = {}) {
         w.__calls.push(u);
         if (opts.offline) throw new Error("network down");
         const ok = (d) => ({ ok: true, status: 200, json: async () => d, text: async () => JSON.stringify(d) });
+        /* multi-engine: the second host answers when the first is rate-limited */
+        if (/engine2\.dev/.test(u)) {
+          w.__engine2 = (w.__engine2 || 0) + 1;
+          if (opts.engine2Limited) return ok({ ok: false, reason: "ratelimit", error: "rate limited", retryAfter: 30 });
+          if (/\/api\/player/.test(u)) return ok(PLAYER);
+          if (/\/api\/media/.test(u) || /\/mp4\//.test(u)) {
+            return {
+              ok: true, status: 206,
+              headers: { get: (k) => ({ "content-type": "video/mp4", "content-range": "bytes 0-2047/9999" }[String(k).toLowerCase()] || null) },
+              arrayBuffer: async () => new ArrayBuffer(2048),
+              text: async () => "bytes",
+              json: async () => ({}),
+            };
+          }
+          return ok({ ok: true, items: TRENDING });
+        }
+        if (opts.firstEngineLimited && /\/api\/player/.test(u) && /w\.dev/.test(u)) {
+          w.__limited1 = (w.__limited1 || 0) + 1;
+          return ok({ ok: false, reason: "ratelimit", error: "rate limited", retryAfter: 40 });
+        }
         if (/\/api\/sync\/probe/.test(u)) {
           if (opts.syncFail) return ok({ ok: false, configured: true, backend: "layerbase-libsql", error: "layerbase: HTTP 503", hint: "check LIBSQL_URL + LIBSQL_TOKEN" });
           if (opts.probeOff) return ok({ ok: false, configured: false, error: "LIBSQL_URL + LIBSQL_TOKEN missing", steps: ["layerbase.com → sign in (free, no card)", "New Database → engine libSQL", "Connect → copy URL + token", "Cloudflare → Settings → Variables", "hit this probe again"] });
@@ -168,7 +188,16 @@ function makeDom(opts = {}) {
             verdict: { code: "ok", hi: "Sab theek — resolve + bytes dono kaam kar rahe hain." },
           });
         }
-        if (/\/api\/health/.test(u)) return ok({ ok: true, service: "streamvoid-worker" });
+        if (/\/api\/health/.test(u)) return ok({
+          ok: true, service: "streamvoid-worker", build: "8.8.0",
+          resilience: {
+            gate: { cooling: false, retryAfter: 0, strikes: 0, status: 0 },
+            mirrors: [{ host: "inv.nadeko.net", fails: 2, cooling: 120 }],
+            winner: { client: "android_vr", version: "1.65.10", ageSec: 42 },
+            playerCache: { memory: 3, inflight: 0, ttlSec: 1200 },
+            subrequestCap: 46,
+          },
+        });
         if (/\/api\/trending/.test(u)) return ok({ items: TRENDING });
         if (/\/api\/rss/.test(u)) {
           const ids = decodeURIComponent(u.split("channels=")[1].split("&")[0]).split(",").filter(Boolean);
@@ -184,6 +213,13 @@ function makeDom(opts = {}) {
         if (/\/api\/search/.test(u)) return ok({ items: TRENDING, continuation: null });
         if (/\/api\/player/.test(u)) {
           const id = decodeURIComponent(u.split("id=")[1].split("&")[0]);
+          if (opts.rateLimited) {
+            w.__limited = (w.__limited || 0) + 1;
+            if (w.__limited <= (opts.rateLimitedCount || 99)) {
+              return ok({ ok: false, error: "YouTube rate limit: thodi der baad khud try hoga", reason: "ratelimit", reasonLabel: "YouTube rate limit", retryAfter: opts.rateLimitedLong ? 45 : 2, gate: { cooling: true, retryAfter: opts.rateLimitedLong ? 45 : 2, strikes: 1, status: 429 }, attempts: ["android_vr@1: youtube rate limit (429) — 20s cooldown [ratelimit]"] });
+            }
+            return ok(PLAYER);
+          }
           if (opts.playerFailFirst) {
             w.__playerCalls = (w.__playerCalls || 0) + 1;
             if (w.__playerCalls <= opts.playerFailFirst) {
@@ -204,6 +240,15 @@ function makeDom(opts = {}) {
               ok: true, client: "android_vr",
               video: { videoId: id, title: "Short " + id.slice(-1), author: "ShortChan", authorId: "UCshorts000000000000000", viewCount: 12345, lengthSeconds: 30, thumbnails: [] },
               formats: [{ itag: 18, quality: "360p", url: "/api/media?u=" + id + "&v=" + id + "&itag=18" }],
+            });
+          }
+          if (opts.hdFormats) {
+            return ok({
+              ...PLAYER,
+              formats: [
+                { itag: 137, quality: "1080p", height: 1080, mime: "video/mp4; codecs=\"avc1.640028, mp4a.40.2\"", url: "/api/media?u=hd&v=" + id + "&itag=137" },
+                { itag: 18, quality: "360p", height: 360, mime: "video/mp4; codecs=\"avc1.42001E, mp4a.40.2\"", url: "/api/media?u=lo&v=" + id + "&itag=18" },
+              ],
             });
           }
           if (opts.mixedFormats) {
@@ -921,6 +966,8 @@ const cookie = (w, k) => {
     check("suite finishes (no rows left waiting)", !suiteStates.includes(undefined), suiteStates.join(","));
     check("suite checks player + bytes", all(ws, ".suite-name").some((n) => /Stream resolve/.test(n.textContent)) && all(ws, ".suite-name").some((n) => /Stream bytes/.test(n.textContent)));
     check("suite checks comments and store", all(ws, ".suite-name").some((n) => /Comments/.test(n.textContent)) && all(ws, ".suite-name").some((n) => /Cloud store/.test(n.textContent)));
+    check("suite checks the resolve cache / cooldown", all(ws, ".suite-name").some((n) => /Resolve cache/.test(n.textContent)), all(ws, ".suite-name").map((n) => n.textContent).join(" | "));
+    check("cache row shows real numbers", /cache 3 videos/.test(all(ws, ".suite-row").map((r) => r.textContent).join(" ")) && /mirrors parked 1/.test(all(ws, ".suite-row").map((r) => r.textContent).join(" ")), all(ws, ".suite-row").map((r) => r.textContent).join(" | ").slice(0, 200));
     check("healthy worker passes the suite", suiteStates.filter((x) => x === "pass").length >= 12, suiteStates.join(","));
     check("suite offers a copyable report", all(ws, ".suite-bar .set-chip").some((b) => /Copy report/.test(b.textContent)));
     check("suite has a summary line", /pass/.test((q(ws, ".suite-sum") || {}).textContent || ""), (q(ws, ".suite-sum") || {}).textContent);
@@ -1167,6 +1214,115 @@ const cookie = (w, k) => {
     setVal(wf, box, "SID=aaa; HSID=bbb; SSID=ccc; SAPISID=ddd");
     await wait(150);
     check("checker explains the Cloudflare step", /YT_COOKIES/.test(out()) && /Deploy/.test(out()), out());
+  }
+
+  /* ══ 19. YouTube rate limit: wait exactly as long as the worker says ═════ */
+  {
+    /* first resolve is rate-limited with retryAfter: the app must wait that long
+       (not hammer), then play — with no error shown to the user */
+    const dm = makeDom({ rateLimited: true, rateLimitedCount: 1 });
+    const wf = dm.window;
+    wf.console.error = () => {};
+    const sc12 = wf.document.createElement("script");
+    sc12.textContent = app;
+    wf.document.body.appendChild(sc12);
+    await wait(900);
+    const before = (wf.__calls || []).filter((u) => /\/api\/player/.test(u)).length;
+    click(wf, all(wf, ".vc")[0]);
+    await wait(600);
+    check("rate limit shows progress, not an error", !q(wf, ".cp-err"), (q(wf, ".cp-err") || {}).textContent);
+    check("progress mentions the self-heal", /theek kar raha hoon/i.test(wf.document.body.textContent), wf.document.body.textContent.slice(-120));
+    await wait(3200);
+    const after = (wf.__calls || []).filter((u) => /\/api\/player/.test(u)).length;
+    check("it waited and retried once by itself", after === before + 2, before + " → " + after);
+    check("the video plays after the wait", !!q(wf, ".cp video") && !q(wf, ".cp-err"), (q(wf, ".cp-err") || {}).textContent);
+  }
+  {
+    /* a long rate limit must not be hammered: the panel appears and explains */
+    const dm = makeDom({ rateLimited: true, rateLimitedLong: true });
+    const wf = dm.window;
+    wf.console.error = () => {};
+    const sc13 = wf.document.createElement("script");
+    sc13.textContent = app;
+    wf.document.body.appendChild(sc13);
+    await wait(900);
+    click(wf, all(wf, ".vc")[0]);
+    await wait(2500);
+    const errBox = q(wf, ".cp-err");
+    check("a long rate limit ends in an explained panel", !!errBox, wf.document.body.textContent.slice(-140));
+    check("the panel names YouTube, not the app", /YouTube ne is IP/i.test(wf.document.body.textContent), (errBox || {}).textContent);
+    check("the panel says it keeps retrying", /dobara try karta rahega/i.test(wf.document.body.textContent));
+    check("requests were not spammed while limited", (wf.__calls || []).filter((u) => /\/api\/player/.test(u)).length <= 1, (wf.__calls || []).filter((u) => /player/.test(u)).length);
+  }
+
+  /* ══ 20. hover prefetch + data saver (instant play, fewer stalls) ════════ */
+  {
+    const dm = makeDom();
+    const wf = dm.window;
+    wf.console.error = () => {};
+    const sc14 = wf.document.createElement("script");
+    sc14.textContent = app;
+    wf.document.body.appendChild(sc14);
+    await wait(900);
+    const playerCalls = (id) => (wf.__calls || []).filter((u) => u.includes("/api/player") && u.includes("id=" + id)).length;
+    const second = all(wf, ".vc")[1];
+    check("prefetch has a card to work with", !!second);
+    const thumb = second.querySelector(".vc-thumb") || second;
+    thumb.dispatchEvent(new wf.MouseEvent("mouseover", { bubbles: true }));
+    thumb.dispatchEvent(new wf.MouseEvent("mouseenter", { bubbles: false }));
+    await wait(1200);
+    check("hovering resolves the video in the background", playerCalls("tr000000002") >= 1, playerCalls("tr000000002"));
+    const before = playerCalls("tr000000002");
+    click(wf, all(wf, ".vc")[1]);
+    await wait(700);
+    check("clicking a prefetched card plays without a new resolve", playerCalls("tr000000002") === before, before + " → " + playerCalls("tr000000002"));
+    check("and the player is mounted", !!q(wf, ".cp video"));
+    check("prefetch never opens the video by itself", /Trending|Home/.test(wf.document.body.textContent) || !!q(wf, ".cp video"));
+  }
+  {
+    /* data saver: a slow connection should not be handed a 1080p stream */
+    const dm = makeDom({ hdFormats: true, prefs: { sv_cfg: JSON.stringify({ engineUrl: "https://w.dev", autoplay: true, dataSaver: true }) } });
+    const wf = dm.window;
+    wf.console.error = () => {};
+    const sc15 = wf.document.createElement("script");
+    sc15.textContent = app;
+    wf.document.body.appendChild(sc15);
+    await wait(900);
+    click(wf, all(wf, ".vc")[0]);
+    await wait(1200);
+    const src = (q(wf, ".cp video") || { getAttribute: () => "" }).getAttribute("src") || "";
+    check("data saver picks the small stream", /u=lo|itag=18/.test(src), src);
+    check("data saver still plays", !!q(wf, ".cp video") && !q(wf, ".cp-err"), (q(wf, ".cp-err") || {}).textContent);
+    check("settings offers the data saver toggle", (() => {
+      click(wf, all(wf, ".s-item").find((b) => /Settings/.test(b.textContent)));
+      return true;
+    })());
+    await wait(500);
+    check("data saver switch is in Settings", /Data saver/.test(wf.document.body.textContent), wf.document.body.textContent.slice(-120));
+  }
+
+  /* ══ 21. multi-engine failover (alag worker = alag egress IP) ═══════════ */
+  {
+    const dm = makeDom({
+      secondEngine: true,
+      firstEngineLimited: true,
+      prefs: { sv_cfg: JSON.stringify({ engineUrl: "https://w.dev,https://engine2.dev", autoplay: true }) },
+    });
+    const wf = dm.window;
+    wf.console.error = () => {};
+    const sc16 = wf.document.createElement("script");
+    sc16.textContent = app;
+    wf.document.body.appendChild(sc16);
+    await wait(1200);
+    click(wf, all(wf, ".vc")[0]);
+    await wait(1600);
+    check("a rate-limited worker hands over to the second one", (wf.__engine2 || 0) >= 1, wf.__engine2 || 0);
+    check("the video plays from the healthy worker", !!q(wf, ".cp video") && !q(wf, ".cp-err"), (q(wf, ".cp-err") || {}).textContent);
+    const media = (wf.__calls || []).filter((u) => /\/api\/media/.test(u));
+    check("the stream is proxied through the healthy worker", media.length === 0 || media.some((u) => /engine2\.dev/.test(u)), media.slice(0, 2).join(" "));
+    click(wf, all(wf, ".s-item").find((b) => /Settings/.test(b.textContent)));
+    await wait(600);
+    check("settings lists both engines", /#1 w\.dev/.test(wf.document.body.textContent) && /#2 engine2\.dev/.test(wf.document.body.textContent), wf.document.body.textContent.slice(-200));
   }
 
   const failed = checks.filter((c) => !c.pass);

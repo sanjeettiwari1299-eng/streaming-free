@@ -144,7 +144,7 @@ check("provider token is cached", providerCalls === 1, providerCalls);
 check("cached token still attached", posts.some((p) => p.poToken === "PROV_TOKEN"));
 
 /* ── 7. mirrors: defaults, opt-out, custom, and pass 4 ────────────────────── */
-check("default mirrors exist", W.emergencyMirrors({}).length >= 3, W.emergencyMirrors({}).length);
+check("a default mirror exists", W.emergencyMirrors({}).length >= 1, W.emergencyMirrors({}).length);
 check("MIRRORS=off disables defaults", W.emergencyMirrors({ MIRRORS: "off" }).length === 0);
 check("custom mirrors are merged", W.emergencyMirrors({ EMERGENCY_MIRRORS: "https://m1.dev/" }).some((x) => x === "https://m1.dev"));
 
@@ -234,12 +234,14 @@ W.resetBreakers();
 const stNoCookies = await (await W.default.fetch(new Request("https://w.dev/api/selftest?id=gatedVid001"), botEnv({}))).json();
 check("no cookies → verdict bot", stNoCookies.verdict.code === "bot", stNoCookies.verdict.code);
 W.resetBreakers();
+W.resetPlayerCache();
 const stPartial = await (await W.default.fetch(new Request("https://w.dev/api/selftest?id=gatedVid001"), botEnv({ YT_COOKIES: "SID=aaa" }))).json();
 check("partial cookies → verdict bot-cookies", stPartial.verdict.code === "bot-cookies" && /SAPISID/.test(stPartial.verdict.hi), JSON.stringify(stPartial.verdict));
 W.resetBreakers();
 const stKey = await (await W.default.fetch(new Request("https://w.dev/api/selftest?id=gatedVid001"), botEnv({ YT_COOKIES: fullCookies, SV_KEY: "secret123" }))).json();
 check("SV_KEY mismatch → verdict bot-key", stKey.verdict.code === "bot-key" && /SV_KEY/.test(stKey.verdict.hi), JSON.stringify(stKey.verdict));
 W.resetBreakers();
+W.resetPlayerCache();
 const stGood = await (await W.default.fetch(new Request("https://w.dev/api/selftest?id=gatedVid001&key=secret123"), botEnv({ YT_COOKIES: fullCookies, SV_KEY: "secret123" }))).json();
 check("cookies present + used → PoToken verdict", /bot-potoken|bot-ip/.test(stGood.verdict.code), JSON.stringify(stGood.verdict));
 check("doctor reports the cookie state", stGood.cookies && stGood.cookies.usable === true && stGood.cookies.count >= 4, JSON.stringify(stGood.cookies).slice(0, 120));

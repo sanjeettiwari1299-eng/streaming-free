@@ -50,7 +50,7 @@ globalThis.fetch = async (url, opts = {}) => {
   return new Response("", { status: 404 });
 };
 
-const reset = () => { requests = []; };
+const reset = () => { requests = []; W.resetPlayerCache(); };   // player responses are cached now
 
 /* ── 1. headers look like a real client ──────────────────────────────────── */
 reset(); mode = "ok";

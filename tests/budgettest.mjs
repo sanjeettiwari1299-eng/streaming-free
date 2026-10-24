@@ -87,8 +87,11 @@ check("breakers carry a cooldown", W.breakerSnapshot().every((b) => b.cooling > 
 
 /* ── 3. mirrors are ordered by who answers ───────────────────────────────── */
 check("the working mirror is first", W.DEFAULT_MIRRORS[0] === "https://invidious.f5.si", W.DEFAULT_MIRRORS.join(","));
-check("the 403/401 mirrors are last", W.DEFAULT_MIRRORS.slice(-2).join(",") === "https://invidious.nerdvpn.de,https://inv.nadeko.net", W.DEFAULT_MIRRORS.join(","));
-check("all four mirrors are still available", W.DEFAULT_MIRRORS.length === 4);
+/* 8.7: nadeko serves its own bot-check, nerdvpn answers 401/403, melmac 526 —
+   shipping them as defaults was pure 4xx noise, so they are opt-in now */
+check("bot-walled mirrors are not defaults", !W.DEFAULT_MIRRORS.some((m) => /nadeko|nerdvpn|melmac/.test(m)), W.DEFAULT_MIRRORS.join(","));
+check("default list still has a working host", W.DEFAULT_MIRRORS.length >= 1 && W.DEFAULT_MIRRORS.includes("https://invidious.f5.si"), W.DEFAULT_MIRRORS.join(","));
+check("dead hosts can still be added on purpose", W.emergencyMirrors({ EMERGENCY_MIRRORS: "https://inv.nadeko.net" }).includes("https://inv.nadeko.net"));
 
 /* ── 4. the subrequest budget is respected ───────────────────────────────── */
 W.resetBreakers();

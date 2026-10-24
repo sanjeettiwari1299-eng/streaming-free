@@ -59,7 +59,7 @@ error panel me **Engine doctor**) — video id daalo, ek click me resolve + byte
 Sabse pehle ye confirm karein ki deploy naya hai:
 
 ```
-GET https://<your-worker>.workers.dev/api/health      → build: "8.6.0"
+GET https://<your-worker>.workers.dev/api/health      → build: "9.0.0"
 ```
 
 Purana build dikhe to Cloudflare → Workers → apna worker → Edit code → **poora `worker.js` paste** → Deploy.
@@ -99,6 +99,93 @@ aur **bot-check** (worker me `YT_COOKIES` ya `POTOKEN_URL`). Wahan panel asli re
 me chalta rehta hai, to cookie lagane ke baad bina reload video chal padti hai.
 
 ---
+
+## "Alag alag IP se request jaye" — haan, 2 tareeke se (9.0.0)
+
+Cloudflare **khud apna egress IP chunne nahi deta** (koi setting nahi hai, Smart Placement bhi IP nahi badalta).
+Isliye do asli raaste diye hain:
+
+### 1. Relay pool (worker side) — request sach me doosre IP se jaati hai
+
+```
+Cloudflare → Worker → Settings → Variables and Secrets:
+  PROXY_URLS = https://relay-1.example/fetch?url={url},https://relay-2.example/?u=
+```
+
+- InnerTube calls + version discovery **round-robin** ho kar relay se jaati hain → YouTube dekhta hai **relay ka IP**
+- `{url}` wala template encode ho kar bhar jata hai; bina `{url}` wala prefix-style (`?u=` + encoded URL) maana jaata hai
+- Relay mar jaye to wo park (1–10 min) hota hai, agla relay try hota hai, **pool poora down ho to direct** (app kabhi nahi rukti)
+- **Video bytes relay se nahi jaate** — sirf chhoti JSON calls. Bandwidth zero extra.
+- Check: `GET /api/egress?test=1` → har relay ka status/ms, `/api/health` → `resilience.egress`
+
+### 2. Multi-engine failover (app side) — 2-3 worker = 2-3 alag IP + alag limit
+
+Same `worker.js` ko **doosre Cloudflare account/subdomain** par bhi deploy karo, phir Settings → Engine URL me:
+
+```
+https://helloyt.delhiflowers.workers.dev, https://mera-worker-2.workers.dev
+```
+
+- Ek worker 429/5xx/dead → app **chupchap agle worker** par chali jaati hai (wo apna naya resolve karta hai)
+- Jo worker last me chala wahi "active" rehta hai (10 min), stream usi ke through proxy hota hai, Settings me `✓ active`
+- Sab resolve/API calls isi failover se guzarte hain — search, trending, player, comments, store
+
+**Note:** 3 workers = 3× free-tier quota. Har worker par yahi code paste karna hai (secrets bhi: `YT_COOKIES`, `LIBSQL_URL`, `POTOKEN_URL`, `PROXY_URLS`).
+
+## Naya approach: "play se pehle resolve" (8.9.0)
+
+Error sabse zyada us waqt aata hai jab user click karta hai aur us waqt YouTube resolve karne ko kehta hai.
+To ab resolve **click se pehle** ho jaata hai:
+
+| Feature | Kaam |
+| --- | --- |
+| **Hover prefetch** | card par 350 ms mouse rukne par stream background me resolve + cache ho jaata hai (jaise YouTube preview). Click = **turant play**, 0 naya resolve |
+| **Data saver (≤480p)** | Settings → Data saver. Slow link / `saveData` / 2G-3G par app khud 360–480p chunta hai |
+| **Stall → quality drop** | 2 stall = bandwidth problem: app khud sabse chhoti quality par chala jaata hai ("Network slow — quality kam kar raha hoon") instead of hopping streams |
+| **Prefetch budget** | ek samay par max 2 prefetch, 429 dekhne par 90 s ke liye band (rate-limit ko kabhi nahi bhadkata) |
+
+Iska seedha matlab: jo video tum kholne wale ho, wo pehle se resolve ho chuki hoti hai — bot-check ka mauka hi nahi milta.
+
+## Permanent fix kaise kaam karta hai (worker 8.8.0)
+
+Bot-check / 429 ka jawab "aur retry" nahi, **kam request** hai. 8.8.0 me:
+
+| Layer | Kya karta hai | Fayda |
+| --- | --- | --- |
+| **Resolve cache** (edge `caches.default` + isolate memory) | har video ka player response 20 min (ya signed URL ki `expire` tak, max ~6h) yaad rehta hai | dobara wahi video = **0 upstream request**; dashboards par 4xx khatam |
+| **Stale-on-429** | 429 ke waqt pehle resolve hui video purane (par hours-tak-valid) URL se chalti hai | rate-limit ke beech bhi video chalti hai, error nahi |
+| **Request coalescing** | ek hi video ke 3 parallel request = 1 resolve | traffic spike par bhi YouTube ko 1 hi call |
+| **PoToken force-refresh** | 429 par provider se **naya** token maang ke turant ek retry | bahut se 429 isi se gayab ho jate hain |
+| **Mirror defaults saaf** | sirf `invidious.f5.si` default; nadeko (apna bot-check), nerdvpn (401), melmac (526) hata diye | 91×4xx wali noise band; chahiye to `EMERGENCY_MIRRORS` se add karein |
+| **Doctor live rehta hai** | `/api/selftest` aur `/mp4` cache bypass karte hain | cache ki wajah se jhoota "ok" kabhi nahi |
+
+Health me dekho: `resilience.playerCache` / `gate` / `mirrors` / `winner`; app me **Run all tests** me naya row
+**"Resolve cache (429 se bachav)"** — cache kitni videos, TTL, kitne mirror park, kaunsa client winner hai.
+
+**Sabse permanent upgrade (optional, 5 min):** ek free PoToken provider chalao
+(`docker run -d -p 4416:4416 brainicism/bgutil-ytdlp-pot-provider`) aur worker secret
+`POTOKEN_URL = https://<tumhara-provider>/get_pot` daal do. Uske baad requests sach ke client jaisi dikhti hain —
+bot-check lagbhag kabhi nahi aata. Iske bina bhi 8.8.0 cache + gate ki wajah se app chalti rahegi.
+
+## "Aadhi se zyada request block hai" — 429 storm (worker 8.7.0)
+
+Cloudflare → Workers → Metrics me `www.youtube.com` par **4xx ~= 2xx** aur mirrors par `4xx 91` dikhna ka matlab:
+YouTube is IP ko **rate-limit (429/403)** kar raha hai, aur pehle worker har resolve par poora ladder (5 clients +
+2 version-discovery + 5 mirrors ≈ 20–40 subrequest) pee raha tha. Ab teen niyam hain:
+
+| Rule | Effect |
+| --- | --- |
+| **Ek 429/403 = ek strike** → `20s × 2^(n-1)` cooldown (max 2 min) | ladder turant rukta hai; app ko `retryAfter` milta hai aur wahi waqt wait karta hai — 1 subrequest, na ki 20 |
+| **Sticky winner** — jo client pichhli baar chala, wahi pehle try hota hai (15 min) | normal play: 1–2 subrequests instead of 6+ |
+| **Mirror breaker** — 2 fail par host 2–30 min park, aur ek resolve me max 2 mirror | `inv.nadeko.net` / `invidious.nerdvpn.de` jaise dead hosts dobara hit nahi hote |
+
+Cooldown ke waqt `/api/health` ka `resilience.gate` dekho (`cooling`, `retryAfter`, `strikes`, `status`),
+`resilience.mirrors` parked hosts, aur `/api/selftest` ka `verdict.code = "ratelimit"` + `retryAfter` + `subrequests`.
+App 20s tak ke cooldown ka **khud intezaar** karti hai (spinner: "Khud theek kar raha hoon…"), usse lamba ho to panel
+batata hai ki YouTube ne IP rok di hai aur har 15s par chupchap retry chalta rehta hai.
+
+Permanent fix (429 kam karne ke liye): worker me **`POTOKEN_URL`** (bgutil-verify-token provider) ya **`YT_COOKIES`** —
+allowed client jaisi requests jaati hain, to limit lagti hi nahi.
 
 ## "Cookies set kar diye, bot-check phir bhi aa raha hai"
 
