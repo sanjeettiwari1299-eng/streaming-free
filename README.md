@@ -59,7 +59,7 @@ error panel me **Engine doctor**) — video id daalo, ek click me resolve + byte
 Sabse pehle ye confirm karein ki deploy naya hai:
 
 ```
-GET https://<your-worker>.workers.dev/api/health      → build: "8.4.0"
+GET https://<your-worker>.workers.dev/api/health      → build: "8.5.0"
 ```
 
 Purana build dikhe to Cloudflare → Workers → apna worker → Edit code → **poora `worker.js` paste** → Deploy.
@@ -99,6 +99,31 @@ aur **bot-check** (worker me `YT_COOKIES` ya `POTOKEN_URL`). Wahan panel asli re
 me chalta rehta hai, to cookie lagane ke baad bina reload video chal padti hai.
 
 ---
+
+## `layerbase HTTP 401: Unauthorized: The JWT is invalid` — asli wajah
+
+Ye ek hi message **chaar alag** galtiyon ke liye aata hai. Ab worker aur app dono token ko **decode** karke
+(strictly claims, bina verify) exact wajah batate hain — token kahin network par nahi jaata.
+
+| `verdict` | Matlab | Fix |
+| --- | --- | --- |
+| `jwt-format` | `LIBSQL_TOKEN` me JWT hi nahi hai (3 dot-separated parts chahiye, `eyJ…`) | Layerbase → DB → **Connect** → **auth token** copy karein. URL/API key nahi. |
+| `jwt-expired` | Token ki `exp` nikal gayi (probe `exp` date dikhata hai) | Naya token banayein → `LIBSQL_TOKEN` update → **Deploy** |
+| `jwt-wrong-db` | Token ka `id` claim `LIBSQL_URL` ke host se match nahi karta (workspace me kai DB?) | Dono cheezein **usi** DB ke Connect screen se copy karein |
+| `jwt-bad-signature` | Token adhoora paste hua / rotate ho gaya | Poora token dobara copy karein (line break ke bina), phir Deploy |
+
+Check karne ke 2 tareeke:
+
+```
+GET https://<worker>/api/sync/probe?p=<profile-key>     → { ok:false, verdict:"jwt-expired", jwt:{...claims} }
+```
+
+**App me:** Settings → Cloud store → **Test Layerbase** (verdict + claims dikhata hai), ya
+**Layerbase checker** me apna `LIBSQL_TOKEN` paste karein — wo browser me hi decode karke batata hai ki token
+expire hua hai, kisi dusri DB ka hai, ya paste hi galat hua. (Token sirf tumhare browser me decode hota hai.)
+
+> 401 ke waqt bhi app khatam nahi hoti: worker edge snapshot se last-known profile de deta hai (`ok:true, stale:true`),
+> isliye history/likes/subs dikhte rehte hain jab tak token theek na ho.
 
 ## Why a worker at all? (the honest bit)
 

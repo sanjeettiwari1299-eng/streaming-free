@@ -1110,6 +1110,9 @@ a.cp-pill{text-decoration:none;display:inline-flex;align-items:center}
 .urlcheck-val code{background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:1px 6px;font-size:12px}
 .urlcheck-steps{margin:8px 0 0 18px;color:var(--t2);line-height:1.8}
 .urlcheck-steps code{background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:0 5px;font-size:11.5px}
+.urlcheck .doctor-row + .doctor-row{margin-top:6px}
+.jwtcheck code{background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:0 5px;font-size:11.5px}
+.sync-hint{margin-top:4px;color:#ffd479;line-height:1.7}
 </style>
 </head>
 <body>
@@ -1221,6 +1224,42 @@ function normalizeLibsqlUrl(raw) {
     if (!u.hostname || !u.hostname.includes(".")) return "";
     return u.origin;
   } catch { return ""; }
+}
+
+/* JWT inspector (worker ka mirror): Layerbase ka "The JWT is invalid" 4 alag
+   galtiyon me se ek hota hai — token JWT hi nahi, expire ho gaya, dusri DB ka
+   hai, ya signature rotate ho gayi. Payload ke claims padh ke asli wajah batate
+   hain. Token kabhi kahin bheja nahi jata — sirf browser me decode hota hai. */
+function b64urlJson(part) {
+  try {
+    const s = String(part || "").replace(/-/g, "+").replace(/_/g, "/");
+    return JSON.parse(atob(s + "=".repeat((4 - (s.length % 4)) % 4)));
+  } catch { return null; }
+}
+
+function decodeJwtInfo(token) {
+  const t = String(token || "").trim().replace(/^bearer\s+/i, "").replace(/^["'`]|["'`]$/g, "");
+  const parts = t.split(".");
+  const out = { jwt: parts.length === 3 && t.length > 40, parts: parts.length, len: t.length };
+  if (!out.jwt) return out;
+  const head = b64urlJson(parts[0]) || {};
+  const p = b64urlJson(parts[1]) || {};
+  const exp = Number(p.exp || 0);
+  out.alg = String(head.alg || "");
+  out.exp = exp || 0;
+  out.expIso = exp ? new Date(exp * 1000).toISOString().slice(0, 10) : "";
+  out.expired = !!exp && exp * 1000 < Date.now();
+  out.dbId = String(p.id || p.db || p.database || p.dbid || "");
+  out.scope = String(p.a || p.scope || "");
+  return out;
+}
+
+function jwtDbMatch(dbId, host) {
+  if (!dbId || !host) return null;
+  const first = String(host).split(".")[0].toLowerCase();
+  const id = String(dbId).toLowerCase();
+  if (!first || !id) return null;
+  return first === id || first.includes(id) || id.includes(first);
 }
 
 const YTT = (id, q) => `https://i.ytimg.com/vi/${id}/${q || "mqdefault"}.jpg`;
@@ -1366,7 +1405,14 @@ async function ep(cfg, path, timeout = 25000, opts = {}) {
     const text = await r.text();
     let data = null;
     try { data = text ? JSON.parse(text) : null; } catch { throw new Error("engine returned non-JSON (worker URL check karein)"); }
-    if (!r.ok) throw new Error((data && (data.error || data.detail)) || "engine HTTP " + r.status);
+    if (!r.ok) {
+      const e = new Error((data && (data.error || data.detail)) || "engine HTTP " + r.status);
+      e.status = r.status;
+      if (data && data.hint) e.hint = data.hint;
+      if (data && data.verdict) e.verdict = data.verdict;
+      if (data && data.jwt) e.jwt = data.jwt;
+      throw e;
+    }
     return data;
   } finally { clearTimeout(t); }
 }
@@ -1641,7 +1687,7 @@ function useStore() {
       qq.dead = (qq.dead || 0) + 1;
       // no engine configured = the page is probably static hosting: keep working
       // in memory, and say so instead of showing a permanent error
-      if (alive.current) setSync((s) => relative ? { ...s, state: "local", error: "" } : { ...s, state: "error", error: e.message });
+      if (alive.current) setSync((s) => relative ? { ...s, state: "local", error: "" } : { ...s, state: "error", error: e.message, hint: e.hint || "", verdict: e.verdict || "" });
       if (!relative && qq.dead <= 6) qq.timer = setTimeout(run, Math.min(60000, qq.dead * 5000));
     } finally { qq.busy = false; }
   }, []);
@@ -1700,7 +1746,7 @@ function useStore() {
     } catch (e) {
       setSync((s) => relative
         ? { ...s, state: "local", error: "", key: profileKey() }
-        : { ...s, state: "error", error: e.message, key: profileKey() });
+        : { ...s, state: "error", error: e.message, hint: e.hint || "", verdict: e.verdict || "", key: profileKey() });
     }
   }, []);
 
@@ -4654,20 +4700,38 @@ function EngineDoctor({ st, videoId, compact }) {
 
 function LibsqlUrlCheck() {
   const [raw, setRaw] = useState("");
+  const [tok, setTok] = useState("");
   const [copied, setCopied] = useState("");
   const clean = normalizeLibsqlUrl(raw);
   const host = clean ? clean.replace(/^https:\/\//, "") : "";
   const looksLayerbase = /(^|\.)(layerbase\.dev|turso\.io|libsql\.io)$/i.test(host);
-  const copy = async () => {
-    try { await navigator.clipboard.writeText(clean); setCopied("copied"); setTimeout(() => setCopied(""), 1800); } catch {}
+  const jwt = useMemo(() => decodeJwtInfo(tok), [tok]);
+  const match = jwt.dbId && host ? jwtDbMatch(jwt.dbId, host) : null;
+  const copy = async (text, what) => {
+    try { await navigator.clipboard.writeText(text); setCopied(what); setTimeout(() => setCopied(""), 1800); } catch {}
   };
+  const tokenVerdict = !tok.trim()
+    ? null
+    : !jwt.jwt
+      ? { bad: true, title: "Ye JWT nahi lag raha", body: "JWT me 3 dot-separated parts hote hain (eyJ…). Lagta hai URL, API key ya adhoora token paste hua hai — Layerbase → DB → Connect se 'auth token' wala lamba token copy karein." }
+      : jwt.expired
+        ? { bad: true, title: "Token expire ho chuka hai (exp " + jwt.expIso + ")", body: "Isi wajah se Layerbase 401 'The JWT is invalid' deta hai. Connect se naya token banayein." }
+        : match === false
+          ? { bad: true, title: "Token dusri database ka hai", body: "Token ka db id: " + jwt.dbId + " · URL host: " + host + ". Dono ek hi DB se copy karein." }
+          : { bad: false, title: "Token valid JWT lag raha hai", body: (jwt.dbId ? "db id " + jwt.dbId + " ✓ · " : "") + (jwt.scope ? "scope " + jwt.scope + " · " : "") + (jwt.expIso ? "expiry " + jwt.expIso + (jwt.expired ? " (expired)" : "") : "koi expiry nahi") + ". Agar phir bhi 401 aaye to signature rotate hui hai — naya token lein." };
+
   return (
     <div className="urlcheck">
-      <div className="set-sub-h" style={{ margin: "14px 0 6px" }}>Layerbase URL checker</div>
+      <div className="set-sub-h" style={{ margin: "14px 0 6px" }}>Layerbase checker (URL + JWT)</div>
       <div className="doctor-row">
         <input placeholder="Layerbase → Connect se URL paste karein (path ho to bhi chalega)"
           value={raw} onChange={(e) => setRaw(e.target.value)} aria-label="Layerbase URL" />
-        {clean && <button className="set-chip" onClick={copy}>{copied || "Copy"}</button>}
+        {clean && <button className="set-chip" onClick={() => copy(clean, "url")}>{copied === "url" ? "copy fail" : copied ? "Copied ✓" : "Copy"}</button>}
+      </div>
+      <div className="doctor-row">
+        <input placeholder="LIBSQL_TOKEN paste karein (eyJ…) — sirf browser me decode hota hai"
+          value={tok} onChange={(e) => setTok(e.target.value)} aria-label="Layerbase token" />
+        {tok.trim() && <button className="set-chip" onClick={() => setTok("")}>Clear</button>}
       </div>
       {raw.trim() !== "" && (
         clean ? (
@@ -4691,6 +4755,20 @@ function LibsqlUrlCheck() {
             <code> https://&lt;db&gt;.cloud.layerbase.dev </code> copy karein.
           </div>
         )
+      )}
+      {tokenVerdict && (
+        <div className="urlcheck-out jwtcheck" style={{ color: tokenVerdict.bad ? "#ff8a80" : "#7ee787" }}>
+          <div>{tokenVerdict.bad ? "✕ " : "✓ "}<b>{tokenVerdict.title}</b></div>
+          <div style={{ color: "var(--t3)" }}>{tokenVerdict.body}</div>
+          {jwt.jwt && (
+            <div className="urlcheck-val" style={{ fontSize: 12 }}>
+              alg <code>{jwt.alg || "?"}</code> · parts <code>3</code> · len <code>{jwt.len}</code>
+              {jwt.dbId && <> · db <code>{jwt.dbId}</code></>}
+              {jwt.expIso && <> · exp <code>{jwt.expIso}</code></>}
+              {match === true && <span style={{ color: "#7ee787" }}> · URL se match ✓</span>}
+            </div>
+          )}
+        </div>
       )}
     </div>
   );
@@ -4772,10 +4850,17 @@ function CloudStore({ st }) {
       {sync.state === "error" && (
         <div style={{ color: "#ff8a80", fontSize: 12.5, marginTop: 6 }}>
           {sync.error}
+          {sync.hint && <div className="sync-hint">{sync.hint}</div>}
           <div style={{ color: "var(--t3)", marginTop: 3 }}>
             Worker secrets me <code>LIBSQL_URL</code> + <code>LIBSQL_TOKEN</code> daalein (Layerbase → database → Connect).
             Tab tak app memory + cookie bootstrap par chalegi.
           </div>
+          {/jwt|unauthor|401/i.test(sync.error) && (
+            <div style={{ color: "var(--t3)", marginTop: 3 }}>
+              Neeche <b>Layerbase checker</b> me apna token paste karein — wo batayega token expire hua hai,
+              kisi dusri DB ka hai, ya paste hi galat hua.
+            </div>
+          )}
         </div>
       )}
       {sync.stale && <div style={{ color: "#ffd479", fontSize: 12.5, marginTop: 6 }}>Edge snapshot se load hua — {sync.warning || "Layerbase abhi jaga nahi"}.</div>}
@@ -4800,6 +4885,15 @@ function CloudStore({ st }) {
               {probe.url.changed && <span style={{ color: "#f1c40f" }}> · aapke paste se alag (worker ne theek kar liya)</span>}
               <span style={{ margin: "0 6px" }}>·</span>
               token: {probe.url.tokenGiven ? <span style={{ color: "#7ee787" }}>{probe.url.tokenPrefix} set</span> : <span style={{ color: "#ff8a80" }}>missing</span>}
+            </div>
+          )}
+          {probe.jwt && (
+            <div style={{ color: "var(--t3)", marginTop: 4, fontSize: 12 }}>
+              token claims: <code>{probe.jwt.jwt ? "JWT ✓" : "JWT ✕"}</code>
+              {probe.jwt.dbId && <> · db <code>{probe.jwt.dbId}</code></>}
+              {probe.jwt.expIso && <> · exp <code>{probe.jwt.expIso}</code>{probe.jwt.expired ? " (expired)" : ""}</>}
+              {probe.jwt.scope && <> · scope <code>{probe.jwt.scope}</code></>}
+              {probe.jwt.dbMatch === false && <span style={{ color: "#ff8a80" }}> · URL ki DB se match nahi</span>}
             </div>
           )}
           {!probe.ok && Array.isArray(probe.steps) && (

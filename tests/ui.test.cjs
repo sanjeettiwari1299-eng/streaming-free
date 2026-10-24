@@ -965,6 +965,37 @@ const cookie = (w, k) => {
       setVal(wu, q(wu, ".urlcheck input"), "not a url");
       return /parse nahi hui/i.test((q(wu, ".urlcheck-out") || {}).textContent || "");
     })(), (q(wu, ".urlcheck-out") || {}).textContent);
+
+    /* ── "The JWT is invalid": checker names the real cause ─────────────── */
+    const b64 = (o) => Buffer.from(JSON.stringify(o)).toString("base64url");
+    const mkJwt = (payload) => "eyJhbGciOiJFZERTQSJ9." + b64(payload) + ".c2ln";
+    const HOST = "https://lakshaydb-cute-drum.sage.cloud.layerbase.dev";
+    const tokInput = all(wu, ".urlcheck input")[1];
+    check("checker has a token box", !!tokInput && /token/i.test(tokInput.getAttribute("aria-label") || ""));
+    const jwtOut = () => ((q(wu, ".jwtcheck") || {}).textContent || "").replace(/\s+/g, " ");
+
+    setVal(wu, q(wu, ".urlcheck input"), HOST);
+    setVal(wu, tokInput, mkJwt({ id: "lakshaydb-cute-drum", a: "rw", exp: Math.floor(Date.now() / 1000) + 86400 }));
+    await wait(150);
+    check("valid token is recognised", /Token valid JWT/.test(jwtOut()), jwtOut());
+    check("valid token shows the db + expiry claims", /lakshaydb-cute-drum/.test(jwtOut()) && /exp\s*\d{4}-\d{2}-\d{2}/.test(jwtOut()), jwtOut());
+    check("matching DB is confirmed", /URL se match/.test(jwtOut()), jwtOut());
+
+    setVal(wu, tokInput, mkJwt({ id: "lakshaydb-cute-drum", exp: Math.floor(Date.now() / 1000) - 3600 }));
+    await wait(150);
+    check("expired token is called out", /expire ho chuka hai/.test(jwtOut()), jwtOut());
+
+    setVal(wu, tokInput, mkJwt({ id: "some-other-db", exp: Math.floor(Date.now() / 1000) + 86400 }));
+    await wait(150);
+    check("token for another database is called out", /dusri database ka hai/.test(jwtOut()), jwtOut());
+
+    setVal(wu, tokInput, "sk_live_this_is_not_a_jwt");
+    await wait(150);
+    check("non-JWT secret is called out", /JWT nahi lag raha/.test(jwtOut()), jwtOut());
+
+    setVal(wu, tokInput, "");
+    await wait(120);
+    check("token box can be cleared", !q(wu, ".jwtcheck"));
   }
 
 

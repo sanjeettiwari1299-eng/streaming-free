@@ -21,7 +21,7 @@
  */
 
 // bump this when the worker changes, so /api/health tells you which code is live
-const BUILD = "8.4.0";
+const BUILD = "8.5.0";
 
 const INNERTUBE_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8";
 const UA = {
@@ -2460,11 +2460,54 @@ const libsqlToken = (env) =>
     .replace(/^bearer\s+/i, "")
     .replace(/\s+/g, "");
 
+/* ── JWT inspector ───────────────────────────────────────────────────────────
+   Layerbase answers 401 with "The JWT is invalid" for four different mistakes:
+   the secret is not a JWT, the JWT expired, the JWT was issued for another
+   database, or the signing secret was rotated. We decode the payload (claims
+   only, no verification) so the probe can name the real one instead of guessing.
+   The token itself never leaves the worker. */
+function b64urlJson(part) {
+  try {
+    const s = String(part || "").replace(/-/g, "+").replace(/_/g, "/");
+    const pad = s + "=".repeat((4 - (s.length % 4)) % 4);
+    return JSON.parse(atob(pad));
+  } catch { return null; }
+}
+
+function decodeJwtInfo(token) {
+  const t = String(token || "");
+  const parts = t.split(".");
+  const out = { jwt: parts.length === 3 && t.length > 40, parts: parts.length, len: t.length };
+  if (!out.jwt) return out;
+  const head = b64urlJson(parts[0]) || {};
+  const p = b64urlJson(parts[1]) || {};
+  const exp = Number(p.exp || 0);
+  out.alg = String(head.alg || "");
+  out.exp = exp || 0;
+  out.expIso = exp ? new Date(exp * 1000).toISOString().slice(0, 10) : "";
+  out.expired = !!exp && exp * 1000 < Date.now();
+  out.dbId = String(p.id || p.db || p.database || p.dbid || "");
+  out.scope = String(p.a || p.scope || "");
+  out.iss = String(p.iss || "");
+  out.sub = String(p.sub || "");
+  return out;
+}
+
+/* does the token look like it belongs to the database in LIBSQL_URL? */
+function jwtDbMatch(dbId, host) {
+  if (!dbId || !host) return null;
+  const first = String(host).split(".")[0].toLowerCase();
+  const id = String(dbId).toLowerCase();
+  if (!first || !id) return null;
+  return first === id || first.includes(id) || id.includes(first);
+}
+
 /* What the worker actually parsed — so a wrong paste is visible, not guessed. */
 function libsqlInfo(env) {
   const raw = libsqlRaw(env);
   const base = libsqlBase(env);
   const token = libsqlToken(env);
+  const tk = decodeJwtInfo(token);
   const hadScheme = /^[a-z]+:\/\//i.test(raw.trim());
   const hadPath = /^[a-z]+:\/\/.*\//i.test(raw.trim().replace(/\/+$/, "") + "/x") && /\/[^/]+/.test(raw.trim().replace(/^[a-z]+:\/\//i, ""));
   return {
@@ -2478,6 +2521,8 @@ function libsqlInfo(env) {
     hadScheme,
     hadPath,
     tokenPrefix: token ? token.slice(0, 4) + "…" : "",
+    token: tk,
+    dbMatch: jwtDbMatch(tk.dbId, base ? base.replace(/^https:\/\//, "").split("/")[0] : ""),
   };
 }
 
@@ -2514,7 +2559,12 @@ async function libsqlPipeline(env, stmts) {
   } catch {
     throw new Error(`layerbase returned non-JSON (HTTP ${r.status})`);
   }
-  if (!r.ok) throw new Error(`layerbase HTTP ${r.status}${data && data.error ? ": " + data.error : ""}`);
+  if (!r.ok) {
+    const e = new Error(`layerbase HTTP ${r.status}${data && data.error ? ": " + data.error : ""}`);
+    e.status = r.status;
+    e.code = "http";
+    throw e;
+  }
   const out = [];
   for (const res of data.results || []) {
     if (res.type === "error") {
@@ -2540,6 +2590,49 @@ async function libsqlPipeline(env, stmts) {
     }
   }
   return out;
+}
+
+/* Turn "layerbase HTTP 401: Unauthorized: The JWT is invalid" into the real
+   cause. Used everywhere the store touches Layerbase, so the app, the probe and
+   the sync error all say the same, actionable thing. */
+function jwtVerdict(env, e) {
+  const info = libsqlInfo(env);
+  const tk = info.token || {};
+  const status = (e && e.status) || 0;
+  const msg = String((e && e.message) || "");
+  const auth = status === 401 || status === 403 || /unauthor|invalid jwt|jwt is invalid|token/i.test(msg);
+  if (!auth) return null;
+  const jwt = { ...tk, dbMatch: info.dbMatch, host: info.host };
+  if (!tk.jwt) {
+    return {
+      code: "jwt-format",
+      error: "LIBSQL_TOKEN JWT nahi lag raha — JWT me 3 dot-separated parts hote hain (eyJ…)",
+      hint: "Layerbase → apna DB → Connect → 'auth token' wala lamba token copy karein (URL ya API key nahi). Cloudflare → Worker → Settings → Variables and Secrets → LIBSQL_TOKEN update → Deploy.",
+      jwt,
+    };
+  }
+  if (tk.expired) {
+    return {
+      code: "jwt-expired",
+      error: "LIBSQL_TOKEN expire ho chuka hai (exp " + tk.expIso + ")",
+      hint: "Layerbase → DB → Connect se naya token banayein, LIBSQL_TOKEN update karein, Deploy dabayein. Bina expiry wala token lein to ye dobara nahi aayega.",
+      jwt,
+    };
+  }
+  if (info.dbMatch === false) {
+    return {
+      code: "jwt-wrong-db",
+      error: 'Token dusri database ka lag raha hai (token db "' + tk.dbId + '", URL host "' + info.host + '")',
+      hint: "Workspace me kai DB ho sakte hain. Layerbase me jis DB ka token hai, usi DB ke Connect screen se URL bhi copy karein aur wahi LIBSQL_URL me daalein, phir Deploy dabayein.",
+      jwt,
+    };
+  }
+  return {
+    code: "jwt-bad-signature",
+    error: "Token ki signature invalid hai — rotate ho gaya ya adhoora paste hua",
+    hint: "Layerbase → DB → Connect se token dobara copy karein (poora, bina line break ke). Bearer prefix ki zaroorat nahi, worker khud lagata hai. Phir LIBSQL_TOKEN update + Deploy.",
+    jwt,
+  };
 }
 
 // One-click setup check: does this worker actually reach Layerbase, sleep/wake
@@ -2602,16 +2695,21 @@ async function storeProbe(env, uid = "") {
       wokeFromSleep: Date.now() - t0 > 1200,
     };
   } catch (e) {
+    const jv = jwtVerdict(env, e);
     return {
       ok: false,
       configured: true,
       backend: "layerbase-libsql",
       latencyMs: Date.now() - t0,
-      error: /^layerbase/i.test(e.message) ? e.message : "layerbase: " + e.message,
+      error: jv ? jv.error : /^layerbase/i.test(e.message) ? e.message : "layerbase: " + e.message,
+      verdict: jv ? jv.code : "layerbase-error",
+      jwt: jv ? jv.jwt : undefined,
       host: libsqlBase(env).replace(/^https?:\/\//, ""),
       endpoint: libsqlBase(env) + "/v2/pipeline",
       url: { given: info.urlGiven, normalized: info.normalized, changed: info.changed, tokenGiven: info.tokenGiven, tokenPrefix: info.tokenPrefix },
-      hint: /restore|archiv/i.test(e.message)
+      hint: jv
+        ? jv.hint
+        : /restore|archiv/i.test(e.message)
         ? "database is archived — open the Layerbase dashboard and press Restore (data + backups are kept)"
         : /401|403|unauthor/i.test(e.message)
           ? "token galat hai — Layerbase dashboard → Connect se naya auth token copy karein (Bearer prefix ke bina), phir Cloudflare → Settings → Variables me LIBSQL_TOKEN update karke Deploy dabaein"
@@ -2745,11 +2843,19 @@ async function syncGet(env, uid) {
     writeSnapshot(uid, payload);
     return payload;
   } catch (e) {
+    const jv = jwtVerdict(env, e);
     const snap = await readSnapshot(uid);
     if (snap && snap.store) {
-      return { ...snap, ok: true, stale: true, backend: "edge-snapshot", warning: e.message };
+      return { ...snap, ok: true, stale: true, backend: "edge-snapshot", warning: (jv && jv.error) || e.message };
     }
-    return { ok: false, configured: true, error: e.message, hint: "Layerbase free DB sleeps when idle (wakes in ~1-5s) and is archived after 14 idle days — open the dashboard and hit Restore." };
+    return {
+      ok: false,
+      configured: true,
+      error: (jv && jv.error) || e.message,
+      hint: (jv && jv.hint) || "Layerbase free DB sleeps when idle (wakes in ~1-5s) and is archived after 14 idle days — open the dashboard and hit Restore.",
+      verdict: jv ? jv.code : "layerbase-error",
+      jwt: jv ? jv.jwt : undefined,
+    };
   }
 }
 
@@ -2778,7 +2884,16 @@ async function syncWrite(env, uid, body) {
     }
     return payload;
   } catch (e) {
-    return { ok: false, configured: true, error: e.message, written: 0 };
+    const jv = jwtVerdict(env, e);
+    return {
+      ok: false,
+      configured: true,
+      error: (jv && jv.error) || e.message,
+      hint: jv ? jv.hint : undefined,
+      verdict: jv ? jv.code : "layerbase-error",
+      jwt: jv ? jv.jwt : undefined,
+      written: 0,
+    };
   }
 }
 
@@ -3162,6 +3277,9 @@ export {
   normalizeLibsqlUrl,
   libsqlInfo,
   libsqlToken,
+  decodeJwtInfo,
+  jwtVerdict,
+  jwtDbMatch,
   libsqlPipeline,
   syncGet,
   syncWrite,
