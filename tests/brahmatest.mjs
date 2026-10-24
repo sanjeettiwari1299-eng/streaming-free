@@ -186,6 +186,12 @@ const pr = await (await W.default.fetch(new Request("https://w.dev/api/player?id
 check("player route exposes reason/hint", pr.ok === false && pr.reason === "bot" && !!pr.hint, JSON.stringify({ r: pr.reason }));
 const st = await (await W.default.fetch(new Request("https://w.dev/api/selftest?id=gatedVid001"), {})).json();
 check("selftest exposes the reason", st.ok === false && st.reason === "bot" && st.needAuth === true, JSON.stringify({ r: st.reason, n: st.needAuth }));
+check("selftest tells you what to do about a bot-check", st.verdict && st.verdict.code === "bot" && /YT_COOKIES|POTOKEN_URL/.test(st.verdict.hi), JSON.stringify(st.verdict));
+
+/* doctor mode: resolve + pull real bytes through our own proxy in one request */
+const doc = await (await W.default.fetch(new Request("https://w.dev/api/selftest?id=okVid000001&probe=1"), {})).json();
+check("doctor probes the stream itself", doc.stream && typeof doc.stream.status === "number", JSON.stringify(doc.stream));
+check("doctor gives a verdict", doc.verdict && /ok|bot|proxy|resolve|geo|age/.test(doc.verdict.code), JSON.stringify(doc.verdict));
 
 const failed = checks.filter((c) => !c.pass);
 checks.forEach((c) => console.log((c.pass ? "PASS  " : "FAIL  ") + c.n + (c.pass || !c.e ? "" : "  -> " + c.e)));

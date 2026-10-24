@@ -2,8 +2,65 @@
 
 `index.html` (whole app, one file) + `worker.js` (Cloudflare Worker, free tier).
 **No API key. No Google login. No Piped/Invidious. No server/VPS. No YouTube iframe. No localStorage.**
-Search · Trending · **Shorts** (+ **ShortsFire** embed) · **RSS subscriptions** · watch page · hand-built player.
-Self-healing playback: **video kabhi band na ho** — 5-step player recovery, proxy re-signing, endless play.
+Search · Trending · **Shorts** (+ **ShortsFire** embed) · **RSS subscriptions** · watch page · **comments** ·
+hand-built player. Self-healing playback: **video kabhi band na ho** — 5-step player recovery, proxy re-signing, endless play.
+
+---
+
+## v9.0 — YouTube-jaisa UI (poora shell dobara likha)
+
+Pehle wala UI "YouTube-inspired" tha; ab shell YouTube web jaisa hai — layout, spacing, icons, menus, sab.
+
+| Kya | Ab kaise |
+| --- | --- |
+| **Logo + topbar** | red play mark + StreamVoid wordmark, 56px bar, guide button, centered search pill with clear + search button, mic |
+| **Search** | live suggestions (recent searches cookie me, aapke device par), `/` shortcut se focus, voice search (jahan browser support kare) |
+| **Right rail** | Create menu (playlist / subscribe / Studio), notification bell with badge + channel list, avatar menu (history, liked, watch later, theme, settings, cloud state) |
+| **Sidebar** | SVG icons (koi emoji nahi), You section, subscriptions with avatars + "show more", Explore (Trending/Music/Gaming/News/Sports/Learning/Podcasts), 72px mini rail on tablets |
+| **Home** | sticky chip bar, 310px+ responsive grid, hover "Watch later / Share" on thumbnails, card action menu (save, playlist, copy link, YouTube), Shorts shelf (9:16 cards), Recommended shelf |
+| **Watch page** | title + channel row + subscribe/bell, segmented Like/Dislike, Share, Download, Save, overflow menu, expandable description, comments, Up next rail with All / From this channel chips + autoplay toggle |
+| **Comments (naya)** | worker ka `/api/comments` — InnerTube `next` ki comments continuation se real comments: author, avatar, likes, replies, creator badge, "show more" paging |
+| **Search page** | YouTube-style result rows (360px thumb, 18px title, channel avatar, snippet), This week / Live / Shorts filters, relevance / upload date / view count sort, grid toggle |
+| **Channel page** | banner + 128px avatar + handle + tabs (Home/Videos/Shorts/Playlists/About) |
+| **Theme** | dark (default) aur light — avatar menu ya Settings → Appearance se, cookie + cloud me save |
+| **Mobile** | bottom nav (Home · Shorts · Create · Subs · You), full-screen mobile search, single-column feed, scrollable action pills |
+| **Errors** | engine/setup/galat stream messages waise hi honest, par ab card ke andar YouTube-style banners me |
+
+Comments optional hain: agar worker purana ho ya kisi video par comments band hon, section khud bata deta hai
+("YouTube par comments dekhein") — watch page kabhi nahi tootta.
+
+---
+
+## "Koi video nahi chal rahi" — 3-minute checklist
+
+Screen par jo panel aata hai wahi sach bolta hai. Us panel me **Engine doctor** button hai; wo ek hi request me
+do cheezein batata hai: stream resolve hua ya nahi, aur bytes aa rahe hain ya nahi.
+
+```
+GET https://<your-worker>.workers.dev/api/selftest?id=dQw4w9WgXcQ&probe=1
+```
+
+| `verdict.code` | Matlab | Fix |
+| --- | --- | --- |
+| `ok` | resolve + bytes dono theek | browser me chalni chahiye; app me ek baar hard-refresh (Ctrl+Shift+R) |
+| `bot` | YouTube bot-check (datacenter IP) | worker secret `YT_COOKIES` (throwaway Google account ka cookie header) ya `POTOKEN_URL` add karein → Deploy |
+| `proxy` | resolve hua par stream 403/0 bytes | worker ka **naya version** deploy karein (purana `BUILD` chal raha hai) |
+| `resolve` | player hi fail | `/api/debug?refresh=1` kholein, `clientStats` dekhein; `?refresh=1` se client versions dobara discover hote hain |
+| `geo` / `age` | region block / age wall | Settings → Region badlein, ya `YT_COOKIES` daalein |
+
+App ke andar bhi wahi doctor hai: **Settings → YouTube engine → Run engine doctor** (ya video fail hone par
+error panel me **Engine doctor**) — video id daalo, ek click me resolve + bytes + client + attempts dikh jate hain.
+
+Sabse pehle ye confirm karein ki deploy naya hai:
+
+```
+GET https://<your-worker>.workers.dev/api/health      → build: "8.1.0"
+```
+
+Purana build dikhe to Cloudflare → Workers → apna worker → Edit code → **poora `worker.js` paste** → Deploy.
+Uske baad app me Settings → **Save & test**.
+
+> **Note:** `PROBE` wala `?probe=1` extra hai — bina uske `/api/selftest?id=...` sirf resolve check karta hai.
 
 ---
 
@@ -207,6 +264,7 @@ session (password-equivalent).
 | `GET /api/shorts?region=IN` | Shorts feed: `browse` `FEshorts` (`shortsLockupViewModel` + `reelItemRenderer`), falling back to `#shorts` search, then to short items in trending |
 | `GET /api/player?id=` | InnerTube `player` with a client ladder (android_vr → ios → tv_embedded → android → mweb → web), picks muxed MP4, rewrites URLs to the proxy |
 | `GET /api/related?id=` | InnerTube `next` → Up next list |
+| `GET /api/comments?id=&token=` | InnerTube `next` → comments continuation → `{items, next, count}`; author, avatar, likes, replies, creator badge. Token sirf paging ke liye |
 | `GET /api/rss?channels=UC…,UC…` | fetch + merge YouTube RSS feeds for up to 30 channels → `{items, channels, errors}` (dedupe, newest first, per-channel failure isolated) |
 | `GET /api/channel?q=` | resolve anything you paste (`@handle`, `/channel/UC…`, `/c/name`, bare `UC…`) → `{channelId, name, avatar}` |
 | `GET /api/media?u=` | **Range-aware** byte proxy for `googlevideo.com` (host allowlist) |
@@ -672,6 +730,8 @@ click through the whole UI and player. It is a preview tool only — production 
   a blank screen.
 - Subscriptions: YouTube killed `feeds/videos.xml` in Oct 2026. The worker now falls back to the channel's
   Videos tab (InnerTube), which gives relative dates ("2 hours ago") — day grouping uses an approximation.
+- Comments: `/api/comments` InnerTube `next` ke continuation par depend karta hai. YouTube shape badle to section
+  khud "Comments load nahi ho paye" bolta hai (watch page safe rehta hai); `?token=` se paging hoti hai.
 - Shorts: `/api/shorts` returns one page (up to 40). There is no endless scroll yet — hit Refresh for more,
   and YouTube's `FEshorts` tab is region/algorithm dependent, which is why the two fallbacks exist.
 - Cloudflare free tier: 100k requests/day. Media proxying costs bandwidth — fine for personal use.

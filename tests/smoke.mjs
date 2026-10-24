@@ -71,6 +71,25 @@ check("durToSec", W.durToSec("1:02:03") === 3723);
 check("VIEWS", W.VIEWS("1.2M views") === 1200000);
 const list = W.normalizeList(JSON.parse(SEARCH), 10);
 check("normalizeList", list.length === 2 && list[0].title === "Hello World" && list[0].lengthSeconds === 605);
+/* ── comments: modern commentEntityPayload + legacy commentRenderer ─────── */
+const COMMENT_DATA = {
+  frameworkUpdates: { entityBatchUpdate: { mutations: [{ payload: { commentEntityPayload: {
+    properties: { commentId: "Ugx1", content: { content: "Nice video" }, publishedTime: "2 days ago" },
+    author: { channelId: "UCa", displayName: "Asha", avatarThumbnailUrl: "https://yt3/a.jpg", isCreator: true },
+    toolbar: { likeCountNotliked: "1.2K", replyCount: "3" },
+  } } }] } },
+};
+const cm1 = W.normalizeComments(COMMENT_DATA, 10);
+check("comments: modern payload parsed", cm1.length === 1 && cm1[0].text === "Nice video" && cm1[0].author === "Asha", JSON.stringify(cm1));
+check("comments: likes/replies/creator", cm1[0].likes === 12 && cm1[0].replies === 3 && cm1[0].creator === true, JSON.stringify(cm1[0]));
+const cm2 = W.normalizeComments({ contents: [{ commentRenderer: {
+  commentId: "Legacy1", contentText: { runs: [{ text: "Old " }, { text: "shape" }] },
+  authorText: { runs: [{ text: "Ravi" }] }, publishedTimeText: { runs: [{ text: "1 year ago" }] },
+  voteCount: { simpleText: "42" }, authorThumbnail: { thumbnails: [{ url: "https://yt3/l.jpg" }] },
+} }] }, 10);
+check("comments: legacy renderer parsed", cm2.length === 1 && cm2[0].text === "Old shape" && cm2[0].author === "Ravi" && cm2[0].likes === 42, JSON.stringify(cm2));
+check("comments: no payload = empty list", W.normalizeComments({ contents: [] }, 10).length === 0);
+
 /* ── 2026 shapes: lockupViewModel + generic fallback ─────────────────────── */
 const LOCKUP = {
   contents: {

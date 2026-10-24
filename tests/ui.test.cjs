@@ -136,6 +136,16 @@ function makeDom(opts = {}) {
           applyOps(body.ops);
           return ok({ ok: true, written: (body.ops || []).reduce((n, o) => n + ((o.upsert || []).length), 0) });
         }
+        if (/\/api\/selftest/.test(u)) {
+          if (opts.oldWorker) return ok({ ok: true, video: "tr000000001", ms: 747, pass: 1, client: "android_vr", clientVersion: "1.65.10", formats: ["360p"], attempts: [] });
+          if (opts.doctorFail) return { ok: false, status: 500, json: async () => ({ error: "boom" }), text: async () => "not json" };
+          return ok({
+            ok: true, video: "tr000000001", ms: 747, pass: 1, reason: null, needAuth: false, botCheck: false, poTokenUsed: false,
+            client: "android_vr", clientVersion: "1.65.10", healed: false, formats: ["360p"], attempts: [],
+            stream: { ok: true, status: 206, itag: 18, quality: "360p", type: "video/mp4", bytes: 2048, note: "bytes aa rahe hain — stream playable hai" },
+            verdict: { code: "ok", hi: "Sab theek — resolve + bytes dono kaam kar rahe hain." },
+          });
+        }
         if (/\/api\/health/.test(u)) return ok({ ok: true, service: "streamvoid-worker" });
         if (/\/api\/trending/.test(u)) return ok({ items: TRENDING });
         if (/\/api\/rss/.test(u)) {
@@ -169,6 +179,16 @@ function makeDom(opts = {}) {
             });
           }
           return ok(PLAYER);
+        }
+        if (/\/api\/comments/.test(u)) {
+          if (opts.commentsOff) return ok({ ok: true, items: [], next: null, count: 0, disabled: true });
+          const token = /token=([^&]+)/.test(u) ? decodeURIComponent(u.split("token=")[1]) : "";
+          const page = [
+            { commentId: "c1", author: "Aarav", authorId: UC1, avatar: "", text: "Great video, custom player is smooth.", likes: 1200, replies: 4, published: "2 days ago", creator: false },
+            { commentId: "c2", author: "Resolved Chan", authorId: UC2, avatar: "", text: "Thanks for watching!", likes: 340, replies: 0, published: "1 day ago", creator: true },
+          ];
+          if (token) return ok({ ok: true, items: [{ commentId: "c3", author: "Priya", authorId: UC1, text: "Second page comment.", likes: 5, replies: 0, published: "5 hours ago" }], next: null, count: 3 });
+          return ok({ ok: true, items: page, next: "page2", count: 3, source: "innertube" });
         }
         if (/\/api\/related/.test(u)) return ok({ items: TRENDING });
         throw new Error("unexpected " + u);
@@ -692,6 +712,143 @@ const cookie = (w, k) => {
   check("a store failure is reported, not swallowed", /error|off/i.test(wf.document.body.textContent) || !!q(wf, ".dots") || true);
   const rootTxt = q(wf, "#root") ? q(wf, "#root").textContent : "";
   check("no crash from a failing store", !/Something went wrong|Uncaught|Cannot read/i.test(rootTxt), rootTxt.slice(0, 120));
+
+  /* ══ 12. YouTube shell: search suggestions, comments, theme, actions ════ */
+  {
+    const dm = makeDom();
+    const wv = dm.window;
+    const errs12 = [];
+    wv.console.error = (...a) => errs12.push(a.join(" "));
+    const sc2 = wv.document.createElement("script");
+    sc2.textContent = app;
+    wv.document.body.appendChild(sc2);
+    await wait(900);
+
+    check("topbar shows the wordmark", /StreamVoid/.test((q(wv, ".yt-logo") || {}).textContent || ""), (q(wv, ".yt-logo") || {}).textContent);
+    check("topbar has a YouTube-style search pill", !!q(wv, ".tb-search input") && !!q(wv, ".tb-search .tb-go"));
+    check("sidebar uses real icons, not emoji", all(wv, ".sidebar .s-ico svg").length >= 6, all(wv, ".sidebar .s-ico svg").length);
+    check("theme starts dark", wv.document.documentElement.dataset.theme === "dark", wv.document.documentElement.dataset.theme);
+
+    const sInput = q(wv, ".tb-search input");
+    sInput.dispatchEvent(new wv.FocusEvent("focusin", { bubbles: true }));
+    setVal(wv, sInput, "lofi");
+    await wait(120);
+    check("typing opens search suggestions", !!q(wv, ".tb-suggest") && all(wv, ".tb-sg").length > 0, all(wv, ".tb-sg").length);
+    const sugg = all(wv, ".tb-sg").find((b) => /lofi songs/.test(b.textContent));
+    check("suggestion list is filtered", !!sugg, all(wv, ".tb-sg").map((b) => b.textContent).join(" | "));
+    click(wv, sugg);
+    await wait(500);
+    check("suggestion starts a search", /search/.test(wv.document.body.textContent) && /Results for/.test(wv.document.body.textContent), wv.document.body.textContent.slice(0, 80));
+    check("search results use YouTube rows", all(wv, ".vc-search").length > 0, all(wv, ".vc-search").length);
+    check("search filters include upload date", all(wv, ".filter-btn").some((b) => /This week/.test(b.textContent)));
+
+    click(wv, all(wv, ".tb-avatar")[0]);
+    await wait(120);
+    check("avatar opens the account menu", !!q(wv, ".yt-menu") && /StreamVoid profile/.test(q(wv, ".yt-menu").textContent));
+    const themeBtn = all(wv, ".ym-item").find((b) => /Appearance/.test(b.textContent));
+    click(wv, themeBtn);
+    await wait(250);
+    check("appearance toggle switches to light", wv.document.documentElement.dataset.theme === "light", wv.document.documentElement.dataset.theme);
+    check("theme is persisted", (cookie(wv, "sv_cfg") || {}).theme === "light", JSON.stringify(cookie(wv, "sv_cfg")));
+
+    click(wv, all(wv, ".s-item").find((b) => /Home/.test(b.textContent)));
+    await wait(600);
+    click(wv, all(wv, ".vc")[0]);
+    await wait(900);
+    check("watch page opens after the shell pass", !!q(wv, ".cp video"), wv.document.body.textContent.slice(0, 60));
+    check("comments section is mounted", !!q(wv, ".cm-wrap"));
+    check("comments are listed", all(wv, ".cm").length === 2, all(wv, ".cm").length);
+    check("comments show the total count", /3 Comments/.test((q(wv, ".cm-count") || {}).textContent || ""), (q(wv, ".cm-count") || {}).textContent);
+    const moreCm = q(wv, ".cm-more");
+    check("more replies button exists", !!moreCm);
+    if (moreCm) { click(wv, moreCm); await wait(400); }
+    check("more comments load", all(wv, ".cm").length === 3, all(wv, ".cm").length);
+
+    const desc = q(wv, ".watch-desc-box");
+    check("description is collapsed", !q(wv, ".watch-desc-full"));
+    click(wv, desc);
+    await wait(150);
+    check("description expands", !!q(wv, ".watch-desc-full"), (q(wv, ".watch-desc-box") || {}).textContent);
+
+    const dbtn = all(wv, ".watch-actions .pill").find((b) => b.getAttribute("title") === "I dislike this");
+    check("dislike control exists", !!dbtn);
+    click(wv, dbtn);
+    await wait(120);
+    check("dislike toggles on", (dbtn.getAttribute("class") || "").includes("on"), dbtn.getAttribute("class"));
+
+    const moreBtn = all(wv, ".watch-actions .pill").find((b) => b.getAttribute("title") === "More");
+    check("overflow menu exists", !!moreBtn);
+    click(wv, moreBtn);
+    await wait(150);
+    check("overflow menu offers save to playlist", all(wv, ".ym-item").some((b) => /Save to playlist/.test(b.textContent)));
+
+    /* save to playlist (real, not a placeholder) */
+    const saveItem = all(wv, ".ym-item").find((b) => /Save to playlist/.test(b.textContent));
+    check("overflow menu offers save to playlist", !!saveItem);
+    click(wv, saveItem);
+    await wait(200);
+    check("save-to-playlist sheet opens", !!q(wv, ".pl-save"), wv.document.body.textContent.slice(0, 60));
+    click(wv, q(wv, ".pl-save-new"));
+    await wait(150);
+    const plInput = q(wv, ".pl-save input");
+    check("sheet can create a playlist inline", !!plInput);
+    if (plInput) {
+      setVal(wv, plInput, "Watch later-ish");
+      click(wv, all(wv, ".pl-save .set-api-btn")[0]);
+      await wait(600);
+    }
+    check("playlist is created with the video", (wv.__remote.playlists || []).some((p) => p.name === "Watch later-ish" && (p.videos || []).some((v) => v.videoId === "tr000000001")), JSON.stringify(wv.__remote.playlists || []).slice(0, 160));
+    click(wv, q(wv, ".pl-save-head .tb-icon-btn"));
+    await wait(150);
+    check("sheet closes", !q(wv, ".pl-save"));
+
+    /* resume position is written to the cloud store */
+    const vid = q(wv, ".cp video");
+    try {
+      Object.defineProperty(vid, "duration", { configurable: true, value: 300 });
+      vid.currentTime = 42;
+      vid.dispatchEvent(new wv.Event("pause"));
+    } catch {}
+    await wait(800);
+    check("playback position is remembered", (wv.__remote.history || []).some((h) => h.videoId === "tr000000001" && h.pos > 40), JSON.stringify((wv.__remote.history || [])[0] || {}).slice(0, 120));
+
+    check("rail has up-next chips", all(wv, ".watch-chips .chip").some((b) => /From this channel/.test(b.textContent)));
+
+    /* engine doctor: one click explains why playback fails */
+    click(wv, all(wv, ".s-item").find((b) => /Settings/.test(b.textContent)));
+    await wait(500);
+    const docBtn = all(wv, ".doctor-row .set-api-btn").find((b) => /engine doctor/i.test(b.textContent));
+    check("settings has a run-engine-doctor button", !!docBtn, all(wv, ".doctor-row .set-api-btn").map((b) => b.textContent).join(","));
+    click(wv, docBtn);
+    await wait(700);
+    check("doctor calls /api/selftest with probe=1", wv.__calls.some((u) => /\/api\/selftest\?id=.*probe=1/.test(u)), wv.__calls.filter((u) => /selftest/.test(u)).join(" "));
+    check("doctor shows the verdict", !!q(wv, ".doctor-card") && /Sab theek/i.test(q(wv, ".doctor-card").textContent), (q(wv, ".doctor-card") || {}).textContent);
+    check("doctor shows resolve + stream bytes", /resolve/i.test(q(wv, ".doctor-card").textContent) && /bytes/i.test(q(wv, ".doctor-card").textContent) && /206/.test(q(wv, ".doctor-card").textContent), (q(wv, ".doctor-card") || {}).textContent.slice(0, 160));
+    check("doctor shows the delivering client", /android_vr/.test(q(wv, ".doctor-card").textContent));
+    check("no JS errors in the shell pass", errs12.filter((e) => !/Not implemented|scrollTo|navigate|Warning: Each child/.test(e)).length === 0, errs12.slice(0, 2).join(" | "));
+  }
+
+  /* ══ 13. mobile shell: bottom nav + full-screen search ═══════════════════ */
+  {
+    const dm = makeDom();
+    const wm = dm.window;
+    Object.defineProperty(wm, "innerWidth", { configurable: true, value: 390 });
+    wm.dispatchEvent(new wm.Event("resize"));
+    const sc3 = wm.document.createElement("script");
+    sc3.textContent = app;
+    wm.document.body.appendChild(sc3);
+    await wait(900);
+    check("mobile bottom nav exists", all(wm, ".mnav-item").length >= 4, all(wm, ".mnav-item").length);
+    check("mobile nav has Home/Shorts/Subs", ["Home", "Shorts", "Subs"].every((t) => all(wm, ".mnav-item").some((b) => b.textContent.includes(t))));
+    const mSearch = all(wm, ".tb-search-mobile-btn")[0];
+    check("mobile search button exists", !!mSearch);
+    click(wm, mSearch);
+    await wait(250);
+    check("mobile search opens full-screen", !!q(wm, ".tb-mobile-search") && !!q(wm, ".tb-mobile-search input"), wm.document.body.textContent.slice(0, 60));
+    click(wm, all(wm, ".mnav-item").find((b) => /Shorts/.test(b.textContent)));
+    await wait(700);
+    check("mobile nav switches pages", !!q(wm, ".shorts-wrap"), wm.document.body.textContent.slice(0, 60));
+  }
 
   const failed = checks.filter((c) => !c.pass);
   checks.forEach((c) => console.log((c.pass ? "PASS  " : "FAIL  ") + c.n + (c.pass || !c.e ? "" : "  -> " + c.e)));

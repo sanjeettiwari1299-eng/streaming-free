@@ -21,7 +21,7 @@
  */
 
 // bump this when the worker changes, so /api/health tells you which code is live
-const BUILD = "8.0.0";
+const BUILD = "8.1.0";
 
 const INNERTUBE_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8";
 const UA = {
@@ -1423,6 +1423,141 @@ async function related(videoId, env = {}, url = new URL("https://x/")) {
   return { items: normalizeList(data, 24) };
 }
 
+// ── Comments ──────────────────────────────────────────────────────────────────
+// The watch page's "next" response holds a comments continuation; feeding that
+// token back gives commentEntityPayload rows. Everything is optional: any shape
+// we do not recognise returns an empty, self-explaining result instead of 500.
+const runsText = (runs) => (Array.isArray(runs) ? runs.map((r) => (r && r.text) || "").join("") : "");
+const numOf = (v) => {
+  if (typeof v === "number") return v;
+  const n = Number(String(v || "").replace(/[^\d]/g, ""));
+  return Number.isFinite(n) ? n : 0;
+};
+
+function normalizeComments(data, limit = 20) {
+  const out = [];
+  const seen = new Set();
+  for (const p of collect(data, ["commentEntityPayload"])) {
+    const id = p.commentId || (p.properties && p.properties.commentId);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    const content = (p.properties && p.properties.content && p.properties.content.content) || "";
+    const author = p.author || {};
+    const toolbar = p.toolbar || {};
+    const text = String(content || "").trim();
+    if (!text) continue;
+    out.push({
+      commentId: String(id),
+      text: text.slice(0, 2000),
+      author: author.displayName || author.name || "",
+      authorId: author.channelId || "",
+      avatar: author.avatarThumbnailUrl || "",
+      published: (p.properties && p.properties.publishedTime) || "",
+      likes: numOf(toolbar.likeCountNotliked || toolbar.likeCountLiked || toolbar.likeCountA11y),
+      replies: numOf(toolbar.replyCount),
+      creator: !!(author.isCreator || author.isOwner),
+    });
+    if (out.length >= limit) break;
+  }
+  if (!out.length) {
+    for (const r of collect(data, ["commentRenderer"])) {
+      const id = r.commentId;
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      const text = runsText(r.contentText && r.contentText.runs).trim();
+      if (!text) continue;
+      const thumbs = r.authorThumbnail && r.authorThumbnail.thumbnails;
+      out.push({
+        commentId: String(id),
+        text: text.slice(0, 2000),
+        author: runsText(r.authorText && r.authorText.runs),
+        authorId: (r.authorEndpoint && r.authorEndpoint.browseEndpoint && r.authorEndpoint.browseEndpoint.browseId) || "",
+        avatar: Array.isArray(thumbs) && thumbs.length ? thumbs[thumbs.length - 1].url : "",
+        published: runsText(r.publishedTimeText && r.publishedTimeText.runs),
+        likes: numOf(r.voteCount && r.voteCount.simpleText),
+        replies: numOf(r.replyCount && r.replyCount.simpleText) || 0,
+        creator: !!r.authorCommentBadge,
+      });
+      if (out.length >= limit) break;
+    }
+  }
+  return out.slice(0, limit);
+}
+
+function commentCount(data) {
+  const h = collect(data, ["commentsHeaderRenderer"])[0];
+  const t = h && h.countText;
+  const txt = (t && (t.simpleText || runsText(t.runs))) || "";
+  const n = numOf(txt);
+  if (n) return n;
+  const hp = collect(data, ["commentsEntryPointHeaderRenderer"])[0];
+  const t2 = hp && hp.commentCount;
+  return numOf(t2 && (t2.simpleText || runsText(t2.runs)));
+}
+
+function commentsToken(data, first) {
+  const fromSection = () => {
+    const sections = collect(data, ["itemSectionRenderer"]);
+    for (const sec of sections) {
+      const sid = String(sec.sectionIdentifier || sec.targetId || "");
+      if (!/comment/i.test(sid)) continue;
+      const c = collect(sec, ["continuationItemRenderer"])[0];
+      const tok = c && c.continuationEndpoint && c.continuationEndpoint.continuationCommand && c.continuationEndpoint.continuationCommand.token;
+      if (tok) return tok;
+    }
+    return "";
+  };
+  const fromEntry = () => {
+    const entry = collect(data, ["commentsEntryPointHeaderRenderer", "engagementPanelSectionListRenderer"])
+      .find((x) => JSON.stringify(x.panelIdentifier || x.targetId || "").match(/comment/i) || x.commentCount);
+    if (!entry) return "";
+    const c = collect(entry, ["continuationItemRenderer"])[0];
+    return (c && c.continuationEndpoint && c.continuationEndpoint.continuationCommand && c.continuationEndpoint.continuationCommand.token) || "";
+  };
+  const direct = fromSection() || fromEntry();
+  if (direct) return direct;
+  // last resort: every continuation in a comments response continues comments
+  if (!first) {
+    const all = collect(data, ["continuationItemRenderer"])
+      .map((c) => c.continuationEndpoint && c.continuationEndpoint.continuationCommand && c.continuationEndpoint.continuationCommand.token)
+      .filter(Boolean);
+    return all.length ? all[all.length - 1] : "";
+  }
+  return "";
+}
+
+async function comments(videoId, token, env = {}, url = new URL("https://x/")) {
+  if (!/^[A-Za-z0-9_-]{6,15}$/.test(String(videoId || ""))) return { ok: false, error: "valid video id required" };
+  let data;
+  let first = !token;
+  try {
+    if (!token) {
+      const next = await listCall(env, url, "next", { videoId });
+      token = commentsToken(next, true);
+      if (!token) {
+        const count = commentCount(next);
+        return { ok: true, items: [], next: null, count, disabled: true, source: "no-comments-continuation" };
+      }
+      data = await listCall(env, url, "next", { continuation: token });
+      first = false;
+      if (!commentCount(next)) {
+        const c = commentCount(data);
+        if (c) data.__count = c;
+      } else {
+        data.__count = commentCount(next);
+      }
+    } else {
+      data = await listCall(env, url, "next", { continuation: token });
+    }
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e), items: [], next: null, count: 0 };
+  }
+  const items = normalizeComments(data, 20);
+  const count = data.__count || commentCount(data) || 0;
+  const next = commentsToken(data, first) || null;
+  return { ok: true, items, next, count: count || items.length, source: "innertube", build: BUILD };
+}
+
 // ── Shorts ────────────────────────────────────────────────────────────────────
 const SHORT_MAX_SEC = 90;
 const ID_RE = /^[A-Za-z0-9_-]{6,15}$/;
@@ -2120,6 +2255,7 @@ const ROUTE_LIST = [
   "/api/trending?region=IN",
   "/api/shorts?region=IN",
   "/api/related?id=",
+  "/api/comments?id=&token=",
   "/api/rss?channels=UC..,UC..",
   "/api/channel?q=@handle",
   "/api/sync?p=KEY  (GET/POST/DELETE)",
@@ -2185,7 +2321,7 @@ p{margin:8px 0}
   <div class="card">
     <h2>Quick test</h2>
     <p class="muted">In links ko kholke dekho — sab JSON aana chahiye:</p>
-    <p><a class="btn ghost" href="/api/selftest?id=dQw4w9WgXcQ">/api/selftest?id=dQw4w9WgXcQ</a><a class="btn ghost" href="/api/trending?region=IN">/api/trending</a><a class="btn ghost" href="/api/shorts?region=IN">/api/shorts</a></p>
+    <p><a class="btn ghost" href="/api/selftest?id=dQw4w9WgXcQ&probe=1">/api/selftest?id=…&amp;probe=1 (doctor)</a><a class="btn ghost" href="/api/trending?region=IN">/api/trending</a><a class="btn ghost" href="/api/shorts?region=IN">/api/shorts</a></p>
     <p class="muted">Direct file: <code>/mp4/dQw4w9WgXcQ.mp4</code> · <code>?dl=1</code> download · <code>?itag=18</code> quality</p>
   </div>
 
@@ -2637,6 +2773,47 @@ const ROUTES = [
         cookieHeader: cookieAuth(env, u),
         region: (u.searchParams.get("region") || "IN").toUpperCase(),
       });
+      /* ?probe=1 also pulls the first bytes through our own /api/media proxy, so a
+         single URL answers both questions: "did we resolve?" and "does it play?" */
+      let stream = null;
+      if (u.searchParams.get("probe") === "1") {
+        const first = (res.formats || [])[0];
+        if (!first) {
+          stream = { ok: false, status: 0, note: "no format to probe (player did not resolve)" };
+        } else {
+          try {
+            const src = new URL(first.url, u.origin).toString();
+            const r = await fetch(src, { headers: { range: "bytes=0-2047" } });
+            const buf = await r.arrayBuffer();
+            stream = {
+              ok: r.status === 200 || r.status === 206,
+              status: r.status,
+              itag: first.itag,
+              quality: first.quality,
+              type: r.headers.get("content-type") || "",
+              bytes: buf.byteLength,
+              note: r.status === 403 ? "googlevideo ne 403 diya — signature/nsig toot gaya, worker dobara deploy karein" :
+                r.status === 200 || r.status === 206 ? "bytes aa rahe hain — stream playable hai" : "unexpected status",
+            };
+          } catch (e) {
+            stream = { ok: false, status: 0, note: "proxy fetch failed: " + String((e && e.message) || e) };
+          }
+        }
+      }
+
+      const verdict = (() => {
+        if (!res.ok) {
+          if (res.botCheck || res.needAuth) return { code: "bot", hi: "YouTube bot-check: worker me YT_COOKIES (throwaway account) ya POTOKEN_URL secret add karein, phir /api/health?refresh=1 kholein." };
+          if (res.reason === "geo") return { code: "geo", hi: "Ye video is region me block hai — Settings → Region me IN ke alawa US/GB try karein." };
+          if (res.reason === "age") return { code: "age", hi: "Age-restricted video: cookies chahiye (YT_COOKIES)." };
+          return { code: "resolve", hi: "Stream resolve hi nahi hua — /api/debug?refresh=1 kholein aur clientStats dekhein." };
+        }
+        if (stream && !stream.ok) {
+          return { code: "proxy", hi: "Resolve ho gaya par bytes nahi aa rahe (" + stream.status + "). Worker ka naya version deploy karein, phir dobara probe karein." };
+        }
+        return { code: "ok", hi: "Sab theek — resolve + bytes dono kaam kar rahe hain. Browser me video chalni chahiye." };
+      })();
+
       return {
         ok: !!res.ok,
         video: id,
@@ -2654,6 +2831,8 @@ const ROUTES = [
         formats: (res.formats || []).map((f) => f.quality),
         attempts: (res.attempts || []).slice(-12),
         breakers: breakerSnapshot(),
+        stream,
+        verdict,
       };
     },
   ],
@@ -2662,6 +2841,7 @@ const ROUTES = [
   ["/api/searchmore", async (u, env) => searchMore(u.searchParams.get("q") || "", u.searchParams.get("token") || "", env, u)],
   ["/api/trending", async (u, env) => trending((u.searchParams.get("region") || "IN").toUpperCase(), env, u)],
   ["/api/related", async (u, env) => related(u.searchParams.get("id") || "", env, u)],
+  ["/api/comments", async (u, env) => comments(u.searchParams.get("id") || "", u.searchParams.get("token") || "", env, u)],
   ["/api/shorts", async (u, env) => shorts((u.searchParams.get("region") || "IN").toUpperCase(), env, u)],
   ["/api/rss", async (u, env) => rss(env, u.searchParams.get("channels") || "", u)],
   ["/api/probe", async (u, env) => probe(u, env)],
@@ -2775,6 +2955,8 @@ export {
   search,
   trending,
   related,
+  comments,
+  normalizeComments,
   // new: version discovery + cookies
   parseYtdlpVersions,
   discoverVersions,
