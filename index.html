@@ -4598,9 +4598,121 @@ function EngineTests({ st }) {
    Ek hi request me do sawal: "stream resolve hua?" aur "bytes aa rahe hain?".
    Worker ka /api/selftest?probe=1 verdict deta hai (ok / bot / proxy / resolve /
    geo / age); agar worker purana ho to hum khud /api/player se probe karte hain. */
+/* Cookie checker — worker ke parseCookiesDetailed ka mirror. Paste karte hi
+   pata chal jata hai ki export me SID/HSID/SSID/SAPISID hain ya nahi, ya
+   cookies expire ho chuke hain. Sirf browser me chalta hai. */
+function cookieDetail(raw) {
+  const out = { header: "", format: "none", total: 0, expired: 0 };
+  let text = String(raw || "").trim().replace(/^["'`]+|["'`]+$/g, "");
+  if (!text) return out;
+  const emit = (pairs, format) => {
+    const clean = [];
+    for (const p of pairs) {
+      const i = p.indexOf("=");
+      if (i <= 0) continue;
+      const k = p.slice(0, i).trim();
+      let v = p.slice(i + 1).trim();
+      if (!k || /^cookie$/i.test(k)) continue;
+      if (v.length > 2 && /^["']/.test(v) && /["']$/.test(v)) v = v.slice(1, -1);
+      clean.push(k + "=" + v);
+    }
+    out.header = clean.join("; ");
+    out.total = clean.length;
+    out.format = format;
+    return out;
+  };
+  if (text.startsWith("[") || text.startsWith("{")) {
+    try {
+      const data = JSON.parse(text);
+      const arr = Array.isArray(data) ? data : data.cookies || [];
+      const now = Date.now() / 1000;
+      const live = [];
+      for (const c of arr) {
+        if (!c || !c.name) continue;
+        if (c.expirationDate && Number(c.expirationDate) < now) { out.expired++; continue; }
+        live.push(c.name + "=" + (c.value ?? ""));
+      }
+      if (live.length || arr.length) return emit(live, "json");
+    } catch { /* fall through */ }
+  }
+  if (text.includes("\t")) {
+    const pairs = text.split(/\r?\n/).filter((l) => l && !l.startsWith("#"))
+      .map((l) => { const p = l.split("\t"); return p.length >= 7 ? p[5] + "=" + p[6] : ""; }).filter(Boolean);
+    if (pairs.length) return emit(pairs, "netscape");
+  }
+  text = text.replace(/^cookie\s*:\s*/i, "").replace(/\r?\n+/g, "; ");
+  return emit(text.split(";").map((x) => x.trim()).filter(Boolean), "header");
+}
+
+function CookieCheck() {
+  const [raw, setRaw] = useState("");
+  const [copied, setCopied] = useState("");
+  const d = useMemo(() => cookieDetail(raw), [raw]);
+  const val = (name) => {
+    const m = d.header.match(new RegExp("(?:^|;\\s*)" + name.replace(/[$]/g, "\\$") + "=([^;]+)"));
+    return m ? m[1].trim() : "";
+  };
+  const has = {
+    SID: !!(val("SID") || val("__Secure-1PSID") || val("__Secure-3PSID")),
+    SAPISID: !!(val("SAPISID") || val("__Secure-3PAPISID") || val("__Secure-1PAPISID")),
+    HSID: !!(val("HSID") || val("__Secure-1PSIDTS") || val("__Secure-3PSIDTS")),
+    SSID: !!(val("SSID") || val("__Secure-1PSID") || val("__Secure-3PSID")),
+  };
+  const missing = Object.keys(has).filter((k) => !has[k]);
+  const keys = d.header ? d.header.split("; ").map((x) => x.split("=")[0]) : [];
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(d.header); setCopied("copied"); setTimeout(() => setCopied(""), 1800); } catch { setCopied("fail"); }
+  };
+  return (
+    <div className="urlcheck">
+      <div className="set-sub-h" style={{ margin: "14px 0 6px" }}>Cookie checker (YT_COOKIES)</div>
+      <div className="doctor-row">
+        <input placeholder="Cookies paste karein — header string, cookies.txt ya JSON export"
+          value={raw} onChange={(e) => setRaw(e.target.value)} aria-label="YouTube cookies" />
+        {d.header && <button className="set-chip" onClick={copy}>{copied === "fail" ? "copy fail" : copied ? "Copied ✓" : "Copy clean string"}</button>}
+      </div>
+      {raw.trim() !== "" && (
+        <div className="urlcheck-out cookcheck" style={{ color: missing.length || !d.header ? "#ff8a80" : "#7ee787" }}>
+          {!d.header ? (
+            <div>✕ Cookies parse nahi hui — header string (<code>SID=…; HSID=…</code>), Netscape cookies.txt ya JSON export paste karein.</div>
+          ) : (
+            <>
+              <div>
+                {missing.length ? "✕ Export adhoora hai" : "✓ Cookies poore hain"} — {d.total} cookies ({d.format})
+                {d.expired ? " · " + d.expired + " expired skip kiye" : ""}
+              </div>
+              <div className="urlcheck-val" style={{ fontSize: 12 }}>
+                {Object.keys(has).map((k) => (
+                  <span key={k} style={{ marginRight: 10, color: has[k] ? "#7ee787" : "#ff8a80" }}>{has[k] ? "✓" : "✕"} {k}</span>
+                ))}
+              </div>
+              {missing.length > 0 && (
+                <div style={{ color: "var(--t3)" }}>
+                  Missing: <b>{missing.join(", ")}</b> — youtube.com pe login karke dobara export karein.
+                  In ke bina YouTube request ko logged-out/bot maanta hai.
+                </div>
+              )}
+              <div style={{ color: "var(--t3)", fontSize: 12 }}>keys: {keys.slice(0, 12).join(", ")}{keys.length > 12 ? " …" : ""}</div>
+              <ol className="urlcheck-steps">
+                <li>Cloudflare → Worker → <b>Settings → Variables and Secrets</b></li>
+                <li><code>YT_COOKIES</code> = upar wala <b>clean string</b> (Copy dabaein) · Secret</li>
+                <li><b>Deploy</b> → phir doctor dobara chalayein (cookies row “✓” dikhni chahiye)</li>
+              </ol>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 const VERDICT_META = {
   ok: { t: "Sab theek", c: "#7ee787", i: I.check },
   bot: { t: "YouTube bot-check", c: "#f1c40f", i: I.warn },
+  "bot-key": { t: "SV_KEY mismatch — cookies off", c: "#f1c40f", i: I.warn },
+  "bot-cookies": { t: "Cookie export adhoora", c: "#f1c40f", i: I.warn },
+  "bot-ip": { t: "IP-level bot block", c: "#ff8a65", i: I.warn },
+  "bot-potoken": { t: "PoToken chahiye", c: "#f1c40f", i: I.warn },
   proxy: { t: "Bytes block ho rahe hain", c: "#ff8a65", i: I.warn },
   resolve: { t: "Player resolve nahi hua", c: "#ff8a65", i: I.warn },
   geo: { t: "Region block", c: "#f1c40f", i: I.warn },
@@ -4685,7 +4797,22 @@ function EngineDoctor({ st, videoId, compact }) {
             <span>stream</span>
             <b>{res.stream ? (res.stream.ok ? "bytes ✓ " : "fail ") + (res.stream.status || 0) + (res.stream.bytes ? " · " + res.stream.bytes + "B" : "") : "probe nahi chala"}</b>
             {res.stream && res.stream.note && <><span>note</span><b style={{ fontWeight: 400 }}>{res.stream.note}</b></>}
+            {res.cookies && (
+              <>
+                <span>cookies</span>
+                <b>{
+                  !res.cookies.configured ? "set nahi"
+                    : !res.cookies.usable ? (res.cookies.missing && res.cookies.missing.length ? "adhoora: " + res.cookies.missing.join(", ") : "use nahi ho rahe")
+                      : (res.cookies.count || 0) + " cookies ✓"
+                }</b>
+                {res.cookies.note && <><span>cookie note</span><b style={{ fontWeight: 400 }}>{res.cookies.note}</b></>}
+                {res.cookies.expiredSkipped ? <><span>expired</span><b style={{ fontWeight: 400 }}>{res.cookies.expiredSkipped} skip kiye</b></> : null}
+              </>
+            )}
           </div>
+          {res.cookies && !res.cookies.usable && res.cookies.fix && (
+            <div className="doctor-s" style={{ color: "#ffd479" }}>{res.cookies.fix}</div>
+          )}
           {res.attempts && res.attempts.length > 0 && (
             <details className="doctor-attempts">
               <summary>{res.attempts.length} attempts</summary>
@@ -4705,15 +4832,31 @@ function LibsqlUrlCheck() {
   const clean = normalizeLibsqlUrl(raw);
   const host = clean ? clean.replace(/^https:\/\//, "") : "";
   const looksLayerbase = /(^|\.)(layerbase\.dev|turso\.io|libsql\.io)$/i.test(host);
-  const jwt = useMemo(() => decodeJwtInfo(tok), [tok]);
+  // token me URL paste ho gaya ho to usme se ?authToken= nikal lo (dashboard ka .env aisa hi hota hai)
+  const effTok = useMemo(() => {
+    const t = String(tok || "").trim().replace(/^bearer\s+/i, "").replace(/^["'`]|["'`]$/g, "");
+    const m = t.match(/[?&](?:authToken|auth_token|token)=([^&#\s]+)/i);
+    if (m) { try { return decodeURIComponent(m[1]); } catch { return m[1]; } }
+    return t;
+  }, [tok]);
+  const jwt = useMemo(() => decodeJwtInfo(effTok), [effTok]);
+  const apiKey = /^sk[_-]/i.test(effTok);
+  const tokUrl = /^(https?|libsql|wss?):\/\//i.test(effTok);
+  const tokSpaced = /\s/.test(String(tok || "").trim());
   const match = jwt.dbId && host ? jwtDbMatch(jwt.dbId, host) : null;
   const copy = async (text, what) => {
     try { await navigator.clipboard.writeText(text); setCopied(what); setTimeout(() => setCopied(""), 1800); } catch {}
   };
   const tokenVerdict = !tok.trim()
     ? null
-    : !jwt.jwt
-      ? { bad: true, title: "Ye JWT nahi lag raha", body: "JWT me 3 dot-separated parts hote hain (eyJ…). Lagta hai URL, API key ya adhoora token paste hua hai — Layerbase → DB → Connect se 'auth token' wala lamba token copy karein." }
+    : apiKey
+      ? { bad: true, title: "Ye Layerbase ka personal API key (sk_…) hai", body: "sk_ key Cloud REST API (cloud.layerbase.dev/v1) ke liye hoti hai — database chalane ke liye kaam nahi karti. Dashboard me apna DB kholein → Quick Connect → auth token (eyJ… wala, ~200+ chars) copy karein. Wahi LIBSQL_TOKEN (ya LIBSQL_AUTH_TOKEN) me daalein." }
+      : tokUrl && !jwt.jwt
+        ? { bad: true, title: "Ye URL lag raha hai, token nahi", body: "URL LIBSQL_URL me jaata hai; LIBSQL_TOKEN me sirf auth token (eyJ…). Agar paste kiya hua URL `?authToken=…` wala connection string hai to wo bhi chal jayega — worker usme se token khud nikal leta hai." }
+        : tokSpaced && !jwt.jwt
+          ? { bad: true, title: "Token me space/line break hai", body: "JWT ek hi line me hota hai. Naya token copy karein aur bina space paste karein." }
+          : !jwt.jwt
+      ? { bad: true, title: "Ye JWT nahi lag raha", body: "JWT me 3 dot-separated parts hote hain (eyJ…). Jo paste hua hai wo " + (effTok.length || 0) + " chars ka hai, " + (jwt.parts - 1) + " dot ke saath — database ka auth token nahi lagta. Quick Connect se auth token copy karein." }
       : jwt.expired
         ? { bad: true, title: "Token expire ho chuka hai (exp " + jwt.expIso + ")", body: "Isi wajah se Layerbase 401 'The JWT is invalid' deta hai. Connect se naya token banayein." }
         : match === false
@@ -4721,7 +4864,7 @@ function LibsqlUrlCheck() {
           : { bad: false, title: "Token valid JWT lag raha hai", body: (jwt.dbId ? "db id " + jwt.dbId + " ✓ · " : "") + (jwt.scope ? "scope " + jwt.scope + " · " : "") + (jwt.expIso ? "expiry " + jwt.expIso + (jwt.expired ? " (expired)" : "") : "koi expiry nahi") + ". Agar phir bhi 401 aaye to signature rotate hui hai — naya token lein." };
 
   return (
-    <div className="urlcheck">
+    <div className="urlcheck lbcheck">
       <div className="set-sub-h" style={{ margin: "14px 0 6px" }}>Layerbase checker (URL + JWT)</div>
       <div className="doctor-row">
         <input placeholder="Layerbase → Connect se URL paste karein (path ho to bhi chalega)"
@@ -4745,7 +4888,7 @@ function LibsqlUrlCheck() {
             <ol className="urlcheck-steps">
               <li>Cloudflare → Workers → apna worker → <b>Settings → Variables and Secrets</b></li>
               <li><code>LIBSQL_URL</code> = upar wala URL, <b>Secret</b> type</li>
-              <li><code>LIBSQL_TOKEN</code> = Layerbase ka auth token (sirf token, <code>Bearer </code> ke bina)</li>
+              <li><code>LIBSQL_TOKEN</code> = Layerbase ke <b>Quick Connect</b> ka auth token (JWT, <code>eyJ…</code>) — <b>sk_ API key nahi</b>. Naam <code>LIBSQL_AUTH_TOKEN</code> bhi chalega</li>
               <li><b>Deploy</b> dabaein, phir yahan <b>Test Layerbase</b></li>
             </ol>
           </div>
@@ -4907,7 +5050,9 @@ function CloudStore({ st }) {
           <ol style={{ margin: "0 0 0 18px" }}>
             <li><b>layerbase.com</b> → sign in (free, card nahi chahiye)</li>
             <li><b>New Database</b> → engine <b>libSQL</b> → Free plan → Create (10–60 s me ready)</li>
-            <li>DB kholein → <b>Connect / Quick Connect</b> → <code>https://…cloud.layerbase.dev</code> URL aur auth token copy karein</li>
+            <li>DB kholein → <b>Connect / Quick Connect</b> → <code>https://…cloud.layerbase.dev</code> URL aur <b>auth token (JWT, <code>eyJ…</code>)</b> copy karein.
+              <div style={{ color: "var(--t3)" }}>⚠️ Cloud settings ka <code>sk_…</code> <b>personal API key</b> database ke liye nahi chalta — wo sirf layerbase.com ka REST API use karta hai.</div>
+            </li>
             <li>Cloudflare → Workers → apna worker → <b>Settings → Variables → Add</b>: <code>LIBSQL_URL</code> = wahi URL, <code>LIBSQL_TOKEN</code> = token (dono <b>Secret</b> rakhein) → Save &amp; Deploy</li>
             <li>Yahan <b>Test Layerbase</b> dabaein → "Connected ✓" aana chahiye</li>
           </ol>
@@ -5006,6 +5151,7 @@ function SetPage({ st, engine, onCheck, onAddSub }) {
         </div>
         <div className="set-sub-h">Koi video nahi chal rahi? Doctor chalayein</div>
         <EngineDoctor st={st} />
+        <CookieCheck />
 
         <div className="set-sub-h">Poora test suite (saare routes)</div>
         <EngineTests st={st} />

@@ -324,12 +324,36 @@ const vOther = W.jwtVerdict({ ...ENV, LIBSQL_TOKEN: mkJwt({ id: "someone-else", 
 check("401 + other database → jwt-wrong-db", vOther && vOther.code === "jwt-wrong-db" && /dusri database/i.test(vOther.error), JSON.stringify(vOther).slice(0, 120));
 const vFormat = W.jwtVerdict({ ...ENV, LIBSQL_TOKEN: "glpat-not-a-jwt" }, { status: 401 });
 check("401 + non-JWT secret → jwt-format", vFormat && vFormat.code === "jwt-format" && /LIBSQL_TOKEN/i.test(vFormat.error), JSON.stringify(vFormat).slice(0, 120));
+const vApiKey = W.jwtVerdict({ ...ENV, LIBSQL_TOKEN: "sk_live_4f8a2c1b9d7e" }, { status: 401 });
+check("sk_ API key gets its own verdict", vApiKey && vApiKey.code === "jwt-api-key", JSON.stringify(vApiKey).slice(0, 120));
+check("sk_ verdict explains it is the Cloud API key", /Cloud REST API|cloud\.layerbase\.dev/i.test(vApiKey.error), vApiKey.error);
+check("sk_ verdict points at Quick Connect", /Quick Connect/i.test(vApiKey.hint), vApiKey.hint);
+check("tokenShape describes the secret", (() => {
+  const sh = W.libsqlInfo({ ...ENV, LIBSQL_TOKEN: "sk_live_abc" }).shape;
+  return sh.apiKey === true && sh.len === 11 && sh.prefix === "sk_liv" && sh.dots === 0;
+})(), JSON.stringify(W.libsqlInfo({ ...ENV, LIBSQL_TOKEN: "sk_live_abc" }).shape));
+
 const vSig = W.jwtVerdict({ ...ENV, LIBSQL_TOKEN: mkJwt({ id: "fake", exp: nowSec + 999 }) }, { status: 401 });
 check("401 + good-looking token → jwt-bad-signature", vSig && vSig.code === "jwt-bad-signature", JSON.stringify(vSig).slice(0, 120));
 check("non-auth failures are left alone", W.jwtVerdict(ENV, { status: 503, message: "upstream down" }) === null);
 check("every JWT verdict carries a fix", [vExpired, vOther, vFormat, vSig].every((v) => /Layerbase|Cloudflare|Deploy/.test(v.hint)), vSig.hint);
 
+/* token ke saare naam + URL me chhupa authToken */
+const liveTok = mkJwt({ id: "fake", exp: nowSec + 86400 });
+check("LIBSQL_AUTH_TOKEN is accepted", W.libsqlToken({ LIBSQL_URL: HOST, LIBSQL_AUTH_TOKEN: liveTok }) === liveTok);
+check("TURSO_AUTH_TOKEN is accepted", W.libsqlToken({ LIBSQL_URL: HOST, TURSO_AUTH_TOKEN: liveTok }) === liveTok);
+check("?authToken= in the URL is read", W.libsqlToken({ LIBSQL_URL: "libsql://fake.layerbase.dev?authToken=" + liveTok }) === liveTok);
+check("that URL still normalizes to a clean host", W.libsqlBase({ LIBSQL_URL: "libsql://fake.layerbase.dev?authToken=" + liveTok }) === HOST);
+check("LIBSQL_DATABASE_URL works as the URL", W.libsqlBase({ LIBSQL_DATABASE_URL: "fake.layerbase.dev/v2/pipeline" }) === HOST);
+check("secret beats URL token", W.libsqlToken({ LIBSQL_URL: "libsql://fake.layerbase.dev?authToken=" + mkJwt({ id: "x", exp: 1 }), LIBSQL_TOKEN: liveTok }) === liveTok);
+check("token source is reported", W.libsqlInfo({ LIBSQL_URL: "libsql://fake.layerbase.dev?authToken=" + liveTok }).tokenSource === "url");
+
 server.mode = "jwt";
+const probeSk = await W.storeProbe({ ...ENV, LIBSQL_TOKEN: "sk_live_4f8a2c1b9d7e" }, "FRESHKEY0123456789");
+check("probe flags the account API key", probeSk.ok === false && /API key/i.test(probeSk.error || ""), probeSk.error);
+check("probe verdict is jwt-api-key", probeSk.verdict === "jwt-api-key", probeSk.verdict);
+const _unused = 0;
+
 const probeJwt = await W.storeProbe(ENV, KEY);
 check("probe turns the 401 into a real reason", probeJwt.ok === false && /jwt|token|expire/i.test(probeJwt.error || ""), probeJwt.error);
 check("probe names the verdict", /^jwt-/.test(probeJwt.verdict || ""), probeJwt.verdict);

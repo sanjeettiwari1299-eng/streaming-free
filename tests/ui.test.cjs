@@ -940,7 +940,7 @@ const cookie = (w, k) => {
     click(wu, all(wu, ".s-item").find((b) => /Settings/.test(b.textContent)));
     await wait(400);
 
-    const urlInput = q(wu, ".urlcheck input");
+    const urlInput = q(wu, ".lbcheck input");
     check("cloud store has a URL checker", !!urlInput, wu.document.body.textContent.slice(0, 80));
     const cases = [
       ["lakshaydb-cute-drum.sage.cloud.layerbase.dev/v2/pipeline", "https://lakshaydb-cute-drum.sage.cloud.layerbase.dev"],
@@ -953,28 +953,28 @@ const cookie = (w, k) => {
     let allOk = true;
     const seen = [];
     for (const [input, expected] of cases) {
-      setVal(wu, q(wu, ".urlcheck input"), input);
+      setVal(wu, q(wu, ".lbcheck input"), input);
       await wait(120);
-      const val = (q(wu, ".urlcheck-val") || {}).textContent || "";
+      const val = (q(wu, ".lbcheck .urlcheck-val") || {}).textContent || "";
       seen.push(input + " → " + val.replace(/\s+/g, " "));
       if (!val.includes(expected)) allOk = false;
     }
     check("URL checker normalizes every paste shape", allOk, seen.join(" | "));
-    check("URL checker explains the secrets", /LIBSQL_URL/.test(q(wu, ".urlcheck-out").textContent) && /LIBSQL_TOKEN/.test(q(wu, ".urlcheck-out").textContent));
+    check("URL checker explains the secrets", /LIBSQL_URL/.test(q(wu, ".lbcheck .urlcheck-out").textContent) && /LIBSQL_TOKEN/.test(q(wu, ".lbcheck .urlcheck-out").textContent));
     check("URL checker warns on garbage", (() => {
-      setVal(wu, q(wu, ".urlcheck input"), "not a url");
-      return /parse nahi hui/i.test((q(wu, ".urlcheck-out") || {}).textContent || "");
-    })(), (q(wu, ".urlcheck-out") || {}).textContent);
+      setVal(wu, q(wu, ".lbcheck input"), "not a url");
+      return /parse nahi hui/i.test((q(wu, ".lbcheck .urlcheck-out") || {}).textContent || "");
+    })(), (q(wu, ".lbcheck .urlcheck-out") || {}).textContent);
 
     /* ── "The JWT is invalid": checker names the real cause ─────────────── */
     const b64 = (o) => Buffer.from(JSON.stringify(o)).toString("base64url");
     const mkJwt = (payload) => "eyJhbGciOiJFZERTQSJ9." + b64(payload) + ".c2ln";
     const HOST = "https://lakshaydb-cute-drum.sage.cloud.layerbase.dev";
-    const tokInput = all(wu, ".urlcheck input")[1];
+    const tokInput = all(wu, ".lbcheck input")[1];
     check("checker has a token box", !!tokInput && /token/i.test(tokInput.getAttribute("aria-label") || ""));
     const jwtOut = () => ((q(wu, ".jwtcheck") || {}).textContent || "").replace(/\s+/g, " ");
 
-    setVal(wu, q(wu, ".urlcheck input"), HOST);
+    setVal(wu, q(wu, ".lbcheck input"), HOST);
     setVal(wu, tokInput, mkJwt({ id: "lakshaydb-cute-drum", a: "rw", exp: Math.floor(Date.now() / 1000) + 86400 }));
     await wait(150);
     check("valid token is recognised", /Token valid JWT/.test(jwtOut()), jwtOut());
@@ -989,9 +989,27 @@ const cookie = (w, k) => {
     await wait(150);
     check("token for another database is called out", /dusri database ka hai/.test(jwtOut()), jwtOut());
 
-    setVal(wu, tokInput, "sk_live_this_is_not_a_jwt");
+    setVal(wu, tokInput, "lb_tok_9f2c1d_this_is_not_a_jwt");
     await wait(150);
     check("non-JWT secret is called out", /JWT nahi lag raha/.test(jwtOut()), jwtOut());
+
+    /* Layerbase has two credentials — the sk_ API key is not the DB token */
+    const liveJwt = mkJwt({ id: "lakshaydb-cute-drum", exp: Math.floor(Date.now() / 1000) + 86400 });
+    setVal(wu, tokInput, "sk_live_4f8a2c1b9d7e");
+    await wait(150);
+    check("sk_ API key is named for what it is", /personal API key/.test(jwtOut()) && /Quick Connect/.test(jwtOut()), jwtOut());
+
+    setVal(wu, tokInput, HOST);
+    await wait(150);
+    check("a URL pasted into the token box is called out", /URL lag raha hai/.test(jwtOut()), jwtOut());
+
+    setVal(wu, tokInput, "libsql://lakshaydb-cute-drum.sage.cloud.layerbase.dev?authToken=" + liveJwt);
+    await wait(150);
+    check("a full connection string yields a valid token", /Token valid JWT/.test(jwtOut()), jwtOut());
+
+    setVal(wu, tokInput, liveJwt);
+    await wait(150);
+    check("bare token still validates", /Token valid JWT/.test(jwtOut()), jwtOut());
 
     setVal(wu, tokInput, "");
     await wait(120);
@@ -1100,6 +1118,55 @@ const cookie = (w, k) => {
     check("blocked video still explains itself", /bot-check/i.test(wf.document.body.textContent));
     check("and says retrying continues in the background", /Khud retry chal raha hai/.test(wf.document.body.textContent), wf.document.body.textContent.slice(-160));
     check("blocked video is not silently hammered", (wf.__calls || []).filter((u) => /\/api\/player/.test(u)).length <= 2, (wf.__calls || []).filter((u) => /player/.test(u)).length);
+  }
+
+  /* ══ 18. cookie checker: "cookies laga diye par bot-check phir bhi" ══════ */
+  {
+    const dm = makeDom({ prefs: { sv_cfg: JSON.stringify({ engineUrl: "https://w.dev", autoplay: true }) } });
+    const wf = dm.window;
+    wf.console.error = () => {};
+    const sc11 = wf.document.createElement("script");
+    sc11.textContent = app;
+    wf.document.body.appendChild(sc11);
+    await wait(900);
+    click(wf, all(wf, ".s-item").find((b) => /Settings/.test(b.textContent)));
+    await wait(400);
+
+    const box = q(wf, '[aria-label="YouTube cookies"]');
+    check("settings has a cookie checker", !!box, wf.document.body.textContent.slice(0, 80));
+    const out = () => ((q(wf, ".cookcheck") || {}).textContent || "").replace(/\s+/g, " ");
+
+    setVal(wf, box, "SID=aaa; HSID=bbb; SSID=ccc; SAPISID=ddd");
+    await wait(150);
+    check("complete cookies are confirmed", /Cookies poore hain/.test(out()), out());
+    check("each critical cookie is ticked", (out().match(/✓ (SID|HSID|SSID|SAPISID)/g) || []).length === 4, out());
+
+    setVal(wf, box, "SID=aaa");
+    await wait(150);
+    check("partial export is called out", /Export adhoora hai/.test(out()), out());
+    check("missing cookies are named", /Missing:.*SAPISID/.test(out()), out());
+
+    setVal(wf, box, "Cookie: SID=aaa; HSID=bbb; SSID=ccc; SAPISID=ddd");
+    await wait(150);
+    check("'Cookie:' prefix is tolerated", /Cookies poore hain/.test(out()), out());
+
+    setVal(wf, box, JSON.stringify([
+      { name: "SID", value: "a", expirationDate: 9999999999 },
+      { name: "HSID", value: "b", expirationDate: 9999999999 },
+      { name: "SSID", value: "c", expirationDate: 9999999999 },
+      { name: "SAPISID", value: "d", expirationDate: 9999999999 },
+      { name: "DEAD", value: "e", expirationDate: 1000 },
+    ]));
+    await wait(150);
+    check("JSON export works and expired cookies are reported", /Cookies poore hain/.test(out()) && /1 expired skip kiye/.test(out()), out());
+
+    setVal(wf, box, "just some words, no cookies here");
+    await wait(150);
+    check("garbage is rejected with instructions", /parse nahi hui/.test(out()), out());
+
+    setVal(wf, box, "SID=aaa; HSID=bbb; SSID=ccc; SAPISID=ddd");
+    await wait(150);
+    check("checker explains the Cloudflare step", /YT_COOKIES/.test(out()) && /Deploy/.test(out()), out());
   }
 
   const failed = checks.filter((c) => !c.pass);

@@ -21,7 +21,7 @@
  */
 
 // bump this when the worker changes, so /api/health tells you which code is live
-const BUILD = "8.5.0";
+const BUILD = "8.6.0";
 
 const INNERTUBE_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8";
 const UA = {
@@ -317,22 +317,46 @@ const breakerSnapshot = () =>
 
 // ── cookies (optional, secret-only) ───────────────────────────────────────────
 // Accepts: browser "a=1; b=2" header string, Netscape cookies.txt, or JSON array.
-function parseCookies(raw) {
-  if (!raw) return "";
-  const text = String(raw).trim();
-  if (!text) return "";
+function parseCookiesDetailed(raw) {
+  const out = { header: "", format: "none", total: 0, expired: 0, dropped: 0 };
+  if (!raw) return out;
+  let text = String(raw).trim().replace(/^["'`]+|["'`]+$/g, "");
+  if (!text) return out;
+
+  const emit = (pairs, format) => {
+    const clean = [];
+    for (const p of pairs) {
+      const i = p.indexOf("=");
+      if (i <= 0) continue;
+      const k = p.slice(0, i).trim();
+      let v = p.slice(i + 1).trim();
+      if (!k || /^cookie$/i.test(k)) continue;
+      if (v.length > 2 && /^["']/.test(v) && /["']$/.test(v)) v = v.slice(1, -1);
+      clean.push(k + "=" + v);
+    }
+    out.header = clean.join("; ");
+    out.total = clean.length;
+    out.format = format;
+    return out;
+  };
+
+  // 1. browser extension JSON export (has expirationDate — expired cookies are skipped)
   if (text.startsWith("[") || text.startsWith("{")) {
     try {
       const data = JSON.parse(text);
       const arr = Array.isArray(data) ? data : data.cookies || [];
-      const pairs = arr
-        .map((c) => (c && c.name ? `${c.name}=${c.value ?? ""}` : ""))
-        .filter(Boolean);
-      if (pairs.length) return pairs.join("; ");
-    } catch {
-      /* fall through */
-    }
+      const now = Date.now() / 1000;
+      const live = [];
+      for (const c of arr) {
+        if (!c || !c.name) { out.dropped++; continue; }
+        if (c.expirationDate && Number(c.expirationDate) < now) { out.expired++; continue; }
+        live.push(`${c.name}=${c.value ?? ""}`);
+      }
+      if (live.length || arr.length) return emit(live, "json");
+    } catch { /* fall through */ }
   }
+
+  // 2. Netscape cookies.txt
   if (text.includes("\t")) {
     const pairs = text
       .split(/\r?\n/)
@@ -342,9 +366,17 @@ function parseCookies(raw) {
         return p.length >= 7 ? `${p[5]}=${p[6]}` : "";
       })
       .filter(Boolean);
-    if (pairs.length) return pairs.join("; ");
+    if (pairs.length) return emit(pairs, "netscape");
   }
-  return text.replace(/\r?\n+/g, "; ").replace(/;\s*;/g, ";").replace(/^;\s*|;\s*$/g, "");
+
+  // 3. "Cookie: a=1; b=2" | newline separated | plain header string
+  text = text.replace(/^cookie\s*:\s*/i, "").replace(/\r?\n+/g, "; ");
+  const pairs = text.split(";").map((x) => x.trim()).filter(Boolean);
+  return emit(pairs, "header");
+}
+
+function parseCookies(raw) {
+  return parseCookiesDetailed(raw).header;
 }
 
 const cookieValue = (header, name) => {
@@ -376,8 +408,67 @@ function keyAllowed(env, url) {
   return diff === 0;
 }
 
+const ytCookieRaw = (env) =>
+  String((env && (env.YT_COOKIES || env.YT_COOKIE || env.YOUTUBE_COOKIES || env.COOKIES)) || "");
+
+/* Everything about the cookie secret, without ever printing a value. This is
+   what tells "cookies set ho gaye par bot-check phir bhi aa raha hai" apart
+   from "cookies worker tak pahunche hi nahi". */
+function cookieReport(env, url) {
+  const raw = ytCookieRaw(env);
+  if (!raw.trim()) {
+    return {
+      configured: false,
+      usable: false,
+      note: "YT_COOKIES secret set nahi hai",
+      fix: "Browser me youtube.com login karke extension (Get cookies.txt / EditThisCookie) se cookies export karein → Cloudflare → Worker → Settings → Variables and Secrets → YT_COOKIES me poori cookie string paste karein → Deploy.",
+    };
+  }
+  const d = parseCookiesDetailed(raw);
+  const h = d.header;
+  const has = (n) => !!cookieValue(h, n);
+  const auth = {
+    SID: has("SID") || has("__Secure-1PSID") || has("__Secure-3PSID"),
+    SAPISID: has("SAPISID") || has("__Secure-3PAPISID") || has("__Secure-1PAPISID"),
+    HSID: has("HSID") || has("__Secure-1PSIDTS") || has("__Secure-3PSIDTS"),
+    SSID: has("SSID") || has("__Secure-1PSID") || has("__Secure-3PSID"),
+  };
+  const missing = Object.keys(auth).filter((k) => !auth[k]);
+  const keyOk = url ? keyAllowed(env, url) : true;
+  const usable = !!h && !missing.length && keyOk;
+  const note = !h
+    ? "cookie string parse nahi hui (format samajh nahi aaya)"
+    : !keyOk
+      ? "SV_KEY mismatch — cookies jaan bujh ke block hain, app me wahi access key daalein"
+      : missing.length
+        ? "cookie export adhoora hai — ye zaroori cookies missing hain: " + missing.join(", ")
+        : d.expired
+          ? d.expired + " cookie(s) expire ho chuke the, unhe chhod diya"
+          : "cookies ready hain";
+  return {
+    configured: true,
+    usable,
+    format: d.format,
+    count: d.total,
+    expiredSkipped: d.expired,
+    dropped: d.dropped,
+    keys: h.split("; ").map((x) => x.split("=")[0]).slice(0, 14),
+    auth,
+    missing,
+    keyOk,
+    note,
+    fix: usable
+      ? "cookies worker tak pahunch rahe hain — agar phir bhi bot-check aaye to IP/account level block hai: POTOKEN_URL (bgutil provider) ya usi IP se banaye gaye fresh cookies try karein."
+      : !keyOk
+        ? "Worker me SV_KEY set hai — app me Settings → Access key me bilkul wahi value daalein, warna worker cookies use nahi karega."
+        : missing.length
+          ? "Naya export lein: youtube.com pe logged-in hote hue cookies.txt (Netscape) ya header string — SID, HSID, SSID, SAPISID (ya __Secure-3P*) sab chahiye."
+          : "Export dobara karein — browser me logged in rehte hue, saari youtube.com cookies ke saath.",
+  };
+}
+
 function cookieAuth(env, url) {
-  const raw = env && env.YT_COOKIES ? parseCookies(env.YT_COOKIES) : "";
+  const raw = parseCookies(ytCookieRaw(env));
   if (!raw) return null;
   if (!keyAllowed(env, url)) return null;
   return raw;
@@ -2427,7 +2518,19 @@ const validProfileKey = (k) => /^[A-Za-z0-9_-]{16,64}$/.test(String(k || ""));
      "https://db-xyz…"                          (quotes ke saath paste)
    Hrana endpoint khud add hota hai — isliye base me path kabhi nahi rakhte.  */
 const LIBSQL_SUFFIXES = [/\/v2\/pipeline$/i, /\/v1\/pipeline$/i, /\/v3\/pipeline$/i, /\/pipeline$/i, /\/v2$/i, /\/v1$/i, /\/v3$/i, /\/http$/i, /\/sql$/i];
-const libsqlRaw = (env) => String((env && (env.LIBSQL_URL || env.LAYERBASE_URL)) || "");
+const libsqlRaw = (env) =>
+  String((env && (env.LIBSQL_URL || env.LIBSQL_DATABASE_URL || env.LAYERBASE_URL || env.TURSO_DATABASE_URL)) || "");
+
+/* Turso-style connection strings carry the token in the URL itself:
+     libsql://db.cloud.layerbase.dev?authToken=eyJ…
+   The dashboard's ".env download" prints exactly that, so a token that never
+   made it into its own secret still works. */
+function tokenFromUrl(raw) {
+  const s = String(raw || "");
+  const m = s.match(/[?&](?:authToken|auth_token|token)=([^&#\s]+)/i);
+  if (!m) return "";
+  try { return decodeURIComponent(m[1]); } catch { return m[1]; }
+}
 
 function normalizeLibsqlUrl(raw) {
   let s = String(raw || "").trim().replace(/^["'`\s]+|["'`\s]+$/g, "");
@@ -2453,12 +2556,35 @@ function normalizeLibsqlUrl(raw) {
 
 const libsqlBase = (env) => normalizeLibsqlUrl(libsqlRaw(env));
 
-const libsqlToken = (env) =>
-  String((env && (env.LIBSQL_TOKEN || env.LAYERBASE_TOKEN)) || "")
+const libsqlToken = (env) => {
+  const given = String(
+    (env && (env.LIBSQL_TOKEN || env.LIBSQL_AUTH_TOKEN || env.LAYERBASE_TOKEN || env.TURSO_AUTH_TOKEN)) || ""
+  );
+  const cleaned = given
     .trim()
     .replace(/^["'`]|["'`]$/g, "")
     .replace(/^bearer\s+/i, "")
     .replace(/\s+/g, "");
+  return cleaned || tokenFromUrl(libsqlRaw(env));
+};
+
+/* What kind of secret did we actually get? Layerbase hands out two very
+   different credentials — the database auth token (a JWT) and the account API
+   key (sk_…, for the Cloud REST API only). Naming the shape ends the guessing. */
+function tokenShape(token) {
+  const t = String(token || "");
+  const parts = t.split(".").length;
+  return {
+    len: t.length,
+    parts,
+    prefix: t.slice(0, 6),
+    dots: parts - 1,
+    apiKey: /^sk[_-]/i.test(t),
+    url: /^(https?|libsql|wss?):\/\//i.test(t),
+    spaced: /\s/.test(t),
+    uuid: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(t),
+  };
+}
 
 /* ── JWT inspector ───────────────────────────────────────────────────────────
    Layerbase answers 401 with "The JWT is invalid" for four different mistakes:
@@ -2521,6 +2647,8 @@ function libsqlInfo(env) {
     hadScheme,
     hadPath,
     tokenPrefix: token ? token.slice(0, 4) + "…" : "",
+    tokenSource: String((env && (env.LIBSQL_TOKEN || env.LIBSQL_AUTH_TOKEN || env.LAYERBASE_TOKEN || env.TURSO_AUTH_TOKEN)) || "") ? "secret" : token ? "url" : "",
+    shape: tokenShape(token),
     token: tk,
     dbMatch: jwtDbMatch(tk.dbId, base ? base.replace(/^https:\/\//, "").split("/")[0] : ""),
   };
@@ -2604,12 +2732,21 @@ function jwtVerdict(env, e) {
   if (!auth) return null;
   const jwt = { ...tk, dbMatch: info.dbMatch, host: info.host };
   if (!tk.jwt) {
-    return {
-      code: "jwt-format",
-      error: "LIBSQL_TOKEN JWT nahi lag raha — JWT me 3 dot-separated parts hote hain (eyJ…)",
-      hint: "Layerbase → apna DB → Connect → 'auth token' wala lamba token copy karein (URL ya API key nahi). Cloudflare → Worker → Settings → Variables and Secrets → LIBSQL_TOKEN update → Deploy.",
-      jwt,
-    };
+    const sh = info.shape || {};
+    const seen = `${sh.len || 0} chars, shuru "${sh.prefix || "?"}", ${sh.dots || 0} dot`;
+    /* the single most common Layerbase mix-up: the account API key (sk_…) is for
+       the Cloud REST API, while /v2/pipeline wants the database auth token */
+    const error = sh.apiKey
+      ? `LIBSQL_TOKEN me Layerbase ka personal API key (sk_…) hai — wo Cloud REST API ke liye hota hai, database ke liye nahi (${seen})`
+      : sh.url
+        ? "LIBSQL_TOKEN me URL paste ho gaya — ye secret database ka auth token maangta hai, URL alag LIBSQL_URL me jaata hai"
+        : sh.spaced
+          ? "LIBSQL_TOKEN me space ya line break hai — token ek hi line me, bina space ke paste karein"
+          : `LIBSQL_TOKEN JWT nahi lag raha (${seen}; JWT 3 dot-separated parts hota hai, "eyJ…" se shuru)`;
+    const hint = sh.apiKey
+      ? "sk_ key Cloud API (cloud.layerbase.dev/v1) ke liye hai. Database chalane ke liye dashboard me apna DB kholein → Quick Connect / Connect panel → auth token (eyJ… wala, ~200+ chars) copy karein → Cloudflare → Worker → Settings → Variables and Secrets me LIBSQL_TOKEN = wahi token → Deploy."
+      : "Layerbase → apna DB → Quick Connect → auth token (eyJ… wala) copy karein — URL nahi, API key nahi. Cloudflare → Worker → Settings → Variables and Secrets → LIBSQL_TOKEN update → Deploy. (Naam LIBSQL_AUTH_TOKEN bhi chalega, aur URL me ?authToken=… ho to wo bhi padh liya jaata hai.)";
+    return { code: sh.apiKey ? "jwt-api-key" : "jwt-format", error, hint, jwt };
   }
   if (tk.expired) {
     return {
@@ -2945,7 +3082,7 @@ const ROUTES = [
     "/api/health",
     async (u, env) => {
       const { versions, source } = await discoverVersions(env);
-      const cookies = env && env.YT_COOKIES ? parseCookies(env.YT_COOKIES) : "";
+      const cookies = parseCookies(ytCookieRaw(env));
       return {
         ok: true,
         build: BUILD,
@@ -2955,14 +3092,7 @@ const ROUTES = [
         versions,
         versionSource: source,
         ladder: "2 versions per client (discovered, then baked fallback)",
-        cookies: cookies
-          ? {
-              configured: true,
-              used: keyAllowed(env, u),
-              keys: cookies.split("; ").map((x) => x.split("=")[0]).slice(0, 12),
-              note: keyAllowed(env, u) ? "cookies enabled for this caller" : "SV_KEY mismatch → cookies NOT used",
-            }
-          : { configured: false },
+        cookies: { ...cookieReport(env, u), used: !!(cookies && keyAllowed(env, u)) },
         versionCacheAge: Math.round(Date.now() / 1000 - VERSION_CACHE.ts) + "s",
         resilience: {
           visitorData: !!VERSION_CACHE.visitorData,
@@ -3017,8 +3147,9 @@ const ROUTES = [
         versions,
         source,
         ladder: ladder.map((c) => ({ id: c.id, version: c.ctx.clientVersion, needsAuth: !!c.needsAuth })),
-        cookieHeaderPresent: !!(env && env.YT_COOKIES),
+        cookieHeaderPresent: !!ytCookieRaw(env),
         keyProtectsCookies: !!(env && env.SV_KEY),
+        cookies: cookieReport(env, u),
         // who is actually delivering on this worker's IP (per isolate, resets on redeploy)
         clientStats: CLIENT_STATS,
         headers: {
@@ -3068,9 +3199,25 @@ const ROUTES = [
         }
       }
 
+      const ck = cookieReport(env, u);
       const verdict = (() => {
         if (!res.ok) {
-          if (res.botCheck || res.needAuth) return { code: "bot", hi: "YouTube bot-check: worker me YT_COOKIES (throwaway account) ya POTOKEN_URL secret add karein, phir /api/health?refresh=1 kholein." };
+          if (res.botCheck || res.needAuth) {
+            // "cookies laga diye par bot-check phir bhi" — yahi wajah hoti hai
+            if (!ck.configured) {
+              return { code: "bot", hi: "YouTube bot-check aur cookies set nahi hain: worker me YT_COOKIES (throwaway account) ya POTOKEN_URL secret add karein → Deploy." };
+            }
+            if (!ck.keyOk) {
+              return { code: "bot-key", hi: "Cookies set hain par SV_KEY mismatch ki wajah se worker unhe use nahi kar raha. App ke Settings → Access key me bilkul wahi SV_KEY daalein (ya worker se SV_KEY hata dein)." };
+            }
+            if (ck.missing.length) {
+              return { code: "bot-cookies", hi: "Cookies pahunche par export adhoora hai — missing: " + ck.missing.join(", ") + ". SID/HSID/SSID/SAPISID sab chahiye; netscape cookies.txt ya poori header string paste karein." };
+            }
+            if (res.poTokenUsed || (env && (env.PO_TOKEN || env.POTOKEN_URL))) {
+              return { code: "bot-ip", hi: "Cookies poore hain aur PoToken bhi try hua, phir bhi bot-check — ye IP-level block hai (Cloudflare Workers ka shared IP). Free fix: POTOKEN_URL provider (bgutil) chalu karein, ya worker ko aise account ke cookies dein jo us IP se pehle kabhi use na hua ho." };
+            }
+            return { code: "bot-potoken", hi: "Cookies theek hain par YouTube is IP par PoToken maang raha hai. POTOKEN_URL (bgutil-verify-token provider) secret add karein — uske bina datacenter IP par playback block rehta hai. /api/debug me clientStats dekhein." };
+          }
           if (res.reason === "geo") return { code: "geo", hi: "Ye video is region me block hai — Settings → Region me IN ke alawa US/GB try karein." };
           if (res.reason === "age") return { code: "age", hi: "Age-restricted video: cookies chahiye (YT_COOKIES)." };
           return { code: "resolve", hi: "Stream resolve hi nahi hua — /api/debug?refresh=1 kholein aur clientStats dekhein." };
@@ -3099,6 +3246,7 @@ const ROUTES = [
         attempts: (res.attempts || []).slice(-12),
         breakers: breakerSnapshot(),
         stream,
+        cookies: ck,
         verdict,
       };
     },
@@ -3231,6 +3379,9 @@ export {
   CLIENT_SPECS,
   FALLBACK_VERSIONS,
   parseCookies,
+  parseCookiesDetailed,
+  cookieReport,
+  ytCookieRaw,
   sapisidHash,
   sha1Hex,
   keyAllowed,

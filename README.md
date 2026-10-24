@@ -59,7 +59,7 @@ error panel me **Engine doctor**) — video id daalo, ek click me resolve + byte
 Sabse pehle ye confirm karein ki deploy naya hai:
 
 ```
-GET https://<your-worker>.workers.dev/api/health      → build: "8.5.0"
+GET https://<your-worker>.workers.dev/api/health      → build: "8.6.0"
 ```
 
 Purana build dikhe to Cloudflare → Workers → apna worker → Edit code → **poora `worker.js` paste** → Deploy.
@@ -99,6 +99,31 @@ aur **bot-check** (worker me `YT_COOKIES` ya `POTOKEN_URL`). Wahan panel asli re
 me chalta rehta hai, to cookie lagane ke baad bina reload video chal padti hai.
 
 ---
+
+## "Cookies set kar diye, bot-check phir bhi aa raha hai"
+
+Bot-check ke 4 alag karan hote hain, aur ab app/worker bata dete hain kaun sa hai:
+
+```
+GET https://<worker>/api/health        → cookies: { configured, usable, count, missing[], keyOk, note, fix }
+GET https://<worker>/api/selftest?id=dQw4w9WgXcQ&probe=1 → verdict.code
+```
+
+| `verdict.code` | Matlab | Fix |
+| --- | --- | --- |
+| `bot` | cookies worker tak pahunche hi nahi | `YT_COOKIES` secret add karein → Deploy |
+| `bot-key` | `SV_KEY` set hai par app wahi key nahi bhej raha → worker cookies **jaan bujh ke** use nahi kar raha | Settings → Access key me wahi `SV_KEY` daalein, ya worker se `SV_KEY` hata dein |
+| `bot-cookies` | cookies pahunche par export **adhoora** (`missing` me naam dikhte hain) | SID, HSID, SSID, SAPISID (ya `__Secure-3P*`) sab chahiye — naya export lein |
+| `bot-potoken` | cookies theek, par YouTube is IP par **PoToken** maang raha hai | `POTOKEN_URL` (bgutil-verify-token provider) secret add karein |
+| `bot-ip` | cookies + PoToken dono theek, phir bhi block | IP-level block hai (Cloudflare shared IP) — doosra PoToken provider, ya usi IP se banaye gaye fresh cookies |
+
+**App me checker:** Settings → **Cookie checker (YT_COOKIES)** me cookies paste karein — browser me hi parse hota hai
+(header string, Netscape `cookies.txt`, ya JSON export — teeno). Wo dikhata hai: kaunsi cookie mili, kaunsi missing hai,
+kitni expire ho chuki hain, aur **Copy clean string** se ready-to-paste `YT_COOKIES` value mil jaati hai.
+
+> Cookies kisi ko bhejte nahi — checker browser me hi kaam karta hai. Secret me `Cookie:` prefix, quotes, newlines,
+> `cookies.txt` ya JSON — sab chalte hai (worker khud saaf karta hai). Cookie ke naam `YT_COOKIE` / `YOUTUBE_COOKIES` /
+> `COOKIES` bhi accepted hain.
 
 ## `layerbase HTTP 401: Unauthorized: The JWT is invalid` — asli wajah
 
