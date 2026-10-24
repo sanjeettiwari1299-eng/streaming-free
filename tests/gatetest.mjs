@@ -103,6 +103,7 @@ check("the winner client is remembered", !!W.winnerClient() && W.winnerClient().
 W.resetBreakers();
 ytMode = "ok";
 const win1 = await W.player(VID, { env: { MIRRORS: "off" } });
+W.resetPlayerCache();          // keep the winner, drop the cached answer
 const wanted = win1.client;
 const order = [];
 const realFetch = globalThis.fetch;

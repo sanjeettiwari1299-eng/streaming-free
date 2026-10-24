@@ -59,7 +59,7 @@ error panel me **Engine doctor**) — video id daalo, ek click me resolve + byte
 Sabse pehle ye confirm karein ki deploy naya hai:
 
 ```
-GET https://<your-worker>.workers.dev/api/health      → build: "8.7.0"
+GET https://<your-worker>.workers.dev/api/health      → build: "8.8.0"
 ```
 
 Purana build dikhe to Cloudflare → Workers → apna worker → Edit code → **poora `worker.js` paste** → Deploy.
@@ -99,6 +99,27 @@ aur **bot-check** (worker me `YT_COOKIES` ya `POTOKEN_URL`). Wahan panel asli re
 me chalta rehta hai, to cookie lagane ke baad bina reload video chal padti hai.
 
 ---
+
+## Permanent fix kaise kaam karta hai (worker 8.8.0)
+
+Bot-check / 429 ka jawab "aur retry" nahi, **kam request** hai. 8.8.0 me:
+
+| Layer | Kya karta hai | Fayda |
+| --- | --- | --- |
+| **Resolve cache** (edge `caches.default` + isolate memory) | har video ka player response 20 min (ya signed URL ki `expire` tak, max ~6h) yaad rehta hai | dobara wahi video = **0 upstream request**; dashboards par 4xx khatam |
+| **Stale-on-429** | 429 ke waqt pehle resolve hui video purane (par hours-tak-valid) URL se chalti hai | rate-limit ke beech bhi video chalti hai, error nahi |
+| **Request coalescing** | ek hi video ke 3 parallel request = 1 resolve | traffic spike par bhi YouTube ko 1 hi call |
+| **PoToken force-refresh** | 429 par provider se **naya** token maang ke turant ek retry | bahut se 429 isi se gayab ho jate hain |
+| **Mirror defaults saaf** | sirf `invidious.f5.si` default; nadeko (apna bot-check), nerdvpn (401), melmac (526) hata diye | 91×4xx wali noise band; chahiye to `EMERGENCY_MIRRORS` se add karein |
+| **Doctor live rehta hai** | `/api/selftest` aur `/mp4` cache bypass karte hain | cache ki wajah se jhoota "ok" kabhi nahi |
+
+Health me dekho: `resilience.playerCache` / `gate` / `mirrors` / `winner`; app me **Run all tests** me naya row
+**"Resolve cache (429 se bachav)"** — cache kitni videos, TTL, kitne mirror park, kaunsa client winner hai.
+
+**Sabse permanent upgrade (optional, 5 min):** ek free PoToken provider chalao
+(`docker run -d -p 4416:4416 brainicism/bgutil-ytdlp-pot-provider`) aur worker secret
+`POTOKEN_URL = https://<tumhara-provider>/get_pot` daal do. Uske baad requests sach ke client jaisi dikhti hain —
+bot-check lagbhag kabhi nahi aata. Iske bina bhi 8.8.0 cache + gate ki wajah se app chalti rahegi.
 
 ## "Aadhi se zyada request block hai" — 429 storm (worker 8.7.0)
 

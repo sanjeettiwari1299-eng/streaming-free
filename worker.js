@@ -21,7 +21,7 @@
  */
 
 // bump this when the worker changes, so /api/health tells you which code is live
-const BUILD = "8.7.0";
+const BUILD = "8.8.0";
 
 const INNERTUBE_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8";
 const UA = {
@@ -351,6 +351,82 @@ const mirrorSnapshot = () =>
     cooling: Math.max(0, Math.round((b.until - Date.now()) / 1000)),
   }));
 
+/* ── player response cache (the real 429 killer) ─────────────────────────────
+   A resolve is expensive and its signed URLs stay valid for hours. Remembering
+   the last answer per video means: replay = 0 upstream calls, and a 429 storm
+   cannot stop a video that was already played once today. Stored in the edge
+   cache (survives isolates) with an in-memory layer in front. */
+const PLAYER_TTL = 20 * 60 * 1000;          // fresh window
+const PLAYER_MEM = new Map();               // key -> { at, data }
+const PLAYER_MEM_MAX = 60;
+const PLAYER_INFLIGHT = new Map();          // key -> Promise (request coalescing)
+
+const playerCacheKey = (videoId, region, authed) =>
+  `${videoId}|${String(region || "IN").toUpperCase()}|${authed ? "auth" : "anon"}`;
+const playerCacheUrl = (key) => `https://sv.internal/player/${encodeURIComponent(key)}`;
+
+/* how long may this response be reused? bounded by the signed URL's own expire */
+function playerTtl(data) {
+  let ttl = PLAYER_TTL;
+  try {
+    const raw = String(((data.formats || [])[0] || {}).url || "");
+    const u = decodeURIComponent((raw.match(/[?&]u=([^&]+)/) || [])[1] || "");
+    const exp = Number((u.match(/[?&]expire=([^&]+)/) || [])[1] || 0);
+    if (exp) ttl = Math.min(ttl, Math.max(120000, exp * 1000 - Date.now() - 5 * 60 * 1000));
+  } catch { /* keep the default */ }
+  return ttl;
+}
+
+async function playerCacheGet(key, allowStale = false) {
+  const mem = PLAYER_MEM.get(key);
+  if (mem) {
+    const age = Date.now() - mem.at;
+    if (allowStale || age < mem.ttl) return { at: mem.at, data: mem.data, ttl: mem.ttl };
+    PLAYER_MEM.delete(key);
+  }
+  try {
+    if (typeof caches !== "undefined" && caches.default) {
+      const hit = await caches.default.match(new Request(playerCacheUrl(key)));
+      if (hit && hit.ok !== false) {
+        // clone: a cached Response body can be consumed only once
+        let body = null;
+        try { body = await hit.clone().json(); } catch { body = null; }
+        if (body && body.data) {
+          const age = Date.now() - Number(body.at || 0);
+          const ttl = Number(body.ttl || PLAYER_TTL);
+          PLAYER_MEM.set(key, { at: body.at, ttl, data: body.data });
+          if (allowStale || age < ttl) return { at: body.at, data: body.data, ttl };
+        }
+      }
+    }
+  } catch { /* cache is best effort */ }
+  return null;
+}
+
+async function playerCachePut(key, data) {
+  const ttl = playerTtl(data);
+  const at = Date.now();
+  if (PLAYER_MEM.size >= PLAYER_MEM_MAX) PLAYER_MEM.delete(PLAYER_MEM.keys().next().value);
+  PLAYER_MEM.set(key, { at, ttl, data });
+  try {
+    if (typeof caches !== "undefined" && caches.default) {
+      await caches.default.put(
+        new Request(playerCacheUrl(key)),
+        new Response(JSON.stringify({ at, ttl, data }), {
+          headers: { "content-type": "application/json", "cache-control": `max-age=${Math.round(ttl / 1000)}` },
+        })
+      );
+    }
+  } catch { /* best effort */ }
+  return ttl;
+}
+
+const playerCacheStats = () => ({
+  memory: PLAYER_MEM.size,
+  inflight: PLAYER_INFLIGHT.size,
+  ttlSec: Math.round(PLAYER_TTL / 1000),
+});
+
 // Per client+version circuit breaker: stop hammering a combination YouTube just rejected.
 const BREAKER = new Map(); // key -> { fails, until }
 const BREAKER_BASE = 40; // seconds
@@ -374,7 +450,13 @@ const noteFail = (c, hard = true) => {
   BREAKER.set(k, b);
   if (BREAKER.size > 60) BREAKER.delete(BREAKER.keys().next().value);
 };
+const resetPlayerCache = () => {
+  PLAYER_MEM.clear();
+  PLAYER_INFLIGHT.clear();
+};
+
 const resetBreakers = () => {
+  resetPlayerCache();
   BREAKER.clear();
   MIRROR_BREAKER.clear();
   YT_GATE.until = 0;
@@ -1135,7 +1217,7 @@ function classifyFailure(status, reason) {
 const POTOKEN_CACHE = { key: "", token: "", visitorData: "", ts: 0 };
 const POTOKEN_TTL = 30 * 60 * 1000;
 
-async function getPoToken(env, visitorData) {
+async function getPoToken(env, visitorData, force = false) {
   const fixed = String((env && env.PO_TOKEN) || "").trim();
   // tolerate both "TOKEN" and "VISITOR_DATA:TOKEN"
   if (fixed) {
@@ -1148,7 +1230,7 @@ async function getPoToken(env, visitorData) {
   if (!provider) return { poToken: "", visitorData, source: "" };
 
   const key = provider + "|" + (visitorData || "");
-  if (POTOKEN_CACHE.key === key && Date.now() - POTOKEN_CACHE.ts < POTOKEN_TTL) {
+  if (!force && POTOKEN_CACHE.key === key && Date.now() - POTOKEN_CACHE.ts < POTOKEN_TTL) {
     return { poToken: POTOKEN_CACHE.token, visitorData: POTOKEN_CACHE.visitorData, source: "provider(cached)" };
   }
   try {
@@ -1175,10 +1257,10 @@ async function getPoToken(env, visitorData) {
 // ordered by what actually answered on 2026-10-23: f5.si ok, melmac 526,
 // nerdvpn 401, nadeko 403 — dead ones stay last, never first
 const DEFAULT_MIRRORS = [
+  // only hosts that actually answered on 2026-10-23. The rest are opt-in through
+  // EMERGENCY_MIRRORS, because nadeko serves its own bot-check, nerdvpn answers
+  // 401/403 and melmac answers 526 — hitting them was pure 4xx noise.
   "https://invidious.f5.si",
-  "https://iv.melmac.space",
-  "https://invidious.nerdvpn.de",
-  "https://inv.nadeko.net",
 ];
 
 // per-isolate scoreboard: which client actually delivers, per failure kind
@@ -1386,6 +1468,50 @@ const SUB_MIN_PER_VIDEO = 8;    // canary won't start a video with less than thi
 
 async function player(videoId, opts = {}) {
   const env = opts.env || {};
+  const authed = !!opts.cookieHeader;
+  const key = playerCacheKey(videoId, opts.region, authed);
+
+  if (opts.noCache) return playerResolve(videoId, opts);
+
+  // 1) a fresh answer means zero upstream calls
+  const hit = await playerCacheGet(key);
+  if (hit) {
+    return { ...hit.data, cached: true, cacheAge: Math.round((Date.now() - hit.at) / 1000) };
+  }
+
+  // 2) the same video requested twice at once resolves once (request coalescing)
+  const running = PLAYER_INFLIGHT.get(key);
+  if (running) return running;
+
+  const run = (async () => {
+    const res = await playerResolve(videoId, opts);
+    if (res && res.ok && (res.formats || []).length) {
+      const ttl = await playerCachePut(key, res);
+      return { ...res, cached: false, cacheTtl: Math.round(ttl / 1000) };
+    }
+    /* 3) rate-limited? a video played earlier today still plays — signed URLs
+       live for hours, so the stale copy is a perfectly good answer */
+    if (res && res.reason === "ratelimit") {
+      const stale = await playerCacheGet(key, true);
+      if (stale) {
+        return {
+          ...stale.data,
+          cached: true,
+          stale: true,
+          cacheAge: Math.round((Date.now() - stale.at) / 1000),
+          retryAfter: res.retryAfter,
+          note: "YouTube rate limit — purane signed URL se chalaya (wo hours tak valid rehte hain)",
+        };
+      }
+    }
+    return res;
+  })().finally(() => PLAYER_INFLIGHT.delete(key));
+  PLAYER_INFLIGHT.set(key, run);
+  return run;
+}
+
+async function playerResolve(videoId, opts = {}) {
+  const env = opts.env || {};
   const attempts = [];
   const failures = [];
   const started = Date.now();
@@ -1426,6 +1552,7 @@ async function player(videoId, opts = {}) {
 
   // PoToken (static secret or external provider) + the visitorData it belongs to
   const pt = await getPoToken(env, visitorData);
+  let liveToken = pt.poToken;          // may be replaced by a forced refresh below
   if (pt.poToken) visitorData = pt.visitorData || visitorData;
 
   const noteFailKind = (kind) => {
@@ -1467,7 +1594,7 @@ async function player(videoId, opts = {}) {
         {
           ...extraOpts,
           env,
-          poToken: pt.poToken,
+          poToken: liveToken,
           onFatal: (kind) => {
             fatalReason = kind;
             noteFailKind(kind);
@@ -1518,6 +1645,28 @@ async function player(videoId, opts = {}) {
     : fastBase;
   let out = await runPass(fast.length ? fast : anonLadder.slice(0, 4), { visitorData }, "");
   if (out.res) return finish(out.res, 1);
+
+  /* A 429/403 on a datacenter IP is very often "you look like a bot" in disguise:
+     with a *fresh* PoToken the exact same request usually sails through. So before
+     telling the app to wait, mint a new token (provider) and try the fast pass once. */
+  if (fatalReason === "ratelimit" && (env.POTOKEN_URL || env.PO_TOKEN) && !opts.ignoreGate) {
+    attempts.push("rate limit → forcing a fresh PoToken and retrying once");
+    POTOKEN_CACHE.ts = 0;
+    const forced = await getPoToken(env, visitorData, true);
+    if (forced.poToken && forced.poToken !== liveToken) {
+      liveToken = forced.poToken;
+      visitorData = forced.visitorData || visitorData;
+      YT_GATE.until = 0;                       // one immediate, token-backed retry
+      YT_GATE.strikes = 0;
+      fatalReason = "";
+      failures.length = 0;
+      out = await runPass(fast.length ? fast : anonLadder.slice(0, 3), { visitorData }, "potoken");
+      if (out.res) return finish(out.res, 1, { poTokenSource: "provider(refreshed)" });
+    } else {
+      attempts.push("PoToken provider ne naya token nahi diya (" + (forced.source || "empty") + ")");
+    }
+  }
+
   const sawBotCheck = out.needAuthEarly || failures.includes("bot");
 
   // pass 2 — cookies (bot-checks and login-required videos land here)
@@ -1984,7 +2133,7 @@ async function refreshedUrl(videoId, itag, env) {
     return exact || (formats || [])[0] || null;
   };
   try {
-    const fresh = await player(videoId, { env });
+    const fresh = await player(videoId, { env, noCache: true });
     if (fresh && fresh.ok) {
       const pick = pickOf(fresh.formats);
       if (pick && pick.url) {
@@ -2017,6 +2166,7 @@ async function directMp4(videoId, request, env) {
   const urlObj = new URL(request.url);
   const p = await player(videoId, {
     env,
+    noCache: true,            // /mp4 and /api/stream exist to hand out a *fresh* signature
     cookieHeader: cookieAuth(env, urlObj),
     region: (urlObj.searchParams.get("region") || "IN").toUpperCase(),
   });
@@ -2484,7 +2634,7 @@ async function canary(u, env) {
       continue;
     }
     try {
-      const r = await player(id, { env, cookieHeader, region, budget });
+      const r = await player(id, { env, cookieHeader, region, budget, noCache: true });
       results.push({
         id,
         ok: !!r.ok,
@@ -3281,6 +3431,7 @@ const ROUTES = [
           visitorData: !!VERSION_CACHE.visitorData,
           gate: ytGateInfo(),
           mirrors: mirrorSnapshot(),
+          playerCache: playerCacheStats(),
           winner: winnerClient() ? { client: WINNER.id, version: WINNER.version, ageSec: Math.round((Date.now() - WINNER.ts) / 1000) } : null,
           subrequestCap: SUB_CAP,
           breakers: breakerSnapshot(),
@@ -3355,6 +3506,7 @@ const ROUTES = [
       const t0 = Date.now();
       const res = await player(id, {
         env,
+        noCache: true,          // the doctor must test YouTube live, never a cached answer
         cookieHeader: cookieAuth(env, u),
         region: (u.searchParams.get("region") || "IN").toUpperCase(),
       });
@@ -3589,6 +3741,10 @@ export {
   resetBreakers,
   ytGateInfo,
   mirrorSnapshot,
+  playerCacheGet,
+  playerCachePut,
+  playerCacheStats,
+  resetPlayerCache,
   winnerClient,
   YT_GATE,
   noteFail,

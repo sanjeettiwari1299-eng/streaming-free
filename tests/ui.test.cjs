@@ -168,7 +168,16 @@ function makeDom(opts = {}) {
             verdict: { code: "ok", hi: "Sab theek — resolve + bytes dono kaam kar rahe hain." },
           });
         }
-        if (/\/api\/health/.test(u)) return ok({ ok: true, service: "streamvoid-worker" });
+        if (/\/api\/health/.test(u)) return ok({
+          ok: true, service: "streamvoid-worker", build: "8.8.0",
+          resilience: {
+            gate: { cooling: false, retryAfter: 0, strikes: 0, status: 0 },
+            mirrors: [{ host: "inv.nadeko.net", fails: 2, cooling: 120 }],
+            winner: { client: "android_vr", version: "1.65.10", ageSec: 42 },
+            playerCache: { memory: 3, inflight: 0, ttlSec: 1200 },
+            subrequestCap: 46,
+          },
+        });
         if (/\/api\/trending/.test(u)) return ok({ items: TRENDING });
         if (/\/api\/rss/.test(u)) {
           const ids = decodeURIComponent(u.split("channels=")[1].split("&")[0]).split(",").filter(Boolean);
@@ -928,6 +937,8 @@ const cookie = (w, k) => {
     check("suite finishes (no rows left waiting)", !suiteStates.includes(undefined), suiteStates.join(","));
     check("suite checks player + bytes", all(ws, ".suite-name").some((n) => /Stream resolve/.test(n.textContent)) && all(ws, ".suite-name").some((n) => /Stream bytes/.test(n.textContent)));
     check("suite checks comments and store", all(ws, ".suite-name").some((n) => /Comments/.test(n.textContent)) && all(ws, ".suite-name").some((n) => /Cloud store/.test(n.textContent)));
+    check("suite checks the resolve cache / cooldown", all(ws, ".suite-name").some((n) => /Resolve cache/.test(n.textContent)), all(ws, ".suite-name").map((n) => n.textContent).join(" | "));
+    check("cache row shows real numbers", /cache 3 videos/.test(all(ws, ".suite-row").map((r) => r.textContent).join(" ")) && /mirrors parked 1/.test(all(ws, ".suite-row").map((r) => r.textContent).join(" ")), all(ws, ".suite-row").map((r) => r.textContent).join(" | ").slice(0, 200));
     check("healthy worker passes the suite", suiteStates.filter((x) => x === "pass").length >= 12, suiteStates.join(","));
     check("suite offers a copyable report", all(ws, ".suite-bar .set-chip").some((b) => /Copy report/.test(b.textContent)));
     check("suite has a summary line", /pass/.test((q(ws, ".suite-sum") || {}).textContent || ""), (q(ws, ".suite-sum") || {}).textContent);
