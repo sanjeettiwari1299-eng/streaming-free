@@ -222,6 +222,15 @@ function makeDom(opts = {}) {
               formats: [{ itag: 18, quality: "360p", url: "/api/media?u=" + id + "&v=" + id + "&itag=18" }],
             });
           }
+          if (opts.hdFormats) {
+            return ok({
+              ...PLAYER,
+              formats: [
+                { itag: 137, quality: "1080p", height: 1080, mime: "video/mp4; codecs=\"avc1.640028, mp4a.40.2\"", url: "/api/media?u=hd&v=" + id + "&itag=137" },
+                { itag: 18, quality: "360p", height: 360, mime: "video/mp4; codecs=\"avc1.42001E, mp4a.40.2\"", url: "/api/media?u=lo&v=" + id + "&itag=18" },
+              ],
+            });
+          }
           if (opts.mixedFormats) {
             return ok({
               ...PLAYER,
@@ -1224,6 +1233,52 @@ const cookie = (w, k) => {
     check("the panel names YouTube, not the app", /YouTube ne is IP/i.test(wf.document.body.textContent), (errBox || {}).textContent);
     check("the panel says it keeps retrying", /dobara try karta rahega/i.test(wf.document.body.textContent));
     check("requests were not spammed while limited", (wf.__calls || []).filter((u) => /\/api\/player/.test(u)).length <= 1, (wf.__calls || []).filter((u) => /player/.test(u)).length);
+  }
+
+  /* ══ 20. hover prefetch + data saver (instant play, fewer stalls) ════════ */
+  {
+    const dm = makeDom();
+    const wf = dm.window;
+    wf.console.error = () => {};
+    const sc14 = wf.document.createElement("script");
+    sc14.textContent = app;
+    wf.document.body.appendChild(sc14);
+    await wait(900);
+    const playerCalls = (id) => (wf.__calls || []).filter((u) => u.includes("/api/player") && u.includes("id=" + id)).length;
+    const second = all(wf, ".vc")[1];
+    check("prefetch has a card to work with", !!second);
+    const thumb = second.querySelector(".vc-thumb") || second;
+    thumb.dispatchEvent(new wf.MouseEvent("mouseover", { bubbles: true }));
+    thumb.dispatchEvent(new wf.MouseEvent("mouseenter", { bubbles: false }));
+    await wait(1200);
+    check("hovering resolves the video in the background", playerCalls("tr000000002") >= 1, playerCalls("tr000000002"));
+    const before = playerCalls("tr000000002");
+    click(wf, all(wf, ".vc")[1]);
+    await wait(700);
+    check("clicking a prefetched card plays without a new resolve", playerCalls("tr000000002") === before, before + " → " + playerCalls("tr000000002"));
+    check("and the player is mounted", !!q(wf, ".cp video"));
+    check("prefetch never opens the video by itself", /Trending|Home/.test(wf.document.body.textContent) || !!q(wf, ".cp video"));
+  }
+  {
+    /* data saver: a slow connection should not be handed a 1080p stream */
+    const dm = makeDom({ hdFormats: true, prefs: { sv_cfg: JSON.stringify({ engineUrl: "https://w.dev", autoplay: true, dataSaver: true }) } });
+    const wf = dm.window;
+    wf.console.error = () => {};
+    const sc15 = wf.document.createElement("script");
+    sc15.textContent = app;
+    wf.document.body.appendChild(sc15);
+    await wait(900);
+    click(wf, all(wf, ".vc")[0]);
+    await wait(1200);
+    const src = (q(wf, ".cp video") || { getAttribute: () => "" }).getAttribute("src") || "";
+    check("data saver picks the small stream", /u=lo|itag=18/.test(src), src);
+    check("data saver still plays", !!q(wf, ".cp video") && !q(wf, ".cp-err"), (q(wf, ".cp-err") || {}).textContent);
+    check("settings offers the data saver toggle", (() => {
+      click(wf, all(wf, ".s-item").find((b) => /Settings/.test(b.textContent)));
+      return true;
+    })());
+    await wait(500);
+    check("data saver switch is in Settings", /Data saver/.test(wf.document.body.textContent), wf.document.body.textContent.slice(-120));
   }
 
   const failed = checks.filter((c) => !c.pass);

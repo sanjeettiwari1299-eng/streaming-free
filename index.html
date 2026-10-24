@@ -1335,11 +1335,17 @@ function canPlayMime(mime) {
   } catch { return true; }
 }
 
-function playableFormats(list) {
+function playableFormats(list, cap = 0) {
   const arr = (Array.isArray(list) ? list : []).filter((f) => f && f.url);
   if (!arr.length) return [];
   const ok = arr.filter((f) => canPlayMime(f.mime || ""));
-  const pick = ok.length ? ok : arr;
+  let pick = ok.length ? ok : arr;
+  /* slow link / data saver: staying under the cap avoids the stall-and-retry
+     dance entirely (a 360p stream stalls far less than a 1080p one) */
+  if (cap) {
+    const under = pick.filter((f) => !f.height || f.height <= cap);
+    if (under.length) pick = under;
+  }
   return pick.slice().sort((a, b) => {
     const am = /mp4/i.test(a.mime || "") ? 1 : 0;
     const bm = /mp4/i.test(b.mime || "") ? 1 : 0;
@@ -1378,7 +1384,8 @@ async function preflightStream(cfg, format, videoId, timeout = 9000) {
 /* Load a player response into a mountable stream: playable formats, first one
    verified with real bytes. Returns { ok, data, tried } or { ok:false }. */
 async function verifyStream(cfg, data, videoId) {
-  const formats = playableFormats((data && data.formats) || []);
+  const cap = cfg.dataSaver ? 480 : qualityCap();
+  const formats = playableFormats((data && data.formats) || [], cap);
   if (!formats.length) return { ok: false, tried: 0 };
   const tried = [];
   for (const f of formats.slice(0, 3)) {
@@ -2007,8 +2014,15 @@ function VCard({ v, onPlay, layout = "grid", st, onChannel, showAv = true, onRem
   const total = (resume && (resume.dur || v.lengthSeconds)) || v.lengthSeconds || 0;
   const prog = resume && resume.pos && total ? Math.min(100, (resume.pos / total) * 100) : 0;
 
+  const hoverT = useRef(null);
+  const onHover = () => {
+    clearTimeout(hoverT.current);
+    hoverT.current = setTimeout(() => prefetchStream(st.cfg, v.videoId), 350);
+  };
+  const onLeave = () => clearTimeout(hoverT.current);
+
   return (
-    <div className={cls} onClick={() => onPlay(v)}>
+    <div className={cls} onClick={() => onPlay(v)} onMouseEnter={onHover} onMouseOver={onHover} onMouseLeave={onLeave}>
       <div className="vc-thumb">
         <img className="vc-thumb-img" src={thumb} alt="" loading="lazy" onError={(e) => { e.currentTarget.src = YTT(v.videoId); }} />
         {dur > 0 && !v.live && <span className="vc-dur">{fd(dur)}</span>}
@@ -2135,6 +2149,7 @@ function CPlayer({ video, formats, st, onNext, poster, onRefresh }) {
   const lastEsc = useRef(0);
   const pendingSeek = useRef(REC.id && video && REC.id === video.videoId && REC.at > 0 ? REC.at : null);
   const refreshTries = useRef(0);
+  const stallCount = useRef(0);                    // stalls since the last healthy play
   const firstRender = useRef(true);
   const barRef = useRef(null);
   const histRef = useRef(st.hist || []); histRef.current = st.hist || [];
@@ -2376,6 +2391,25 @@ function CPlayer({ video, formats, st, onNext, poster, onRefresh }) {
   const escalate = useCallback((why) => {
     if (st.cfg.autoRecover === false) { setErr(fmtErr(vidRef.current)); setWaiting(false); return; }
     const el = vidRef.current;
+    /* Two stalls on the same quality is a bandwidth problem, not a broken stream:
+       drop to the smallest format instead of hopping around. On a 3G evening this
+       is the difference between "chal rahi hai" and "har 20 second ruk jaati hai". */
+    if (why === "stall" || why === "stalled") {
+      stallCount.current += 1;
+      const heights = list.map((f) => f.height || 0).filter(Boolean);
+      const smallest = heights.length ? Math.min(...heights) : 0;
+      const curH = (list[qi] && list[qi].height) || 0;
+      if (stallCount.current >= 2 && list.length > 1 && smallest && curH > smallest) {
+        const idx = list.findIndex((f) => (f.height || 0) === smallest);
+        if (idx >= 0 && idx !== qi) {
+          stallCount.current = 0;
+          setRecovering("Network slow — quality kam kar raha hoon");
+          setQi(idx);
+          bump();
+          return;
+        }
+      }
+    }
     const at = (el && el.currentTime) || 0;
     /* "Format not supported" (4) / decode (3) / network-dead (2): the cheapest fix
        is another muxed stream we already have in hand — no re-resolve, no error UI.
@@ -2547,6 +2581,7 @@ function CPlayer({ video, formats, st, onNext, poster, onRefresh }) {
         onPlaying={() => {
           setWaiting(false); setErr(""); setRecovering("");
           rec.current.stage = 0; REC.stage = 0; REC.at = 0; cycles.current = 0; REC.cycles = 0;
+          stallCount.current = 0;
           tick.current = { t: vidRef.current?.currentTime || 0, at: Date.now() };
         }}
         onCanPlay={() => setWaiting(false)}
@@ -3604,12 +3639,56 @@ const streamCached = (cfg, id) => {
   if (Date.now() - hit.at > STREAM_TTL) { STREAM_CACHE.delete(streamKey(cfg, id)); return null; }
   return hit.data;
 };
-const streamRemember = (cfg, data) => {
-  const id = data && data.video && data.video.videoId;
+const streamRemember = (cfg, data, idHint) => {
+  const id = idHint || (data && data.video && data.video.videoId);
   if (!id || !data.ok) return;
   if (STREAM_CACHE.size > 40) STREAM_CACHE.delete(STREAM_CACHE.keys().next().value);
   STREAM_CACHE.set(streamKey(cfg, id), { at: Date.now(), data });
 };
+
+/* ── hover prefetch ──────────────────────────────────────────────────────────
+   YouTube previews a video when you hover because it already asked the server.
+   We do the same, quietly: rest the mouse on a card for 350 ms and its stream is
+   resolved in the background (and cached on the worker too). Clicking then plays
+   instantly — and an instant play is the one that never shows a bot-check. */
+const PREFETCH = { inflight: new Set(), done: new Set(), pausedUntil: 0, budget: 12 };
+const prefetchStream = (cfg, id) => {
+  if (!id) return;                       // same-origin (worker serves the app) is fine too
+  const now = Date.now();
+  if (now < PREFETCH.pausedUntil) return;                 // a 429 was seen recently
+  if (PREFETCH.inflight.has(id) || PREFETCH.done.has(id)) return;
+  if (PREFETCH.inflight.size >= 2) return;                // never more than 2 at a time
+  if (PREFETCH.done.size > 200) PREFETCH.done.clear();
+  if (streamCached(cfg, id)) { PREFETCH.done.add(id); return; }
+  PREFETCH.inflight.add(id);
+  apiPlayer(cfg, id)
+    .then((d) => {
+      if (d && d.ok && (d.formats || []).length) streamRemember(cfg, d, id);   // keyed by what we asked for
+      PREFETCH.done.add(id);
+    })
+    .catch(() => { PREFETCH.done.add(id); PREFETCH.budget = Math.max(0, PREFETCH.budget - 1); })
+    .finally(() => {
+      // a rate-limited worker answers instantly with reason ratelimit → back off
+      PREFETCH.inflight.delete(id);
+    });
+};
+const prefetchPause = (seconds = 90) => {
+  PREFETCH.pausedUntil = Date.now() + seconds * 1000;
+  PREFETCH.inflight.clear();
+};
+
+/* How much quality can this connection take right now? (save-data / 2g / 3g) */
+function qualityCap() {
+  try {
+    const c = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+    if (!c) return 0;
+    if (c.saveData) return 360;
+    const t = String(c.effectiveType || "");
+    if (/^(slow-)?2g$/.test(t)) return 360;
+    if (/^3g$/.test(t)) return 480;
+    return 0;
+  } catch { return 0; }
+}
 
 /* ── comments ────────────────────────────────────────────────────────────────
    /api/comments is optional: when the worker (or dev preview) does not answer,
@@ -3749,7 +3828,7 @@ function WatchPage({ video, onPlay, st, engine, onChannel, onAddSub }) {
     // a cached stream is exactly what just died — a manual/ladder retry must bypass it
     if (attempt > 0) STREAM_CACHE.delete(streamKey(st.cfg, video.videoId));
     const warm = attempt > 0 ? null : streamCached(st.cfg, video.videoId);
-    if (warm && playableFormats(warm.formats || []).length) {
+    if (warm && playableFormats(warm.formats || [], st.cfg.dataSaver ? 480 : qualityCap()).length) {
       setStream(warm); setStatus("ready"); return () => { dead = true; };
     }
 
@@ -3786,6 +3865,7 @@ function WatchPage({ video, onPlay, st, engine, onChannel, onAddSub }) {
           /* the worker knows exactly when YouTube will answer again — wait that
              long instead of guessing (this is what stops the retry storm) */
           if (!d.ok && d.reason === "ratelimit" && d.retryAfter > 0) {
+            prefetchPause(Math.max(30, Math.min(120, d.retryAfter)));
             last = { ...d, error: d.error || "YouTube rate limit" };
             if (d.retryAfter <= 20 && i < 5) {
               setRetrying(i + 1);
@@ -5210,6 +5290,7 @@ function SetPage({ st, engine, onCheck, onAddSub }) {
         <div className="set-chip-row">
           <button className={"set-chip" + (st.cfg.showRelated !== false ? " on" : "")} onClick={() => upd({ showRelated: st.cfg.showRelated === false })}>Related videos</button>
           <button className={"set-chip" + (st.cfg.autoplay !== false ? " on" : "")} onClick={() => upd({ autoplay: st.cfg.autoplay === false })}>Autoplay</button>
+          <button className={"set-chip" + (st.cfg.dataSaver ? " on" : "")} onClick={() => upd({ dataSaver: !st.cfg.dataSaver })}>Data saver (≤480p)</button>
         </div>
       </div>
 

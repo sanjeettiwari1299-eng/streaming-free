@@ -59,7 +59,7 @@ error panel me **Engine doctor**) — video id daalo, ek click me resolve + byte
 Sabse pehle ye confirm karein ki deploy naya hai:
 
 ```
-GET https://<your-worker>.workers.dev/api/health      → build: "8.8.0"
+GET https://<your-worker>.workers.dev/api/health      → build: "8.9.0"
 ```
 
 Purana build dikhe to Cloudflare → Workers → apna worker → Edit code → **poora `worker.js` paste** → Deploy.
@@ -99,6 +99,20 @@ aur **bot-check** (worker me `YT_COOKIES` ya `POTOKEN_URL`). Wahan panel asli re
 me chalta rehta hai, to cookie lagane ke baad bina reload video chal padti hai.
 
 ---
+
+## Naya approach: "play se pehle resolve" (8.9.0)
+
+Error sabse zyada us waqt aata hai jab user click karta hai aur us waqt YouTube resolve karne ko kehta hai.
+To ab resolve **click se pehle** ho jaata hai:
+
+| Feature | Kaam |
+| --- | --- |
+| **Hover prefetch** | card par 350 ms mouse rukne par stream background me resolve + cache ho jaata hai (jaise YouTube preview). Click = **turant play**, 0 naya resolve |
+| **Data saver (≤480p)** | Settings → Data saver. Slow link / `saveData` / 2G-3G par app khud 360–480p chunta hai |
+| **Stall → quality drop** | 2 stall = bandwidth problem: app khud sabse chhoti quality par chala jaata hai ("Network slow — quality kam kar raha hoon") instead of hopping streams |
+| **Prefetch budget** | ek samay par max 2 prefetch, 429 dekhne par 90 s ke liye band (rate-limit ko kabhi nahi bhadkata) |
+
+Iska seedha matlab: jo video tum kholne wale ho, wo pehle se resolve ho chuki hoti hai — bot-check ka mauka hi nahi milta.
 
 ## Permanent fix kaise kaam karta hai (worker 8.8.0)
 

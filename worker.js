@@ -21,7 +21,7 @@
  */
 
 // bump this when the worker changes, so /api/health tells you which code is live
-const BUILD = "8.8.0";
+const BUILD = "8.9.0";
 
 const INNERTUBE_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8";
 const UA = {
