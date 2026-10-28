@@ -403,7 +403,10 @@ const cookie = (w, k) => {
   await wait(800);
   click(wg, all(wg, ".vc")[1]);          // the gated one
   await wait(700);
-  check("gated video shows a real reason", /bot-check/i.test(wg.document.body.textContent), wg.document.body.textContent.slice(0, 120));
+  check("gated video automatically falls back after custom-player failure", !!q(wg, ".yt-fallback-frame"));
+  check("fallback notice preserves the real reason", /bot-check/i.test(wg.document.body.textContent), wg.document.body.textContent.slice(0, 120));
+  click(wg, q(wg, ".yt-fallback-back"));
+  await wait(100);
   check("gated video explains how to fix it", /YT_COOKIES|PO_TOKEN/.test(wg.document.body.textContent));
   check("diagnosis panel offers actions", all(wg, ".pl-actions .cp-pill").length >= 3, all(wg, ".pl-actions .cp-pill").map((b) => b.textContent).join(" | "));
   check("diagnosis panel has a Download MP4 escape hatch", all(wg, ".pl-actions a").some((a) => /mp4/.test(a.getAttribute("href") || "")));
@@ -1116,8 +1119,14 @@ const cookie = (w, k) => {
     click(wf, all(wf, ".vc")[1]);
     await wait(800);
     check("blocked video still explains itself", /bot-check/i.test(wf.document.body.textContent));
-    check("and says retrying continues in the background", /Khud retry chal raha hai/.test(wf.document.body.textContent), wf.document.body.textContent.slice(-160));
+    check("custom-player failure automatically switches to YouTube", !!q(wf, ".yt-fallback-frame"), wf.document.body.textContent.slice(-160));
     check("blocked video is not silently hammered", (wf.__calls || []).filter((u) => /\/api\/player/.test(u)).length <= 2, (wf.__calls || []).filter((u) => /player/.test(u)).length);
+    const ytFrame = q(wf, ".yt-fallback-frame");
+    check("automatic fallback opens the failed video's official player", !!ytFrame && /youtube\.com\/embed\/tr000000002/.test(ytFrame.getAttribute("src") || ""), ytFrame && ytFrame.getAttribute("src"));
+    check("YouTube fallback allows playback and fullscreen", !!ytFrame && /autoplay/.test(ytFrame.getAttribute("allow") || "") && ytFrame.hasAttribute("allowfullscreen"));
+    click(wf, q(wf, ".yt-fallback-back"));
+    await wait(100);
+    check("back button returns to StreamVoid diagnostics and retry", !q(wf, ".yt-fallback-frame") && !!q(wf, ".cp-err"));
   }
 
   /* ══ 18. cookie checker: "cookies laga diye par bot-check phir bhi" ══════ */

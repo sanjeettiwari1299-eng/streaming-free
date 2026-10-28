@@ -239,8 +239,12 @@ svg{flex-shrink:0}
 /* ── WATCH PAGE ── */
 .watch{display:flex;gap:24px;padding:24px 24px 40px;max-width:1754px;margin:0 auto}
 .watch-main{flex:1;min-width:0;max-width:1284px}
-.watch-player{width:100%;aspect-ratio:16/9;border-radius:12px;overflow:hidden;background:#000}
+.watch-player{position:relative;width:100%;aspect-ratio:16/9;border-radius:12px;overflow:hidden;background:#000}
 .watch-player iframe{width:100%;height:100%;border:none;display:block}
+.yt-fallback-back{position:absolute;left:12px;bottom:12px;z-index:4;background:rgba(15,15,15,.92);color:#fff;border:1px solid rgba(255,255,255,.24);border-radius:18px;padding:8px 13px;font-size:13px;cursor:pointer}
+.yt-fallback-back:hover{background:#303030}
+.yt-fallback-notice{position:absolute;top:12px;left:12px;z-index:4;max-width:min(480px,calc(100% - 24px));padding:9px 12px;border-radius:10px;background:rgba(15,15,15,.88);color:#fff;font-size:12px;line-height:1.45;box-shadow:0 2px 12px rgba(0,0,0,.35)}
+.yt-fallback-notice a{color:#8cc8ff;margin-left:8px}
 /* native player */
 .pl-wrap{position:relative;width:100%;height:100%;background:#000}
 .pl-video{width:100%;height:100%;display:block;background:#000;object-fit:contain}
@@ -3734,6 +3738,7 @@ function WatchPage({ video, onPlay, st, engine, onChannel, onAddSub }) {
   const [doctor, setDoctor] = useState(false);
   const [retrying, setRetrying] = useState(0);
   const [offline, setOffline] = useState(false);
+  const [youtubeFallback, setYoutubeFallback] = useState(false); // switch to official player only after custom playback fails
   const [fallback, setFallback] = useState([]);   // endless play: recommendations dead → trending
   const [relTab, setRelTab] = useState("all");
   const [moreOpen, setMoreOpen] = useState(false);
@@ -3744,8 +3749,8 @@ function WatchPage({ video, onPlay, st, engine, onChannel, onAddSub }) {
 
   useEffect(() => {
     let dead = false;
-    setStatus("loading"); setErr(""); setStream(null); setDiag(null); setShowWhy(false); setRetrying(0);
-    if (engine !== "ok") { setStatus("error"); setErr("engine-offline"); return; }
+    setStatus("loading"); setErr(""); setStream(null); setDiag(null); setShowWhy(false); setRetrying(0); setYoutubeFallback(false);
+    if (engine !== "ok") { setStatus("error"); setErr("engine-offline"); setYoutubeFallback(true); return; }
     // a cached stream is exactly what just died — a manual/ladder retry must bypass it
     if (attempt > 0) STREAM_CACHE.delete(streamKey(st.cfg, video.videoId));
     const warm = attempt > 0 ? null : streamCached(st.cfg, video.videoId);
@@ -3805,6 +3810,7 @@ function WatchPage({ video, onPlay, st, engine, onChannel, onAddSub }) {
       setStatus("error");
       setDiag(last || null);
       setErr((last && (last.error || (last.attempts || []).slice(-3).join(" · "))) || "koi playable stream nahi mila");
+      setYoutubeFallback(true); // custom ladder exhausted: automatically try YouTube's player
     })();
     return () => { dead = true; };
   }, [video.videoId, engine, st.cfg.engineUrl, attempt]);
@@ -3812,10 +3818,10 @@ function WatchPage({ video, onPlay, st, engine, onChannel, onAddSub }) {
   /* the error panel is a pause: keep trying behind it (15s, forever) so a bad
      minute on the network never becomes a video the user has to click again */
   useEffect(() => {
-    if (status !== "error" || err === "engine-offline") return;
+    if (status !== "error" || err === "engine-offline" || youtubeFallback) return;
     const t = setTimeout(() => setAttempt((a) => a + 1), 15000);
     return () => clearTimeout(t);
-  }, [status, err, attempt]);
+  }, [status, err, attempt, youtubeFallback]);
 
   useEffect(() => {
     let dead = false;
@@ -3927,7 +3933,27 @@ function WatchPage({ video, onPlay, st, engine, onChannel, onAddSub }) {
               </div>
             </div>
           )}
-          {status === "error" && (
+          {status === "error" && youtubeFallback && (
+            <>
+              <iframe
+                className="yt-fallback-frame"
+                src={`https://www.youtube.com/embed/${encodeURIComponent(video.videoId)}?autoplay=1&playsinline=1&rel=0`}
+                title={(meta.title || "YouTube video") + " — YouTube player"}
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                referrerPolicy="strict-origin-when-cross-origin"
+                allowFullScreen
+              />
+              <div className="yt-fallback-notice">
+                StreamVoid player se video nahi chali; YouTube player par automatically switch kiya.
+                {diag && (diag.reasonLabel || diag.hint) && <span> {diag.reasonLabel || diag.hint}</span>}
+                <a href={YTW(video.videoId)} target="_blank" rel="noreferrer">Open on YouTube</a>
+              </div>
+              <button className="yt-fallback-back" onClick={() => setYoutubeFallback(false)}>
+                ← Back to StreamVoid error & retry options
+              </button>
+            </>
+          )}
+          {status === "error" && !youtubeFallback && (
             <div className="cp">
               <div className="cp-err">
                 <div className="pl-badge">{err === "engine-offline" ? "engine" : (diag && diag.reason) || "error"}</div>
@@ -3961,13 +3987,17 @@ function WatchPage({ video, onPlay, st, engine, onChannel, onAddSub }) {
                 )}
 
                 <div className="pl-actions">
-                  <button className="cp-pill" onClick={() => setAttempt((a) => a + 1)}>↻ Retry</button>
+                  <button className="cp-pill" onClick={() => setYoutubeFallback(true)}>▶ Play with YouTube player</button>
+                  <button className="cp-pill ghost" onClick={() => { setYoutubeFallback(false); setAttempt((a) => a + 1); }}>↻ Retry StreamVoid</button>
                   <button className="cp-pill ghost" onClick={() => setAttempt((a) => a + 1)}>Fresh URL</button>
                   <a className="cp-pill ghost" href={`${baseOf(st.cfg)}/mp4/${video.videoId}.mp4?dl=1`} target="_blank" rel="noreferrer">Download MP4</a>
                   <a className="cp-pill ghost" href={YTW(video.videoId)} target="_blank" rel="noreferrer">Open on YouTube</a>
                   <button className="cp-pill ghost" onClick={() => setDoctor(!doctor)}>
                     {doctor ? "Hide doctor" : "Engine doctor"}
                   </button>
+                </div>
+                <div className="pl-note">
+                  YouTube ka official player backup hai. Kuch private, age-restricted, ya embedding-disabled videos wahan bhi nahi chalengi.
                 </div>
 
                 {diag && (diag.attempts || []).length > 0 && (
