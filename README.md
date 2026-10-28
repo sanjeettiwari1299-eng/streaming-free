@@ -1,7 +1,7 @@
 # StreamVoid — serverless YouTube front-end + custom player
 
 `index.html` (whole app, one file) + `worker.js` (Cloudflare Worker, free tier).
-**No API key. No Google login. No Piped/Invidious. No server/VPS. No YouTube iframe. No localStorage.**
+**No API key. No Google login. No Piped/Invidious. No server/VPS. No YouTube iframe for normal playback.** If the custom player exhausts its recovery attempts, it automatically switches to YouTube's official player; you can return to StreamVoid and retry. No localStorage.
 Search · Trending · **Shorts** (+ **ShortsFire** embed) · **RSS subscriptions** · watch page · **comments** ·
 hand-built player. Self-healing playback: **video kabhi band na ho** — 5-step player recovery, proxy re-signing, endless play.
 
@@ -55,6 +55,12 @@ pass/warn/fail + ms deta hai. **Copy report** se poora text copy ho jata hai (is
 
 App ke andar bhi wahi doctor hai: **Settings → YouTube engine → Run engine doctor** (ya video fail hone par
 error panel me **Engine doctor**) — video id daalo, ek click me resolve + bytes + client + attempts dikh jate hain.
+
+**Automatic fallback:** app pehle custom StreamVoid player me video resolve aur play karne ki poori koshish karta hai.
+Custom recovery ladder fail ho jaaye (ya engine connect na ho), to usi video ke liye YouTube ka official player automatically
+khulta hai. **Back to StreamVoid error & retry options** se custom player par wapas aakar doctor/retry chala sakte hain.
+Ye alternate proxy/worker ki problem me madad karta hai, lekin private, age-restricted, region-blocked, removed, ya
+embedding-disabled videos ko koi frontend unlock nahi kar sakta. Custom player ke liye worker deploy/URL sahi hona zaroori hai.
 
 Sabse pehle ye confirm karein ki deploy naya hai:
 
